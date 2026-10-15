@@ -1,9 +1,10 @@
-# atbrains · 记忆系统资料库
+# atbrains · 记忆系统资料库 + 代码仓库
 
-> 本目录汇集了 **brain 双存储记忆系统**(Redis 短期 + MariaDB 长期 + Qdrant 向量)
-> 的搭建材料、实现代码、运维脚本,以及一个**可在浏览器里监控和控制它**的控制台。
+> 本目录既是 **brain 双存储记忆系统**(Redis 短期 + MariaDB 长期 + Qdrant 向量)
+> 的**资料库**(搭建材料 / 运维脚本 / 文档),也是它的**监控控制台代码仓库**
+> (`plugin/`,git 管理,用 `install.sh` 安装到 Hermes)。
 >
-> 整理时间:2026-10-15 · 机器:`server`(腾讯云 Debian 13,2C4G)
+> 机器:`server`(腾讯云 Debian 13,2C4G)· 最近更新:2026-10-15(控制台 v1.1.0)
 
 ---
 
@@ -46,11 +47,44 @@
 
 ---
 
-## 二、目录结构
+## 二、这个仓库怎么用(代码 → 安装)
+
+```
+/root/atbrains/plugin/    ← 代码的家(git 管理,改这里)
+/root/atbrains/install.sh ← 安装脚本
+```
+
+```bash
+./install.sh                    # 安装/更新到 ~/.hermes/plugins/atbrains
+./install.sh check              # 只看仓库 ↔ 安装副本的差异(不写入)
+./install.sh --restart-console  # 安装后顺便重启网页控制台(如果在跑)
+```
+
+- Hermes 只能从 `~/.hermes/plugins/atbrains` 加载插件,那里是**安装副本**;
+  **改动一律先改仓库,再 install** —— 直接改安装副本会被下次同步覆盖。
+- 安装副本的 `console/.token`(控制台口令)是运行时状态:**同步时保留、不入库**(已 gitignore)。
+- 版本:`git log` 看历史;当前版本在 `plugin/plugin.yaml`(v1.1.0)。
+- 改了 `.py` 后需重启控制台进程(`hermes atbrains stop && hermes atbrains serve --background`);
+  只改 `console/index.html` 则刷新页面即生效。
+
+---
+
+## 三、目录结构
 
 ```
 /root/atbrains/
 ├── README.md                        ← 你正在看的这份
+├── install.sh                       ★ 安装脚本(仓库 → Hermes 插件目录)
+├── .gitignore                       忽略 __pycache__ / console/.token / *.log
+├── plugin/                          ★ 控制台代码——真身在这里(git 管理)
+│   ├── plugin.yaml                  清单(刻意不声明 pip_dependencies)
+│   ├── __init__.py                  register(ctx):2 个工具 + `hermes atbrains` 命令
+│   ├── probe.py                     ★ 唯一数据层(CLI/工具/网页共用,不漂移)
+│   ├── cli.py / tools.py            CLI 与 agent 工具实现
+│   ├── console/                     网页控制台(server.py + index.html;.token 运行时生成)
+│   └── README.md
+├── tools/
+│   └── package.py                   打包/脱敏生成器(刷新 docs/scripts/setup 的拷贝)
 ├── docs/                            ← 原始文档与技能手册
 │   ├── agent_memory.md              整套记忆系统配置全景(用户维护入口)
 │   ├── plugin-README.md             brain 插件自带说明
@@ -61,9 +95,7 @@
 │   ├── README.md                    重建步骤(按顺序)
 │   ├── SECRETS.md                   ★ 机密存放位置(只写路径,不写值)
 │   ├── migration-20261012.sql       分库迁移(改名 + 多 agent 分库)
-│   ├── init.sql                     空卷初始化
-│   ├── rebuild.sh                   容器重建命令
-│   ├── verify-accounts.py           账号/权限自检
+│   ├── init.sql / rebuild.sh / verify-accounts.py
 │   ├── credentials-LEDGER-scrubbed.txt  台账(★已脱敏)
 │   └── systemd/                     向量回填的 systemd 单元
 ├── scripts/                         ← 运维脚本
@@ -72,21 +104,17 @@
 │   ├── brain-overview.py            库内容导出
 │   ├── prune.sh                     保留期清理
 │   └── refresh-hot-machine.py       刷新机器标记
-└── plugin → ~/.hermes/plugins/atbrains/   ← ★ 监控控制台(Hermes 插件形态)
-    ├── plugin.yaml                  清单(不声明 pip_dependencies)
-    ├── __init__.py                  register(ctx):2 个工具 + `hermes atbrains` 命令
-    ├── probe.py                     ★ 唯一数据层(CLI/工具/网页共用)
-    ├── cli.py / tools.py            CLI 与 agent 工具实现
-    ├── console/                     网页控制台(server.py + index.html)
-    └── README.md
-
-注:根目录的 `plugin` 是**软链接**(源码必须住在 ~/.hermes/plugins/ 才能被 Hermes 加载);
-`web/` 只保留控制台截图与指针说明。
+└── web/                             ← 控制台预览图与说明
+    ├── preview.png                  控制台首页(记忆页)
+    └── preview-recent.png           动态页(Redis 短期层实时视图)
 ```
+
+注:`docs/scripts/setup` 里的文件由 `tools/package.py` 从活系统**复制 + 脱敏**生成
+(改内容改生成器,别只手改副本,否则下次生成会被覆盖)。
 
 ---
 
-## 三、监控控制台(Hermes 插件形态)
+## 四、监控控制台(Hermes 插件形态)
 
 **形态**:**Hermes 插件** `atbrains`(已 enabled),**不是系统服务** —— 没有 systemd 单元。
 控制台由 `hermes atbrains serve` 按需启动、`stop` 停止。
@@ -104,6 +132,10 @@ hermes atbrains status          # 监控
 hermes atbrains serve --background
 hermes atbrains open            # 地址 + 口令(SSH 隧道用)
 hermes atbrains stop
+
+# v1.1.0 新增:
+hermes atbrains sessions [--machine M]   # 会话索引
+hermes atbrains restore <ID>             # 恢复一条被停用的记忆(与 forget 对偶)
 ```
 
 ### 怎么打开网页
@@ -120,28 +152,35 @@ ssh -p 7622 -L 8787:127.0.0.1:8787 root@111.230.71.79
 **方式 B:腾讯云安全组放行 8787**,直接访问 `http://111.230.71.79:8787/`
 （⚠️ 暴露到公网,务必先确认 token 足够强;不放心就继续用方式 A）
 
-### 能做什么
+### 能做什么(v1.1 面板)
 
 | 面板 | 内容 |
 |---|---|
-| **卡片总览** | 三层的计数/状态/容器健康;向量覆盖率(活跃记忆 ↔ 向量点);定时器状态与上次退出码 |
-| **记忆** | 全量浏览、按内容过滤、按活跃/停用筛选、标签与权重一览;行内可直接停用(软删除,可恢复) |
-| **对话归档** | 按时间倒序查看每轮问答(用户/助手,含来源机与会话) |
+| **卡片总览** | 三层计数/状态/容器健康;向量覆盖率(进度条 + 待回填数);定时器上次/下次运行与退出码 |
+| **记忆** | 内容/类型/状态过滤 + 分页;点击行看全文;行内停用(软删除)与**恢复**;详情弹窗含时间戳与一键复制 |
+| **对话归档** | 来源机/关键词过滤 + 分页 + 按会话精查;详情弹窗看完整问答(含截断标记) |
+| **会话** | 会话索引(轮次/开始/最近活动),一键跳到该会话的对话轮次 |
+| **动态** | Redis 短期层实时视图:热点记忆 + 最近对话流 |
 | **检索** | **混合检索**:向量(2560 维语义)+ 关键词融合,同时命中记忆与历史对话 |
-| **操作** | 立即回填向量 / 系统体检 / 新增记忆 / 归档清理预演 |
+| **操作** | 回填向量 / 体检 / 新增记忆 / 按 ID 查看·停用·恢复 / 归档清理预演(不写库) |
 
-自动刷新:总览 10 秒,对话 30 秒(可关)。**只读按钮一律不写库**;清理只做预演。
+自动刷新:跟随右上角设置(5s/10s/30s/关,默认 10s),页面不可见时暂停;
+对话页可见时每 30 秒自动补刷。口令可折叠为「✓ 已认证」;写操作都有确认或回显。
 
 ### 后端接口(想自己接脚本时用)
 
 ```
-GET  /api/overview                 三层总览(容器/计数/向量/定时器)
-GET  /api/memories?limit=&offset=&active=1|0|all&q=
-GET  /api/turns?limit=
+GET  /api/overview                 三层总览(容器/计数/向量/定时器/版本)
+GET  /api/memories?limit=&offset=&active=1|0|all&q=&kind=&machine=
+GET  /api/memory?id=               单条记忆全量(详情弹窗用)
+GET  /api/turns?limit=&offset=&machine=&session_id=&q=
+GET  /api/turn?id=                 单轮对话全量(详情弹窗用)
+GET  /api/sessions?limit=&offset=&machine=&q=
 GET  /api/search?q=&limit=         混合检索
 GET  /api/recent?limit=            Redis 热点 + 最近对话
 POST /api/remember   {content,kind,importance,tags}
-POST /api/forget     {id}
+POST /api/forget     {id}          软删除
+POST /api/restore    {id}          恢复(失败返回 {ok:false,error})
 POST /api/drain                    触发向量回填
 POST /api/doctor                   系统体检
 POST /api/prune      {dry_run:true}
@@ -151,7 +190,7 @@ POST /api/prune      {dry_run:true}
 
 ---
 
-## 四、日常运维(命令行)
+## 五、日常运维(命令行)
 
 ```bash
 hermes brain status          # 连通性 + 计数总览
@@ -176,7 +215,7 @@ python3 scripts/audit-memories.py             # 内置记忆 ↔ brain 镜像对
 
 ---
 
-## 五、故障速查
+## 六、故障速查
 
 | 症状 | 先查 | 常见原因 |
 |---|---|---|
@@ -185,15 +224,17 @@ python3 scripts/audit-memories.py             # 内置记忆 ↔ brain 镜像对
 | 对话归档缺轮次 | `audit-turns.py` | 配置变更后未重启进程,写入静默失败 |
 | 向量不更新 | `hermes brain vector-status` + 控制台定时器卡片 | 嵌入服务 key 失效 / 定时器停了 |
 | 检索变差 | 控制台「向量覆盖率」 | 有活跃记忆缺向量 → 点「立即回填向量」 |
+| 控制台行为与仓库不一致 | `./install.sh check` | 安装副本落后于仓库 → `./install.sh`(然后按提示重启控制台) |
 
-完整清单见 `docs/skill-hermes-brain-memory.md`(含 6 类已知故障的成因与修复)。
+完整清单见 `docs/skill-hermes-brain-memory.md`(含各类已知故障的成因与修复)。
 
 ---
 
-## 六、这个目录的安全约定
+## 七、这个仓库的安全约定
 
-- ✅ 所有文件已**自动脱敏**(23 处密钥替换为 `***REDACTED***`)
-- ✅ 真实密钥仍只在原位置:见 `setup/SECRETS.md`
-- ✅ 控制台 token 单独存放(`web/.token`,权限 600),不进代码、不进文档
-- ⚠️ 本目录**可以打包带走**,但拿走前建议再跑一次脱敏复检:
-  `python3 -c "..."`(见 setup/SECRETS.md 末尾的自检命令)
+- ✅ `docs/scripts/setup` 由 `tools/package.py` 自动**脱敏**生成(密钥 → `***REDACTED***`,生成时复检)
+- ✅ 真实密钥只在原位置:见 `setup/SECRETS.md`(只写路径索引)
+- ✅ 控制台 token 在**安装副本**的 `console/.token`(权限 600),已被 `.gitignore` 排除——
+  **不进 git、不进文档、不进聊天**
+- ⚠️ 本目录**可以打包带走**(代码不含密钥);外发前建议再跑一次脱敏复检:
+  `python3 tools/package.py` 末尾的复检段,或 `setup/SECRETS.md` 末尾的自检命令

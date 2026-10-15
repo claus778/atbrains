@@ -14,7 +14,7 @@
 | MariaDB root / agent 口令 | `docker inspect mariadb` 的 `MARIADB_ROOT_PASSWORD` / `MARIADB_PASSWORD` | 建容器时注入,持久在容器配置里 |
 | Redis 口令(容器侧) | `docker inspect redis` 的启动参数(`--requirepass`) | 与 `.env` 里的必须一致 |
 | 各 agent 库账号(omp/dsh/artex) | `/root/agent-db/credentials.txt`(原始台账) | 本目录的 `credentials-LEDGER-scrubbed.txt` 是**脱敏副本** |
-| 控制台访问 token | `~/.hermes/plugins/atbrains/console/.token`(权限 600) | 首次启动自动生成。插件形态;旧路径 `/root/atbrains/web/.token` 已随源码迁移作废 |
+| 控制台访问 token | `~/.hermes/plugins/atbrains/console/.token`(权限 600) | 首次启动自动生成,是**安装副本里的运行时状态**(仓库同步时保留、已 gitignore,不随 git 走);旧路径 `/root/atbrains/web/.token` 已作废 |
 | 腾讯云 / GitHub / 邮件等 | `~/.hermes/.env` 及各自配置文件 | 与本记忆系统无关 |
 
 ## 写 .env 的正确姿势

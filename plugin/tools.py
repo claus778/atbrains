@@ -2,7 +2,7 @@
 
 两个工具:
   · atbrains_status  —— 一屏总览(三层计数、容器健康、向量覆盖、定时器)
-  · atbrains_control —— 动作:回填向量 / 体检 / 新增记忆 / 停用记忆 / 清理预演 / 查记忆
+  · atbrains_control —— 动作:回填向量 / 体检 / 新增记忆 / 停用记忆 / 恢复记忆 / 清理预演 / 查记忆
 """
 from __future__ import annotations
 
@@ -36,12 +36,13 @@ STATUS_SCHEMA = _schema(
 CONTROL_SCHEMA = _schema(
     "atbrains_control",
     "Control the atbrains memory system: backfill vectors (drain), run a health check (doctor), "
-    "write a memory (remember), deactivate a memory (forget), preview archival (prune), or read "
-    "recent memories/turns (recent). Writes go to the long-term MariaDB store plus the Redis hot "
-    "index; new memories get vectorized by the timer within ~3 minutes (or call drain to do it now).",
+    "write a memory (remember), deactivate a memory (forget), reactivate a deactivated memory "
+    "(restore), preview archival (prune), or read recent memories/turns (recent). Writes go to the "
+    "long-term MariaDB store plus the Redis hot index; new memories get vectorized by the timer "
+    "within ~3 minutes (or call drain to do it now).",
     {
         "action": {"type": "string",
-                   "enum": ["drain", "doctor", "remember", "forget", "prune", "recent"],
+                   "enum": ["drain", "doctor", "remember", "forget", "restore", "prune", "recent"],
                    "description": "Which control action to run."},
         "content": _s("For action=remember: the memory text."),
         "kind": {"type": "string", "enum": ["fact", "preference", "decision", "note", "todo"],
@@ -49,7 +50,7 @@ CONTROL_SCHEMA = _schema(
         "tags": _s("For action=remember: comma-separated tags."),
         "importance": {"type": "integer", "minimum": 1, "maximum": 10,
                        "description": "For action=remember: importance 1-10 (default 5)."},
-        "id": {"type": "integer", "description": "For action=forget: the memory id."},
+        "id": {"type": "integer", "description": "For action=forget / action=restore: the memory id."},
         "dry_run": {"type": "boolean", "description": "For action=prune: preview only (default true)."},
         "limit": {"type": "integer", "description": "For action=recent: how many entries (default 10)."},
     },
@@ -110,6 +111,14 @@ def atbrains_control(args: dict | None = None, **_) -> str:
                 return json.dumps({"ok": False, "error": "action=forget 需要 id"}, ensure_ascii=False)
             return json.dumps({"ok": True, "action": action, "result": probe.forget(int(a["id"]))},
                               ensure_ascii=False, default=str)
+        if action == "restore":
+            if a.get("id") is None:
+                return json.dumps({"ok": False, "error": "action=restore 需要 id"}, ensure_ascii=False)
+            try:
+                return json.dumps({"ok": True, "action": action, "result": probe.restore(int(a["id"]))},
+                                  ensure_ascii=False, default=str)
+            except Exception as e:  # noqa: BLE001 —— 例如同内容已有活跃条目
+                return json.dumps({"ok": False, "action": action, "error": str(e)}, ensure_ascii=False)
         if action == "prune":
             return json.dumps({"ok": True, "action": action,
                                "result": probe.prune(dry_run=bool(a.get("dry_run", True)))},

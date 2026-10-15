@@ -261,8 +261,85 @@ prune 按保留期直接 DELETE（turns 默认还全量保留），所以 brain_
 - 其它机器：分发包 dist/ 仍是旧版；跑新代码也没有本地 qdrant 容器 → 读不到 key → 向量层自动停用（不影响关键词）。
   给 x260-debian / r9000p 开语义召回需先解决 Qdrant 可达性（安全组 6333 + key）或本地部署——后续单独决策。
 
+## 交付物：`/root/atbrains` 资料库 + `atbrains` 插件(监控控制台)
+
+brain 有一套**可打包/可交付/可归档**的整理件：`/root/atbrains/`。它的 `README.md` 是总文档
+（架构图 / 目录树 / 运维命令 / 故障速查）—— 要向用户解释这套系统时先读它，别再写一份。
+
+### 结构:代码的家在仓库,安装副本在插件目录(2026-10-15 用户定稿)
+
+```
+/root/atbrains/plugin/          ← 代码真身(git 管理;改这里)     git log 看历史
+/root/atbrains/install.sh       ← 安装脚本
+~/.hermes/plugins/atbrains/     ← 安装副本(Hermes 实际加载;勿直接改)
+```
+
+- **改动流程:改仓库 → `./install.sh`**(rsync 同步;保留安装副本 `console/.token`,排除 `__pycache__`)。
+  `./install.sh check` 只看差异;`--restart-console` 顺带重启控制台。
+- 改了 `.py` → 重启控制台进程才生效;只改 `console/index.html` → 刷新页面即生效(每次请求都从磁盘读)。
+- `.gitignore` 排除:`__pycache__/`、`console/.token`、`*.log`;git 身份 = claus778。
+- 用户明确要求**不用软链接方案**(「在文件夹内写好代码,然后安装到 hermes 内」)—— 别改回去。
+
+### 形态:**Hermes 插件,不是系统服务**(用户 2026-10-15 明确要求)
+
+- **三面共用一份数据层 `probe.py`** —— CLI、agent 工具、网页都调它,
+  避免「网页 65 条 / CLI 64 条」这类漂移。改采集逻辑只改 probe.py。
+- **命令行**:`hermes atbrains status|serve|stop|open|drain|doctor|memories|turns|sessions|search|remember|forget|restore`
+- **agent 工具**:`atbrains_status` / `atbrains_control`(action=drain/doctor/remember/forget/**restore**/prune/recent)
+  —— 微信里直接问「记忆系统健康吗」即可,不必开网页。
+- **网页控制台(v1.1.0,2026-10-15 重做 UI)**:`hermes atbrains serve --background` 起、`stop` 停
+  (pidfile `/tmp/atbrains-console.pid`)。口令在 `~/.hermes/plugins/atbrains/console/.token`(600,首启自动生成)——
+  **不回显、不进文档、不进聊天**(只在安装副本里;仓库没有,已 gitignore)。默认用法是 SSH 隧道:
+  `ssh -p 7622 -L 8787:127.0.0.1:8787 root@<服务器>` → `http://127.0.0.1:8787/`。
+  面板 6 个:记忆 / 对话归档 / 会话 / 动态(Redis 实时) / 检索 / 操作;
+  记忆与对话可点开**详情弹窗**、行内**停用·恢复**、分页;写操作带确认;自动刷新 5/10/30s 可调(页面隐藏暂停)。
+  后端接口 `/api/memory|turn|sessions|restore` 等见 plugin/README.md。
+- **`restore` 与 `forget` 对偶** —— 改 MariaDB `active` + 维护 Redis 热点镜像(`_hot_put` 规则);
+  同内容已有活跃条目时拒绝(库有 `uniq_active_content` 唯一键);向量由定时器 ≤3 分钟补回。
+- **写插件时的两个硬约束**:
+  1. `plugin.yaml` **不声明 `pip_dependencies`** —— 只依赖 stdlib + 兄弟插件 brain 的 vendor 库。
+     一旦声明,PM 会把插件并入 uv workspace 重解析,国内镜像缺 PEP 700 元数据 → 解析失败 → 插件被自动禁用。
+  2. **不要给它写 systemd 单元** —— 用户要的就是「插件形态、按需启停」;进程生命周期跟着
+     `hermes atbrains serve|stop` 走,不常驻、不注册开机自启。
+- **改动/验收时的大小坑**:
+  1. **库行的时间列是 `datetime` 对象,不能当字符串切片** —— `(row['ts'] or '')[:16]` 抛
+     `TypeError: 'datetime.datetime' object is not subscriptable`,整条命令崩溃;格式化统一
+     `str(v)[:16]`(cli.py 的 `_ts()` 助手),任何读库脚本同理。
+  2. **验收要完整跑命令并核对 exit code,不要截断输出** —— 用管道只取前/后几行会把 Traceback
+     藏掉,崩溃会混过整轮验收(turns/search 的崩溃就是这样漏过一轮「回归」的)。
+  3. **probe 找 brain 插件是三级探测**(`ATBRAINS_BRAIN_PLUGIN` → 与插件并排的 `../brain` →
+     `HERMES_HOME/plugins/brain`):仓库直跑(plugin/ 不在 plugins/ 下)时靠第三级命中。
+  4. **timer 的「下次运行」**:本机 systemd `NextElapseUSecRealtime` 取空;probe 改从
+     `systemctl list-timers` 正则解析(`timer.nextRun`),别用 `systemctl show` 那个属性。
+  5. **无头 Chromium 缺 emoji 字体**(✅/⚠️ 渲染成方块)—— 关键状态文字别依赖 emoji,用颜色类名;
+     截图验收时留意。
+- **依赖 brain 插件**:通过其 `core.BrainStore` 读写,复用凭据解析与重试;
+  brain 缺失时抛 `ProbeError` 明确报错,不静默失败。
+- **启用/排障**:`hermes plugins enable atbrains`(工具集在**新会话**生效;
+  `hermes tools list | grep atbrains` 应显示 `✓ enabled`)、`hermes plugins info atbrains`(版本对照 plugin/plugin.yaml)。
+  gateway(微信侧)让插件改动生效:调 control socket 的 `reload-plugins`,实测命令:
+  `HERMES_HOME=/root/.hermes <运行时 python> -I -c "import sys;sys.path.insert(0,'/usr/local/lib/hermes-agent');from pathlib import Path;from gateway.control_socket import reload_gateway_plugins;print(reload_gateway_plugins(Path('/root/.hermes')))"`
+  (返回 `reloaded: True`;handlers 即时生效,工具在**下一会话**生效)。
+
+### 资料库/交付件(与代码同仓)
+
+- **docs/scripts/setup 的重新生成**:`python3 tools/package.py`(拷贝 + 自动脱敏 + 复检;
+  只写 docs/scripts/setup 清单,**不碰** plugin/、README、install.sh;旧位置 `/root/atbrains-package.py` 已迁入)。
+  改内容改**生成器**,不要只手改副本,否则下次重跑冲掉手工修改。
+- **脱敏约定**:真实密钥仍只在 `.env` / redis 容器启动参数 / `qdrant production.yaml`;
+  `setup/SECRETS.md` 是只写路径的索引,并附「外发前一键自检」。改动或重新生成后跑一次自检再交付。
+  ⚠️ 容器 inspect 的 env 里就有明文 Redis/MariaDB 口令 —— 打包脚本必须做值级替换,别只靠肉眼。
+- **验证本地 web UI 真的能用**(不只是 curl 200):浏览器工具打开
+  `http://127.0.0.1:8787/?token=<.token 里的值>`(免输入直连;token 别进聊天/输出)→ 读 `#conn` 确认「已连接」→
+  各面板点一遍(`window.confirm=()=>true` 绕弹窗;可用 `Page.addScriptToEvaluateOnNewDocument` 挂
+  `window.__errs` 错误收集器查 JS 错误)→ `capture_screenshot()` 存 `web/preview.png` / `web/preview-recent.png`。
+  agent 工具同理:新会话里**实调一次** `atbrains_status` 才算真验证(`hermes tools list` 只证明配置到位)。
+
 ## 不要做
 
-- 不要在 plugin.yaml 加 `pip_dependencies` / “顺手让 PM 管依赖”（教训：会触发 uv 镜像解析失败 + 自动驱逐）。
+- 不要在 plugin.yaml 加 `pip_dependencies` / “顺手让 PM 管依赖”(教训:会触发 uv 镜像解析失败 + 自动驱逐)。
+- 不要给 `atbrains` 控制台写 systemd 服务 —— 用户要插件形态(按需 `serve`/`stop`)。
+- 不要把 `~/.hermes/plugins/atbrains` 改回软链接、也不要在安装副本里直接改代码 —— 一律「仓库 → install.sh」。
 - 不要改 `/usr/local/lib/hermes-agent` 源码。
-- 不要把密码写进 brain.json 或聊天记录；只进 `.env`。
+- 不要把密码写进 brain.json 或聊天记录;只进 `.env`。
+- 不要把真实 token/密钥写进 `/root/atbrains/` 的任何文件或 git 提交(token 只在安装副本,已 gitignore)。

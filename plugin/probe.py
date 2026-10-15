@@ -20,7 +20,6 @@ import urllib.request
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
-BRAIN_PLUGIN = HERE.parent / "brain"
 QDRANT_CONF = Path("/root/qdrant/qdrant-config/production.yaml")
 QDRANT_URL = "http://127.0.0.1:6333"
 QDRANT_COLLECTION = "brain_memories"
@@ -37,14 +36,36 @@ def hermes_home() -> str:
     return os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
 
 
+def _brain_candidates() -> list[Path]:
+    """brain 插件的候选位置,按优先级排序。
+
+    正常布局 = 与 atbrains 并排(同在 plugins/ 下);本仓库直接运行时
+    (代码在 atbrains/plugin/,不在 plugins/ 里)兜底查 HERMES_HOME/plugins/brain。
+    """
+    cands: list[Path] = []
+    env = os.environ.get("ATBRAINS_BRAIN_PLUGIN")
+    if env:
+        cands.append(Path(env))
+    cands.append(HERE.parent / "brain")
+    cands.append(Path(hermes_home()) / "plugins" / "brain")
+    return cands
+
+
+def _find_brain_plugin() -> Path:
+    for c in _brain_candidates():
+        if (c / "core.py").exists():
+            return c
+    tried = "、".join(str(c) for c in _brain_candidates())
+    raise ProbeError(f"brain 插件不存在(找过:{tried})—— 先安装并启用 brain 插件")
+
+
 def store():
     """惰性拿到 brain 插件的 BrainStore(复用其凭据解析与读写逻辑)。"""
     global _store
     if _store is None:
-        if not (BRAIN_PLUGIN / "core.py").exists():
-            raise ProbeError(f"brain 插件不存在:{BRAIN_PLUGIN}/core.py —— 先装并启用 brain 插件")
-        if str(BRAIN_PLUGIN) not in sys.path:
-            sys.path.insert(0, str(BRAIN_PLUGIN))
+        brain_dir = _find_brain_plugin()
+        if str(brain_dir) not in sys.path:
+            sys.path.insert(0, str(brain_dir))
         from core import BrainStore, resolve_config  # type: ignore
         _store = BrainStore(resolve_config(hermes_home()))
     return _store
@@ -81,6 +102,17 @@ def timer_state() -> dict:
                          "-p", "ExecMainStartTimestamp", "--value"], 10).strip()
     d["lastExit"] = _run(["systemctl", "show", "brain-vector-drain.service",
                           "-p", "ExecMainStatus", "--value"], 10).strip()
+    # 下次运行:show 的 NextElapseUSecRealtime 在本机 systemd 上取不到,改从 list-timers 解析
+    d["nextRun"] = ""
+    try:
+        out = _run(["systemctl", "list-timers", "brain-vector-drain.timer", "--no-pager"], 10)
+        for line in out.splitlines():
+            m = re.search(r"([A-Za-z]{3}\s+\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\s+\S+)", line)
+            if m:
+                d["nextRun"] = m.group(1)
+                break
+    except Exception:  # noqa: BLE001
+        pass
     return d
 
 
@@ -123,10 +155,19 @@ def qdrant_info() -> dict:
     return res
 
 
+def plugin_version() -> str:
+    """本插件版本(读 plugin.yaml)。"""
+    try:
+        m = re.search(r"^version:\s*[\"']?([\w.\-]+)", (HERE / "plugin.yaml").read_text(), re.M)
+        return m.group(1) if m else "?"
+    except Exception:
+        return "?"
+
+
 # ───────────────────────────── 总览 ─────────────────────────────
 
 def overview() -> dict:
-    out = {"ts": time.strftime("%Y-%m-%d %H:%M:%S")}
+    out = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "version": plugin_version()}
     for key, fn in (("stats", lambda: store().stats()), ("ping", lambda: store().ping()),
                     ("vector", lambda: store().vector_status())):
         try:
@@ -144,27 +185,81 @@ def overview() -> dict:
 _MEM_COLS = ("id,kind,content,tags,importance,source,machine,active,created_at,updated_at")
 
 
-def memories(limit: int = 100, offset: int = 0, active: str = "1", q: str = "") -> dict:
+def _where(conds: list[tuple[str, tuple]]) -> tuple[str, list]:
+    """把 [(条件 SQL, 参数元组), ...] 拼成 WHERE 子句 + 参数列表。"""
+    if not conds:
+        return "", []
+    args: list = []
+    for _, vals in conds:
+        args.extend(vals)
+    return "WHERE " + " AND ".join(c for c, _ in conds), args
+
+
+def memories(limit: int = 100, offset: int = 0, active: str = "1", q: str = "",
+             kind: str = "", machine: str = "") -> dict:
     st = store()
-    where, args = "", []
+    conds: list[tuple[str, tuple]] = []
     if active in ("0", "1"):
-        where = "WHERE active = %s"
-        args.append(int(active))
+        conds.append(("active = %s", (int(active),)))
     if q.strip():
-        where = (where + " AND" if where else "WHERE") + " content LIKE %s"
-        args.append(f"%{q.strip()}%")
+        conds.append(("content LIKE %s", (f"%{q.strip()}%",)))
+    if kind.strip():
+        conds.append(("kind = %s", (kind.strip(),)))
+    if machine.strip():
+        conds.append(("machine = %s", (machine.strip(),)))
+    where, args = _where(conds)
     rows = st._exec(f"SELECT {_MEM_COLS} FROM brain_memories {where} ORDER BY id DESC LIMIT %s OFFSET %s",
                     (*args, limit, offset), fetch=True)
     total = st._exec(f"SELECT COUNT(*) c FROM brain_memories {where}", tuple(args), fetch=True)[0]["c"]
     return {"total": total, "items": rows}
 
 
-def turns(limit: int = 40) -> dict:
+def memory_detail(mem_id: int) -> dict:
+    rows = store()._exec(
+        "SELECT id,kind,content,tags,importance,source,session_id,machine,active,"
+        "created_at,updated_at,deactivated_at FROM brain_memories WHERE id = %s",
+        (int(mem_id),), fetch=True)
+    return {"item": rows[0] if rows else None}
+
+
+def turns(limit: int = 40, offset: int = 0, machine: str = "", session_id: str = "", q: str = "") -> dict:
     st = store()
-    rows = st._exec("SELECT id,session_id,platform,machine,ts,LEFT(user_content,200) u,"
-                    "LEFT(assistant_content,200) a FROM brain_turns ORDER BY id DESC LIMIT %s",
-                    (limit,), fetch=True)
-    total = st._exec("SELECT COUNT(*) c FROM brain_turns", fetch=True)[0]["c"]
+    conds: list[tuple[str, tuple]] = []
+    if machine.strip():
+        conds.append(("machine = %s", (machine.strip(),)))
+    if session_id.strip():
+        conds.append(("session_id = %s", (session_id.strip(),)))
+    if q.strip():
+        conds.append(("(user_content LIKE %s OR assistant_content LIKE %s)",
+                      (f"%{q.strip()}%", f"%{q.strip()}%")))
+    where, args = _where(conds)
+    rows = st._exec("SELECT id,session_id,platform,machine,ts,truncated,"
+                    "LEFT(user_content,200) u, LEFT(assistant_content,200) a "
+                    f"FROM brain_turns {where} ORDER BY id DESC LIMIT %s OFFSET %s",
+                    (*args, limit, offset), fetch=True)
+    total = st._exec(f"SELECT COUNT(*) c FROM brain_turns {where}", tuple(args), fetch=True)[0]["c"]
+    return {"total": total, "items": rows}
+
+
+def turn_detail(turn_id: int) -> dict:
+    rows = store()._exec(
+        "SELECT id,session_id,platform,author,machine,truncated,user_content,assistant_content,ts "
+        "FROM brain_turns WHERE id = %s", (int(turn_id),), fetch=True)
+    return {"item": rows[0] if rows else None}
+
+
+def sessions(limit: int = 100, offset: int = 0, machine: str = "", q: str = "") -> dict:
+    st = store()
+    conds: list[tuple[str, tuple]] = []
+    if machine.strip():
+        conds.append(("machine = %s", (machine.strip(),)))
+    if q.strip():
+        conds.append(("session_id LIKE %s", (f"%{q.strip()}%",)))
+    where, args = _where(conds)
+    rows = st._exec("SELECT session_id,platform,machine,started_at,last_active,turn_count,note "
+                    f"FROM brain_sessions {where} ORDER BY last_active DESC LIMIT %s OFFSET %s",
+                    (*args, limit, offset), fetch=True)
+    total = st._exec(f"SELECT COUNT(*) c FROM brain_sessions {where}", tuple(args), fetch=True)[0]["c"]
     return {"total": total, "items": rows}
 
 
@@ -194,6 +289,41 @@ def remember(content: str, kind: str = "note", tags: str = "", importance: int =
 
 def forget(memory_id: int) -> dict:
     return store().forget(int(memory_id))
+
+
+def restore(memory_id: int) -> dict:
+    """恢复一条被停用的记忆(active=0 → 1),并补回 Redis 热点镜像。
+
+    与 forget 对偶;热点镜像走 store 的 _hot_put 规则(与 brain 工具侧行为一致)。
+    向量由定时器 ≤3 分钟自动补;同内容已有活跃条目时拒绝(库有唯一键防重)。
+    """
+    st = store()
+    rows = st._exec("SELECT id,active,kind,content,tags,importance,source "
+                    "FROM brain_memories WHERE id = %s", (int(memory_id),), fetch=True)
+    if not rows:
+        raise ProbeError(f"记忆 #{memory_id} 不存在")
+    row = rows[0]
+    if row["active"]:
+        return {"id": int(memory_id), "restored": 0, "note": "该条已是活跃状态"}
+    dup = st._exec("SELECT id FROM brain_memories WHERE active = 1 AND content_hash = MD5(%s) LIMIT 1",
+                   (row["content"],), fetch=True)
+    if dup:
+        raise ProbeError(f"同内容已有活跃条目 #{dup[0]['id']},无法恢复(先停用那条,或不再恢复)")
+    rowcount, _ = st._exec(
+        "UPDATE brain_memories SET active = 1, deactivated_at = NULL WHERE id = %s AND active = 0",
+        (int(memory_id),))
+    hot_ok = False
+    try:
+        hot_ok = st._hot_put(int(memory_id), row["kind"], row["content"], row["tags"],
+                             int(row["importance"]), str(row.get("source") or "restore"))
+    except Exception:  # noqa: BLE001 —— 热点是缓存,失败不影响恢复本身
+        pass
+    try:
+        st._vec_wake.set()   # 通知本进程 drainer(有的话)尽快向量化
+    except Exception:  # noqa: BLE001
+        pass
+    return {"id": int(memory_id), "restored": rowcount, "hot_cache": hot_ok,
+            "note": "向量由定时器 ≤3 分钟自动补回"}
 
 
 def drain(force: bool = False) -> dict:

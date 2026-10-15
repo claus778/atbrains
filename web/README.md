@@ -1,13 +1,14 @@
-# web/ —— 控制台截图(源码已迁走)
+# web/ —— 控制台预览图
 
-网页控制台的**源代码不在这里**,在 Hermes 插件目录(插件只能从那里被加载):
+网页控制台的**源代码在仓库里**:`../plugin/console/`
 
 ```
-~/.hermes/plugins/atbrains/console/server.py    后端
-~/.hermes/plugins/atbrains/console/index.html   前端
+plugin/console/server.py    后端(HTTP + token 鉴权,数据走 ../probe.py)
+plugin/console/index.html   前端(单文件,无外部依赖)
 ```
 
-资料库根目录的 `plugin` 是指向 `~/.hermes/plugins/atbrains` 的软链接,所以从这里也能直接看到源码。
+代码改完用仓库根目录的 `./install.sh` 安装到 `~/.hermes/plugins/atbrains`
+(Hermes 只从插件目录加载;安装副本勿直接改)。
 
 **启动/停止**(插件 CLI,不是系统服务):
 
@@ -17,4 +18,7 @@ hermes atbrains open                 # 打印地址与口令
 hermes atbrains stop                 # 停止
 ```
 
-`preview.png` 是控制台的实际渲染截图(2026-10-15)。
+预览图(2026-10-15,控制台 v1.1.0):
+
+- `preview.png`        首页:卡片总览 + 记忆面板(过滤/分页/行内停用·恢复)
+- `preview-recent.png` 动态页:Redis 短期层实时视图(热点记忆 + 最近对话流)

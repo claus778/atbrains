@@ -8,10 +8,12 @@
     hermes atbrains drain [--force]     手动向量回填(增量;--force 全量重嵌)
     hermes atbrains doctor              系统体检
     hermes atbrains memories [--all] [--q 关键词] [--limit N]
-    hermes atbrains turns [--limit N]   最近对话归档
+    hermes atbrains turns [--limit N] [--machine M] [--q 关键词]   最近对话归档
+    hermes atbrains sessions [--limit N] [--machine M]            会话索引
     hermes atbrains search 关键词       混合检索(向量 + 关键词)
     hermes atbrains remember 内容 [--kind fact] [--tags a,b] [--importance 8]
     hermes atbrains forget ID           停用一条记忆(软删除)
+    hermes atbrains restore ID          恢复一条被停用的记忆(与 forget 对偶)
 """
 from __future__ import annotations
 
@@ -215,11 +217,22 @@ def cmd_memories(args) -> int:
 
 
 def cmd_turns(args) -> int:
-    d = probe.turns(limit=args.limit)
+    d = probe.turns(limit=args.limit, offset=getattr(args, "offset", 0),
+                    machine=getattr(args, "machine", "") or "", q=getattr(args, "q", "") or "")
     _p(f"共 {d['total']} 轮,显示 {len(d['items'])} 轮")
     _p("─" * 70)
     for t in d["items"]:
         _p(f" [{t['id']:>5}] {_ts(t.get('ts'))} {t.get('machine') or '-':<16} {_short(t.get('u',''), 70)}")
+    return 0
+
+
+def cmd_sessions(args) -> int:
+    d = probe.sessions(limit=args.limit, machine=getattr(args, "machine", "") or "")
+    _p(f"共 {d['total']} 个会话,显示 {len(d['items'])} 个")
+    _p("─" * 70)
+    for s in d["items"]:
+        _p(f" [{_short(s.get('session_id',''),32):<32}] {s.get('machine') or '-':<16} "
+           f"{s.get('platform') or '-':<10} {s.get('turn_count','?'):>4} 轮  最近 {_ts(s.get('last_active'))}")
     return 0
 
 
@@ -246,6 +259,16 @@ def cmd_remember(args) -> int:
 def cmd_forget(args) -> int:
     r = probe.forget(args.id)
     _p(f"✅ 已停用 {args.id}:{r}")
+    return 0
+
+
+def cmd_restore(args) -> int:
+    try:
+        r = probe.restore(args.id)
+    except Exception as e:  # noqa: BLE001 —— 例如同内容已有活跃条目
+        _p(f"❌ 恢复失败:{e}")
+        return 1
+    _p(f"✅ 已恢复 {args.id}:{r}")
     return 0
 
 
@@ -283,7 +306,15 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
 
     p = sub.add_parser("turns", help="最近对话归档")
     p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--offset", type=int, default=0, help="分页偏移")
+    p.add_argument("--machine", default="", help="只看某来源机")
+    p.add_argument("--q", default="", help="按内容过滤(用户/助手)")
     p.set_defaults(func=cmd_turns)
+
+    p = sub.add_parser("sessions", help="会话索引")
+    p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--machine", default="", help="只看某来源机")
+    p.set_defaults(func=cmd_sessions)
 
     p = sub.add_parser("search", help="混合检索")
     p.add_argument("query", nargs="+")
@@ -300,6 +331,10 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
     p = sub.add_parser("forget", help="停用一条记忆")
     p.add_argument("id", type=int)
     p.set_defaults(func=cmd_forget)
+
+    p = sub.add_parser("restore", help="恢复一条被停用的记忆")
+    p.add_argument("id", type=int)
+    p.set_defaults(func=cmd_restore)
 
 
 def handle(args) -> int:

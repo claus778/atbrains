@@ -56,7 +56,7 @@ def jdump(obj) -> bytes:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "atbrains-console/1.0"
+    server_version = "atbrains-console/1.1"
 
     def log_message(self, fmt, *args):
         pass
@@ -106,9 +106,26 @@ class Handler(BaseHTTPRequestHandler):
                     limit=min(int(q.get("limit", ["100"])[0]), 500),
                     offset=int(q.get("offset", ["0"])[0]),
                     active=q.get("active", ["1"])[0],
-                    q=q.get("q", [""])[0])))
+                    q=q.get("q", [""])[0],
+                    kind=q.get("kind", [""])[0],
+                    machine=q.get("machine", [""])[0])))
+            if path == "/api/memory":
+                return self._send(200, jdump(probe.memory_detail(int(q.get("id", ["0"])[0]))))
             if path == "/api/turns":
-                return self._send(200, jdump(probe.turns(limit=min(int(q.get("limit", ["40"])[0]), 300))))
+                return self._send(200, jdump(probe.turns(
+                    limit=min(int(q.get("limit", ["40"])[0]), 300),
+                    offset=int(q.get("offset", ["0"])[0]),
+                    machine=q.get("machine", [""])[0],
+                    session_id=q.get("session_id", [""])[0],
+                    q=q.get("q", [""])[0])))
+            if path == "/api/turn":
+                return self._send(200, jdump(probe.turn_detail(int(q.get("id", ["0"])[0]))))
+            if path == "/api/sessions":
+                return self._send(200, jdump(probe.sessions(
+                    limit=min(int(q.get("limit", ["100"])[0]), 500),
+                    offset=int(q.get("offset", ["0"])[0]),
+                    machine=q.get("machine", [""])[0],
+                    q=q.get("q", [""])[0])))
             if path == "/api/search":
                 return self._send(200, jdump(probe.search(
                     q.get("q", [""])[0], limit=min(int(q.get("limit", ["10"])[0]), 50))))
@@ -133,6 +150,12 @@ class Handler(BaseHTTPRequestHandler):
                     tags=body.get("tags") or "", importance=int(body.get("importance") or 5))}))
             if u.path == "/api/forget":
                 return self._send(200, jdump({"ok": True, "result": probe.forget(int(body.get("id")))}))
+            if u.path == "/api/restore":
+                try:
+                    return self._send(200, jdump({"ok": True,
+                                                  "result": probe.restore(int(body.get("id") or 0))}))
+                except Exception as e:  # noqa: BLE001 —— 业务性拒绝(不存在/同内容已有活跃条目)
+                    return self._send(200, jdump({"ok": False, "error": str(e)}))
             if u.path == "/api/drain":
                 return self._send(200, jdump(probe.drain()))
             if u.path == "/api/doctor":
