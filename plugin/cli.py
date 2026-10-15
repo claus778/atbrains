@@ -14,18 +14,25 @@
     hermes atbrains remember 内容 [--kind fact] [--tags a,b] [--importance 8]
     hermes atbrains forget ID           停用一条记忆(软删除)
     hermes atbrains restore ID          恢复一条被停用的记忆(与 forget 对偶)
+    hermes atbrains token-list          列出 machine 与令牌掩码
+    hermes atbrains token-add <machine> 生成令牌(只显示一次)
+    hermes atbrains token-rm <machine>  删除令牌
+    hermes atbrains service             /v1 Memory Service 自检(端口/令牌/健康)
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import signal
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
-from . import probe
+from . import probe, service
 
 HERE = Path(__file__).resolve().parent
 CONSOLE_DIR = HERE / "console"
@@ -104,7 +111,6 @@ def cmd_status(args) -> int:
 # ───────────────────────────── serve ─────────────────────────────
 
 def _console_url_port() -> int:
-    import json
     try:
         return int(json.loads((CONSOLE_DIR / "config.json").read_text())["port"])
     except Exception:
@@ -182,6 +188,95 @@ def cmd_open(args) -> int:
     _p(f"  口令:{_console_token()}")
     _p(f"  免输入直连(打开即登录): http://127.0.0.1:{port}/?token={_console_token()}")
     _p(f"  停止:hermes atbrains stop")
+    return 0
+
+
+# ───────────────────────────── Memory Service(/v1) ─────────────────────────────
+
+def cmd_token_list(args) -> int:
+    toks = service.load_tokens()
+    _p(f"Memory Service 令牌表(权限 600):{service.TOKENS_PATH}")
+    _p("─" * 58)
+    if not toks:
+        _p("  (空) 用 `hermes atbrains token-add <machine>` 生成")
+        return 0
+    for machine in sorted(toks):
+        _p(f"  {machine:<20} {service.mask(toks[machine])}")
+    _p("  提示:只显示掩码;明文仅在 token-add 时出现一次")
+    return 0
+
+
+def cmd_token_add(args) -> int:
+    existed = args.machine in service.load_tokens()
+    tok = service.token_add(args.machine)
+    _p(f"{'🔄 已轮换' if existed else '✅ 已生成'} {args.machine} 的令牌(只显示这一次,请立即写入客户端配置):")
+    _p(f"   {tok}")
+    _p(f"   用法:Authorization: Bearer <令牌>  或  X-Memory-Token: <令牌>")
+    if existed:
+        _p(f"   ⚠️ {args.machine} 的旧令牌已立即失效")
+    return 0
+
+
+def cmd_token_rm(args) -> int:
+    if not service.token_rm(args.machine):
+        _p(f"❌ {args.machine} 没有令牌")
+        return 1
+    _p(f"✅ 已删除 {args.machine} 的令牌(该机客户端的 /v1 请求将返回 401)")
+    return 0
+
+
+def _http_json(url: str) -> tuple[int, dict]:
+    """GET 一个 JSON 端点;连不上返回 (0, {})。"""
+    try:
+        with urllib.request.urlopen(url, timeout=5) as r:
+            return r.status, json.loads(r.read().decode("utf-8") or "{}")
+    except urllib.error.HTTPError as e:
+        return e.code, {}
+    except Exception:  # noqa: BLE001 —— 控制台可能压根没起
+        return 0, {}
+
+
+def cmd_service(args) -> int:
+    port = _console_url_port()
+    toks = service.load_tokens()
+    try:
+        pid = PIDFILE.read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        pid = ""
+    alive = bool(pid) and Path(f"/proc/{pid}").exists()
+    code, health = _http_json(f"http://127.0.0.1:{port}/v1/health")
+
+    if code == 200:
+        state = f"✅ 控制台在跑(pid {pid})" if alive else "✅ 控制台在跑(前台进程,无 pidfile)"
+    elif code == 404:
+        state = (f"⚠️ 端口 {port} 上的控制台还是旧版本(没有 /v1)"
+                 f" → `hermes atbrains stop && hermes atbrains serve --background`")
+    elif alive:
+        state = f"⚠️ pidfile 里是 {pid},但 /v1 不可达"
+    else:
+        state = "❌ 未在跑 → `hermes atbrains serve --background`"
+
+    _p("🔌 atbrains Memory Service(/v1)—— 统一记忆服务端")
+    _p("─" * 58)
+    _p(f"  版本     {probe.plugin_version()}")
+    _p(f"  端口     {port}(与网页控制台共用同一端口,不额外监听)")
+    _p("  路径     GET /v1/health · POST /v1/memory/{recall,remember,forget,recent,turn} · "
+       "GET|POST /v1/memory/status")
+    _p(f"  进程     {state}")
+    _p(f"  令牌     {len(toks)} 个 machine ← {service.TOKENS_PATH}")
+    for machine in sorted(toks):
+        _p(f"           · {machine:<20} {service.mask(toks[machine])}")
+    if code == 200:
+        _p(f"  健康     ✅ HTTP 200 version={health.get('version','?')} ts={health.get('ts','?')}")
+    else:
+        _p(f"  健康     ❌ HTTP {code or '连接被拒'}(控制台没起时不提供 /v1)")
+    try:
+        ping = probe.store().ping()
+    except Exception as e:  # noqa: BLE001
+        _p(f"  存储     ❌ {e}")
+        return 1
+    _p(f"  存储     Redis {_ok(ping.get('redis'))} · MariaDB {_ok(ping.get('mariadb'))}"
+       f"(各 machine 共用同一组凭据,数据按 machine 列区分)")
     return 0
 
 
@@ -290,6 +385,20 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
 
     p = sub.add_parser("open", help="打印控制台地址与口令")
     p.set_defaults(func=cmd_open)
+
+    p = sub.add_parser("token-list", help="列出 machine 与令牌掩码")
+    p.set_defaults(func=cmd_token_list)
+
+    p = sub.add_parser("token-add", help="生成某 machine 的令牌(只显示一次)")
+    p.add_argument("machine", help="machine 名(如 x260-debian)")
+    p.set_defaults(func=cmd_token_add)
+
+    p = sub.add_parser("token-rm", help="删除某 machine 的令牌")
+    p.add_argument("machine", help="machine 名")
+    p.set_defaults(func=cmd_token_rm)
+
+    p = sub.add_parser("service", help="Memory Service(/v1)自检")
+    p.set_defaults(func=cmd_service)
 
     p = sub.add_parser("drain", help="手动向量回填")
     p.add_argument("--force", action="store_true", help="全量重嵌(默认增量)")

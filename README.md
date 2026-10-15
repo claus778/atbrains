@@ -190,7 +190,67 @@ POST /api/prune      {dry_run:true}
 
 ---
 
-## 五、日常运维(命令行)
+## 五、检索质量与 Memory Service(2026-10-15 加装)
+
+### 记忆分层(schema v4)
+
+每条记忆带 `memory_type`,决定它**是否随时间衰减**:
+
+| 层 | 来源 kind | 衰减 | 说明 |
+|---|---|---|---|
+| `profile` | builtin-memory | ❌ 永不 | 用户画像/偏好,长期稳定 |
+| `knowledge` | fact / decision | ❌ 永不 | 提炼出的事实与决策 |
+| `episodic` | note / todo 等 | ✅ 半衰期 45 天 | 事件性上下文,自然淡出 |
+
+配置:`decay_enabled=1`、`decay_half_life_days=45`、`decay_types="episodic"`(brain.json 可调)。
+系数 `0.5^(age/半衰期)` 在 RRF 打分后、排序前乘上;取不到年龄不丢结果。
+
+### 记忆取代(Supersede)
+
+矛盾记忆不再同时注入 —— 高相似度(默认 **0.90**)的一对里,**较新者胜**,旧条打 `superseded_by` 标记,
+检索与注入侧自动过滤;`unsupersede <id>` 可无损回滚。
+
+```bash
+hermes brain supersede-detect                  # 预演(默认,不写库)
+hermes brain supersede-detect --apply          # 应用
+hermes brain unsupersede <ID>                  # 回滚
+```
+
+### Rerank(默认关闭)
+
+RRF 之后可选加一道 Cross-Encoder 重排(硅基流动 `BAAI/bge-reranker-v2-m3`,实测 216ms)。
+实测能把 RRF 分不开的噪声用 **0.92 vs 0.03 的悬崖**切掉。配置 `rerank_enabled=1` 开启,
+失败自动回落 RRF 顺序。
+
+### Memory Service(/v1,版本化接口)
+
+把检索逻辑收拢到服务端的契约层。与监控控制台**共用 8787 端口**,令牌隔离(交叉用必 401)。
+
+```
+GET  /v1/health
+POST /v1/memory/recall     {query, session_id?}
+POST /v1/memory/remember   {content, kind?, tags?, importance?, memory_type?}
+POST /v1/memory/forget     {id}
+POST /v1/memory/recent     {limit?}
+POST /v1/memory/turn       {session_id, user, assistant, platform?}
+GET  /v1/memory/status
+```
+
+- 鉴权:`Authorization: Bearer <令牌>`;**服务端用令牌反查 machine,客户端无法伪造**。
+- 令牌:`service-tokens.json`(600);`hermes atbrains token-list|token-add|token-rm`。
+- **客户端接入(远程模式)**:brain.json 开 `remote_enabled=1` + `remote_url`;令牌放
+  `~/.hermes/.env` 的 `BRAIN_REMOTE_TOKEN`(不落 brain.json)。任何失败**自动回落本地直连**
+  (实测死地址 33ms 回落),`remote_timeout_ms=800`。`hermes brain remote-check` 自检。
+
+### Redis key 前缀(为摆脱多 DB,默认关闭)
+
+`redis_key_prefix` 为空时行为**逐字节不变**;设成 `brain:server` 即启用前缀隔离。
+一次性迁移工具:`python3 /root/agent-db/migrate-redis-prefix.py --prefix brain:server`
+(**默认预演**,`--apply` 才改名;目标键已存在会拒绝覆盖并计入冲突)。
+
+---
+
+## 六、日常运维(命令行)
 
 ```bash
 hermes brain status          # 连通性 + 计数总览
@@ -215,7 +275,7 @@ python3 scripts/audit-memories.py             # 内置记忆 ↔ brain 镜像对
 
 ---
 
-## 六、故障速查
+## 七、故障速查
 
 | 症状 | 先查 | 常见原因 |
 |---|---|---|
@@ -230,7 +290,7 @@ python3 scripts/audit-memories.py             # 内置记忆 ↔ brain 镜像对
 
 ---
 
-## 七、这个仓库的安全约定
+## 八、这个仓库的安全约定
 
 - ✅ `docs/scripts/setup` 由 `tools/package.py` 自动**脱敏**生成(密钥 → `***REDACTED***`,生成时复检)
 - ✅ 真实密钥只在原位置:见 `setup/SECRETS.md`(只写路径索引)

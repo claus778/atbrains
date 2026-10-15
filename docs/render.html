@@ -1,0 +1,191 @@
+<!doctype html><html><head><meta charset="utf-8"><style>html,body{margin:0;padding:0;background:#fff;overflow:hidden}</style></head><body><svg xmlns="http://www.w3.org/2000/svg" width="1560" height="1190" viewBox="0 0 1560 1190" font-family="'Droid Sans Fallback','Noto Sans CJK SC','Microsoft YaHei','PingFang SC',sans-serif">
+  <defs>
+    <marker id="ar" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7.5,3 L0,6 z" fill="#64748b"/>
+    </marker>
+    <marker id="arS" markerWidth="9" markerHeight="9" refX="0" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M7.5,0 L0,3 L7.5,6 z" fill="#64748b"/>
+    </marker>
+    <marker id="arb" markerWidth="9" markerHeight="9" refX="7.5" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L7.5,3 L0,6 z" fill="#2563eb"/>
+    </marker>
+  </defs>
+
+  <rect width="1560" height="1190" fill="#ffffff"/>
+
+  <!-- 标题 -->
+  <text x="60" y="62" font-size="30" font-weight="bold" fill="#0f172a">atbrains · 外置记忆库架构图</text>
+  <text x="60" y="92" font-size="14" fill="#64748b">腾讯云 Debian 13 自托管 · Redis 短期 + MariaDB 长期 + Qdrant 向量语义层 · 快照 2026-10-15</text>
+
+  <!-- 客户端区 -->
+  <rect x="40" y="120" width="1480" height="200" rx="12" fill="#f8fafc" stroke="#94a3b8" stroke-dasharray="7,5"/>
+  <text x="60" y="148" font-size="15" font-weight="bold" fill="#475569">客户端 / 各机器 —— 均装 brain 插件（记忆提供者）</text>
+  <text x="1500" y="148" font-size="12" fill="#64748b" text-anchor="end">长期层全机共享 · 短期层按库隔离</text>
+
+  <rect x="60" y="165" width="290" height="135" rx="10" fill="#ffffff" stroke="#d7dfea"/>
+  <rect x="60" y="165" width="5" height="135" rx="2" fill="#2563eb"/>
+  <text x="82" y="193" font-size="15.5" font-weight="bold" fill="#0f172a">Hermes · server（本机）</text>
+  <text x="82" y="220" font-size="12.5" fill="#334155">入口：CLI 会话 + 微信网关</text>
+  <text x="82" y="240" font-size="12.5" fill="#334155">brain 插件（记忆提供者）</text>
+  <text x="82" y="260" font-size="12.5" fill="#334155">Redis db0</text>
+
+  <rect x="370" y="165" width="250" height="135" rx="10" fill="#ffffff" stroke="#d7dfea"/>
+  <text x="390" y="193" font-size="15.5" font-weight="bold" fill="#0f172a">Hermes · x260-debian</text>
+  <text x="390" y="220" font-size="12.5" fill="#334155">brain 插件</text>
+  <text x="390" y="240" font-size="12.5" fill="#334155">Redis db1</text>
+  <text x="390" y="260" font-size="12.5" fill="#334155">经公网直连本库</text>
+
+  <rect x="640" y="165" width="250" height="135" rx="10" fill="#ffffff" stroke="#d7dfea"/>
+  <text x="660" y="193" font-size="15.5" font-weight="bold" fill="#0f172a">Hermes · r9000p-Windows</text>
+  <text x="660" y="220" font-size="12.5" fill="#334155">brain 插件</text>
+  <text x="660" y="240" font-size="12.5" fill="#334155">Redis db2</text>
+  <text x="660" y="260" font-size="12.5" fill="#334155">经公网直连本库</text>
+
+  <rect x="910" y="165" width="250" height="135" rx="10" fill="#ffffff" stroke="#d7dfea"/>
+  <text x="930" y="193" font-size="15.5" font-weight="bold" fill="#0f172a">Hermes · 新实例（db3）</text>
+  <text x="930" y="220" font-size="12.5" fill="#334155">brain 插件</text>
+  <text x="930" y="240" font-size="12.5" fill="#334155">Redis db3</text>
+  <text x="930" y="260" font-size="12.5" fill="#334155">经公网直连本库</text>
+
+  <rect x="1180" y="165" width="320" height="135" rx="10" fill="#ffffff" stroke="#d7dfea"/>
+  <text x="1200" y="193" font-size="15.5" font-weight="bold" fill="#0f172a">omp / dsh / artex（独立 Agent）</text>
+  <text x="1200" y="220" font-size="12.5" fill="#334155">各自独立库 + 账号</text>
+  <text x="1200" y="240" font-size="12.5" fill="#334155">Redis db5 / db6 / db7</text>
+  <text x="1200" y="260" font-size="12.5" fill="#334155">经公网直连本库</text>
+
+  <!-- 客户端 → 服务器 箭头 -->
+  <line x1="205" y1="300" x2="205" y2="396" stroke="#64748b" stroke-width="1.6" marker-end="url(#ar)"/>
+  <text x="218" y="345" font-size="12.5" fill="#475569">① 召回注入 · 归档</text>
+  <line x1="1310" y1="300" x2="1164" y2="396" stroke="#2563eb" stroke-width="1.6" stroke-dasharray="6,4" marker-end="url(#arb)"/>
+  <text x="1290" y="338" font-size="12.5" fill="#1d4ed8">⑤ 公网直连 :57306 / :9079</text>
+  <text x="1290" y="356" font-size="12.5" fill="#1d4ed8">长期共享 · 短期分库</text>
+
+  <!-- 服务器大框 -->
+  <rect x="40" y="400" width="1160" height="680" rx="14" fill="#ffffff" stroke="#94a3b8" stroke-dasharray="7,5"/>
+  <text x="60" y="430" font-size="15" font-weight="bold" fill="#475569">腾讯云服务器（Debian 13）· Docker 容器 · 数据绑定挂载在 /root</text>
+
+  <!-- 接入层 -->
+  <rect x="60" y="446" width="1120" height="212" rx="12" fill="#f6f8fb" stroke="#e2e8f0"/>
+  <text x="76" y="474" font-size="13.5" font-weight="bold" fill="#475569">接入 / 插件层（~/.hermes/plugins）</text>
+
+  <rect x="80" y="488" width="468" height="154" rx="10" fill="#ffffff" stroke="#d7dfea"/>
+  <rect x="80" y="488" width="5" height="154" rx="2" fill="#2563eb"/>
+  <text x="100" y="514" font-size="15" font-weight="bold" fill="#0f172a">brain 插件 v1.1.0 —— 记忆提供者</text>
+  <text x="100" y="540" font-size="12.5" fill="#334155">混合召回：关键词 + 向量 → RRF 融合 → 注入提示词</text>
+  <text x="100" y="560" font-size="12.5" fill="#334155">每轮对话自动归档；压缩前全文存档</text>
+  <text x="100" y="580" font-size="12.5" fill="#334155">写入异步向量化；向量故障时自动降级关键词</text>
+  <text x="100" y="600" font-size="12.5" fill="#334155">工具：brain_remember / recall / forget / recent / stats</text>
+  <text x="100" y="620" font-size="12.5" fill="#334155">配置：brain.json（非密）+ .env（口令）</text>
+
+  <rect x="568" y="488" width="420" height="154" rx="10" fill="#ffffff" stroke="#d7dfea"/>
+  <rect x="568" y="488" width="5" height="154" rx="2" fill="#0d9488"/>
+  <text x="588" y="514" font-size="15" font-weight="bold" fill="#0f172a">atbrains 插件 v1.1.0 —— 监控 / 控制台</text>
+  <text x="588" y="540" font-size="12.5" fill="#334155">CLI：hermes atbrains status / drain / search …</text>
+  <text x="588" y="560" font-size="12.5" fill="#334155">Agent 工具：atbrains_status / atbrains_control</text>
+  <text x="588" y="580" font-size="12.5" fill="#334155">网页控制台 :8787（token 鉴权，按需启动）</text>
+  <text x="588" y="600" font-size="12.5" fill="#334155">源码仓库 /root/atbrains（git）→ install.sh 安装</text>
+
+  <rect x="1008" y="488" width="156" height="154" rx="10" fill="#ffffff" stroke="#d7dfea"/>
+  <rect x="1008" y="488" width="5" height="154" rx="2" fill="#64748b"/>
+  <text x="1026" y="514" font-size="13.5" font-weight="bold" fill="#0f172a">定时任务</text>
+  <text x="1026" y="540" font-size="12" fill="#334155">drain.timer</text>
+  <text x="1026" y="558" font-size="12" fill="#334155">每 3 分钟</text>
+  <text x="1026" y="576" font-size="12" fill="#334155">补向量</text>
+  <text x="1026" y="600" font-size="12" fill="#334155">prune.timer</text>
+  <text x="1026" y="618" font-size="12" fill="#334155">每周日清理</text>
+
+  <!-- 接入层 → 存储层 箭头 -->
+  <line x1="300" y1="642" x2="300" y2="670" stroke="#64748b" stroke-width="1.6" marker-end="url(#ar)"/>
+  <text x="314" y="662" font-size="12.5" fill="#475569">②③ 读写 / 归档（MySQL · RESP）</text>
+  <line x1="778" y1="642" x2="778" y2="670" stroke="#64748b" stroke-width="1.6" marker-end="url(#ar)"/>
+  <text x="792" y="662" font-size="12.5" fill="#475569">⑥ 监控 / 手动 drain</text>
+
+  <!-- 存储层 -->
+  <rect x="60" y="672" width="1120" height="390" rx="12" fill="#f6f8fb" stroke="#e2e8f0"/>
+  <text x="76" y="700" font-size="13.5" font-weight="bold" fill="#475569">存储层 —— Docker 容器（数据绑定挂载于 /root 下）</text>
+
+  <!-- MariaDB -->
+  <rect x="80" y="714" width="350" height="336" rx="10" fill="#ffffff" stroke="#d7dfea"/>
+  <rect x="80" y="714" width="5" height="336" rx="2" fill="#2563eb"/>
+  <text x="98" y="744" font-size="15" font-weight="bold" fill="#0f172a">MariaDB 容器 · :57306</text>
+  <text x="98" y="764" font-size="12" fill="#64748b">数据目录 /root/mariadb（绑定挂载）</text>
+  <rect x="98" y="776" width="176" height="22" rx="11" fill="#e8effc"/>
+  <text x="108" y="791.5" font-size="11.5" fill="#1d4ed8">权威 · 永久 · 多机共享</text>
+  <line x1="98" y1="812" x2="412" y2="812" stroke="#e8eef5"/>
+  <text x="98" y="834" font-size="12.5" fill="#334155">库 hermes_agent_memory：</text>
+  <text x="98" y="853" font-size="12.5" fill="#334155">· brain_memories（记忆）· brain_turns</text>
+  <text x="98" y="872" font-size="12.5" fill="#334155">· brain_sessions · brain_archive</text>
+  <text x="98" y="891" font-size="12.5" fill="#334155">· brain_vector_index · brain_meta</text>
+  <text x="98" y="910" font-size="12.5" fill="#334155">另有 omp / dsh / artex 独立库 + 账号</text>
+  <text x="98" y="938" font-size="12" fill="#64748b">schema v3 · utf8mb4 · 时区 UTC</text>
+  <text x="98" y="956" font-size="12" fill="#64748b">跨设备召回共用此库</text>
+
+  <!-- Redis -->
+  <rect x="450" y="714" width="350" height="336" rx="10" fill="#ffffff" stroke="#d7dfea"/>
+  <rect x="450" y="714" width="5" height="336" rx="2" fill="#ea580c"/>
+  <text x="468" y="744" font-size="15" font-weight="bold" fill="#0f172a">Redis 容器 · :9079</text>
+  <text x="468" y="764" font-size="12" fill="#64748b">数据目录 /root/redis（绑定挂载）</text>
+  <rect x="468" y="776" width="152" height="22" rx="11" fill="#fdf0e7"/>
+  <text x="478" y="791.5" font-size="11.5" fill="#c2410c">短期 · TTL 自动过期</text>
+  <line x1="468" y1="812" x2="782" y2="812" stroke="#e8eef5"/>
+  <text x="468" y="834" font-size="12.5" fill="#334155">db0 server · db1 x260-debian</text>
+  <text x="468" y="853" font-size="12.5" fill="#334155">db2 r9000p-Windows · db3 新实例</text>
+  <text x="468" y="872" font-size="12.5" fill="#334155">db4 预留 · db5 omp · db6 dsh · db7 artex</text>
+  <text x="468" y="891" font-size="12.5" fill="#334155">键族：brain:recent（对话流）</text>
+  <text x="468" y="910" font-size="12.5" fill="#334155">brain:session:* · brain:hot:*（热点镜像）</text>
+  <text x="468" y="929" font-size="12.5" fill="#334155">检索缓存 · 查询向量缓存（1 小时）</text>
+  <text x="468" y="956" font-size="12" fill="#64748b">全部键带 TTL，自动过期免维护</text>
+
+  <!-- Qdrant -->
+  <rect x="820" y="714" width="340" height="336" rx="10" fill="#ffffff" stroke="#d7dfea"/>
+  <rect x="820" y="714" width="5" height="336" rx="2" fill="#7c3aed"/>
+  <text x="838" y="744" font-size="15" font-weight="bold" fill="#0f172a">Qdrant 容器 · :6333 / :6334</text>
+  <text x="838" y="764" font-size="12" fill="#64748b">数据目录 /root/qdrant（绑定挂载）</text>
+  <rect x="838" y="776" width="146" height="22" rx="11" fill="#f4effe"/>
+  <text x="848" y="791.5" font-size="11.5" fill="#6d28d9">向量 · 可重建索引</text>
+  <line x1="838" y1="812" x2="1142" y2="812" stroke="#e8eef5"/>
+  <text x="838" y="834" font-size="12.5" fill="#334155">集合 brain_memories</text>
+  <text x="838" y="853" font-size="12.5" fill="#334155">2560 维 · Cosine 距离</text>
+  <text x="838" y="872" font-size="12.5" fill="#334155">模型 Qwen/Qwen3-Embedding-4B</text>
+  <text x="838" y="891" font-size="12.5" fill="#334155">访问口令仅在配置文件（只读挂载）</text>
+  <text x="838" y="910" font-size="12.5" fill="#334155">仅本机使用 · 故障可随时重建</text>
+  <text x="838" y="938" font-size="12" fill="#64748b">语义召回（向量）专用</text>
+
+  <!-- 外部服务：SiliconFlow -->
+  <rect x="1230" y="400" width="290" height="152" rx="12" fill="#ffffff" stroke="#94a3b8" stroke-dasharray="7,5"/>
+  <text x="1246" y="428" font-size="12" fill="#64748b">④ 向量化（embed）· HTTPS</text>
+  <text x="1246" y="454" font-size="15" font-weight="bold" fill="#0f172a">SiliconFlow 云 API</text>
+  <text x="1246" y="476" font-size="12.5" fill="#334155">Qwen/Qwen3-Embedding-4B</text>
+  <text x="1246" y="496" font-size="12.5" fill="#334155">文本 → 2560 维向量</text>
+  <text x="1246" y="518" font-size="12" fill="#64748b">api.siliconflow.cn · 公网依赖</text>
+  <line x1="1198" y1="462" x2="1226" y2="462" stroke="#64748b" stroke-width="1.6" marker-start="url(#arS)" marker-end="url(#ar)"/>
+
+  <!-- 数据流说明 -->
+  <rect x="1230" y="572" width="290" height="488" rx="12" fill="#f8fafc" stroke="#e2e8f0"/>
+  <text x="1246" y="600" font-size="14" font-weight="bold" fill="#0f172a">数据流（对应图中编号）</text>
+  <text x="1246" y="626" font-size="12" fill="#334155">① 召回（每轮）：关键词 + 向量检索</text>
+  <text x="1246" y="643" font-size="12" fill="#334155">→ RRF 融合 → 注入；失败自动降级关键词</text>
+  <text x="1246" y="669" font-size="12" fill="#334155">② 写记忆：brain_remember → MariaDB</text>
+  <text x="1246" y="686" font-size="12" fill="#334155">（权威）→ Redis 热点 → 向量化 → Qdrant</text>
+  <text x="1246" y="712" font-size="12" fill="#334155">③ 归档：每轮对话 → brain_turns +</text>
+  <text x="1246" y="729" font-size="12" fill="#334155">brain:recent；压缩前 → brain_archive</text>
+  <text x="1246" y="755" font-size="12" fill="#334155">④ 向量化与兜底：embed API → Qdrant；</text>
+  <text x="1246" y="772" font-size="12" fill="#334155">drain.timer 每 3 分钟自动补齐</text>
+  <text x="1246" y="798" font-size="12" fill="#334155">⑤ 跨机访问：公网直连 :57306 / :9079；</text>
+  <text x="1246" y="815" font-size="12" fill="#334155">长期层共享、短期层按库隔离</text>
+  <text x="1246" y="841" font-size="12" fill="#334155">⑥ 监控 / 运维：atbrains 三头读取</text>
+  <text x="1246" y="858" font-size="12" fill="#334155">（Redis + MariaDB + Qdrant）+ 手动 drain</text>
+  <line x1="1246" y1="878" x2="1504" y2="878" stroke="#e2e8f0"/>
+  <text x="1246" y="900" font-size="12" fill="#64748b">线例：实线 = 本机调用；蓝色虚线 = 公网</text>
+  <text x="1246" y="917" font-size="12" fill="#64748b">直连；双向箭头 = 请求 / 返回。</text>
+  <text x="1246" y="945" font-size="12" fill="#64748b">安全边界：MariaDB = 唯一权威存储；</text>
+  <text x="1246" y="962" font-size="12" fill="#64748b">Redis / Qdrant 均可失效重建，不丢数据。</text>
+  <text x="1246" y="990" font-size="12" fill="#64748b">每台机器各自运行 brain 插件；</text>
+  <text x="1246" y="1007" font-size="12" fill="#64748b">本图为集中式逻辑视图。</text>
+
+  <!-- 页脚 -->
+  <text x="60" y="1112" font-size="12.5" fill="#64748b">图注：记忆原件只保存在 MariaDB（唯一权威）；Redis 到期自清、Qdrant 可随时重建 —— 二者故障均不丢数据。</text>
+  <text x="60" y="1134" font-size="12.5" fill="#64748b">短期层按机器 / Agent 分库隔离，长期层全机共享、可跨设备召回。</text>
+  <text x="60" y="1160" font-size="11.5" fill="#94a3b8">快照规模：记忆 102 条（70 活跃）· 对话 583 轮 · 会话 164 · Redis 78 键 · 向量 70 点（2026-10-15）</text>
+</svg>
+</body></html>

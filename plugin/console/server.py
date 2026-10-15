@@ -4,6 +4,8 @@
 * 数据一律走父目录的 probe.py(与 `hermes atbrains` CLI、agent 工具同一份逻辑)。
 * 凭据只在服务端解析,绝不下发浏览器。
 * 所有 /api/* 需要 token(存在本目录 .token,权限 600,首次运行自动生成)。
+* /v1/* 是 **Memory Service**(service.py):与 /api/* 共用这一个端口,但令牌体系独立
+  (Authorization: Bearer <service-tokens.json 里的令牌>),走的是另一套路由与鉴权。
 
 启动方式(不是系统服务):
     hermes atbrains serve              前台
@@ -21,9 +23,11 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(HERE.parent))  # 让 `import probe` 命中插件根目录
+sys.path.insert(0, str(HERE.parent))  # 让 `import probe` / `import service` 命中插件根目录
 import probe  # noqa: E402
+import service  # noqa: E402
 
+SERVICE = service.MemoryService()   # /v1 Memory Service(每 machine 一个 BrainStore,内部加锁)
 TOKEN_PATH = HERE / ".token"
 CONF_PATH = HERE / "config.json"
 DEFAULT_PORT = 8787
@@ -83,10 +87,19 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    def _v1(self, method: str, query: dict, body: dict):
+        """/v1/* 交给 MemoryService(原始 headers + 解析后的 body;鉴权由 service 自己判)。"""
+        headers = dict(self.headers.items())
+        flat = {k: v[0] for k, v in query.items()}
+        code, payload = SERVICE.handle(method, urlparse(self.path).path, flat, body, headers)
+        return self._send(code, jdump(payload))
+
     def do_GET(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         path = u.path
+        if path.startswith("/v1/"):
+            return self._v1("GET", q, {})
         if path in ("/", "/index.html"):
             p = HERE / "index.html"
             if not p.exists():
@@ -140,6 +153,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
+        if u.path.startswith("/v1/"):
+            return self._v1("POST", q, self._body())
         if not self._authed(q):
             return self._send(401, jdump({"error": "unauthorized"}))
         body = self._body()
@@ -173,7 +188,9 @@ def main() -> None:
     host, port = conf["host"], int(conf["port"])
     token()
     print(f"atbrains 控制台 → http://{host}:{port}/", flush=True)
+    print(f"atbrains Memory Service → http://{host}:{port}/v1/health", flush=True)
     print(f"口令文件 {TOKEN_PATH}(权限 600)", flush=True)
+    print(f"服务令牌 {service.TOKENS_PATH}({len(service.load_tokens())} 个 machine,权限 600)", flush=True)
     ThreadingHTTPServer((host, port), Handler).serve_forever()
 
 
