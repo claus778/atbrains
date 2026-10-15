@@ -1,0 +1,9 @@
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 运行时机密:控制台访问 token(首次启动自动生成,权限 600)
+plugin/console/.token
+
+# 日志与临时文件
+*.log

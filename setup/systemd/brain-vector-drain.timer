@@ -1,0 +1,10 @@
+[Unit]
+Description=Periodic brain vector drain (语义向量兜底，每 3 分钟)
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=3min
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

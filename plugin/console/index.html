@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>atbrains · 记忆系统控制台</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2128; --line:#30363d;
+    --fg:#e6edf3; --dim:#8b949e; --acc:#58a6ff; --ok:#3fb950; --warn:#d29922; --bad:#f85149;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
+  a{color:var(--acc)}
+  header{display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+         padding:14px 20px;border-bottom:1px solid var(--line);background:var(--panel);position:sticky;top:0;z-index:9}
+  header h1{margin:0;font-size:16px;font-weight:600;letter-spacing:.3px}
+  header h1 span{color:var(--acc)}
+  .spacer{flex:1}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--dim);margin-right:6px}
+  .dot.ok{background:var(--ok)} .dot.bad{background:var(--bad)} .dot.warn{background:var(--warn)}
+  input,select,textarea,button{font:inherit;color:var(--fg);background:var(--panel2);
+       border:1px solid var(--line);border-radius:6px;padding:6px 10px;outline:none}
+  input:focus,textarea:focus,select:focus{border-color:var(--acc)}
+  button{cursor:pointer;transition:.15s}
+  button:hover{background:#252b33;border-color:#3d444d}
+  button.primary{background:#1f6feb;border-color:#1f6feb}
+  button.primary:hover{background:#2a7ff5}
+  button.danger{background:#3d1418;border-color:#5c1f24}
+  main{padding:18px 20px 60px;max-width:1400px;margin:0 auto}
+  .grid{display:grid;gap:14px}
+  .g4{grid-template-columns:repeat(auto-fit,minmax(230px,1fr))}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card h3{margin:0 0 10px;font-size:12px;font-weight:600;color:var(--dim);
+           text-transform:uppercase;letter-spacing:.8px}
+  .kv{display:flex;justify-content:space-between;gap:10px;padding:3px 0}
+  .kv b{font-weight:600}
+  .big{font-size:26px;font-weight:700;line-height:1.2}
+  .sub{color:var(--dim);font-size:12px}
+  .tabs{display:flex;gap:6px;margin:20px 0 12px;border-bottom:1px solid var(--line)}
+  .tabs button{background:transparent;border:none;border-bottom:2px solid transparent;
+               border-radius:0;padding:8px 14px;color:var(--dim)}
+  .tabs button.on{color:var(--fg);border-bottom-color:var(--acc)}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--dim);font-weight:600;font-size:12px;position:sticky;top:57px;background:var(--panel)}
+  tr:hover td{background:#1b2027}
+  code{background:#1b2027;padding:1px 5px;border-radius:4px;font-size:12px}
+  .tag{display:inline-block;background:#1f2937;color:#9db4d0;border-radius:4px;
+       padding:0 6px;font-size:11px;margin-right:4px}
+  .pill{display:inline-block;border-radius:20px;padding:1px 9px;font-size:11px;font-weight:600}
+  .pill.on{background:#0f2f1a;color:var(--ok)} .pill.off{background:#3d1418;color:var(--bad)}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .muted{color:var(--dim)}
+  pre{background:#0b0f14;border:1px solid var(--line);border-radius:8px;padding:10px;
+      overflow:auto;max-height:340px;font-size:12px;white-space:pre-wrap}
+  .toast{position:fixed;right:18px;bottom:18px;background:var(--panel);border:1px solid var(--line);
+         border-left:3px solid var(--acc);border-radius:8px;padding:10px 14px;max-width:460px;
+         box-shadow:0 8px 28px #0008;opacity:0;transform:translateY(8px);transition:.2s;pointer-events:none}
+  .toast.show{opacity:1;transform:none}
+  .scroll{max-height:520px;overflow:auto;border:1px solid var(--line);border-radius:8px}
+  .hint{font-size:12px;color:var(--dim);margin-top:6px}
+</style>
+</head>
+<body>
+<header>
+  <h1>atbrains <span>· 记忆系统控制台</span></h1>
+  <span class="sub" id="conn"><span class="dot"></span>未连接</span>
+  <div class="spacer"></div>
+  <input id="tok" type="password" placeholder="访问 token(回车即保存)" style="width:230px"
+         onkeydown="if(event.key==='Enter'){event.preventDefault();saveTok();}">
+  <button onclick="saveTok()">保存</button>
+  <button onclick="refresh(true)" class="primary">刷新</button>
+  <label class="sub"><input type="checkbox" id="auto" checked style="vertical-align:-2px"> 自动刷新</label>
+</header>
+
+<main>
+  <div class="grid g4" id="cards"></div>
+
+  <div class="tabs">
+    <button class="on" onclick="tab('mem',this)">记忆</button>
+    <button onclick="tab('turn',this)">对话归档</button>
+    <button onclick="tab('search',this)">检索</button>
+    <button onclick="tab('act',this)">操作</button>
+  </div>
+
+  <section id="t-mem">
+    <div class="row" style="margin-bottom:10px">
+      <input id="mq" placeholder="按内容过滤(关键字)…" style="width:260px" onkeydown="if(event.key==='Enter')loadMem()">
+      <select id="mactive" onchange="loadMem()">
+        <option value="1">仅活跃</option><option value="0">仅已停用</option><option value="all">全部</option>
+      </select>
+      <button onclick="loadMem()">查询</button>
+      <span class="sub" id="mcnt"></span>
+    </div>
+    <div class="scroll"><table><thead><tr>
+      <th style="width:52px">ID</th><th style="width:64px">状态</th><th style="width:120px">类型</th>
+      <th>内容</th><th style="width:150px">标签</th><th style="width:46px">权重</th><th style="width:120px">来源机</th><th style="width:70px">操作</th>
+    </tr></thead><tbody id="mtb"></tbody></table></div>
+  </section>
+
+  <section id="t-turn" style="display:none">
+    <div class="row" style="margin-bottom:10px">
+      <button onclick="loadTurns()">重新加载</button><span class="sub" id="tcnt"></span>
+    </div>
+    <div class="scroll"><table><thead><tr>
+      <th style="width:52px">ID</th><th style="width:132px">时间(UTC)</th><th style="width:120px">来源机</th>
+      <th style="width:150px">会话</th><th>用户</th><th>助手(截断)</th>
+    </tr></thead><tbody id="ttb"></tbody></table></div>
+  </section>
+
+  <section id="t-search" style="display:none">
+    <div class="row" style="margin-bottom:10px">
+      <input id="sq" placeholder="语义 + 关键字混合检索…" style="width:360px"
+             onkeydown="if(event.key==='Enter')doSearch()">
+      <button class="primary" onclick="doSearch()">检索</button>
+      <span class="sub">向量(2560 维) + 关键词融合</span>
+    </div>
+    <div id="sres"></div>
+  </section>
+
+  <section id="t-act" style="display:none">
+    <div class="grid" style="grid-template-columns:repeat(auto-fit,minmax(320px,1fr))">
+      <div class="card">
+        <h3>向量层</h3>
+        <div class="row">
+          <button class="primary" onclick="act('/api/drain','立即回填向量')">立即回填向量</button>
+          <button onclick="act('/api/doctor','系统体检')">系统体检</button>
+        </div>
+        <div class="hint">回填为增量模式:只补缺失的向量,不重嵌已有的。定时器每 3 分钟自动跑一次。</div>
+      </div>
+      <div class="card">
+        <h3>新增记忆</h3>
+        <textarea id="newc" rows="3" style="width:100%" placeholder="记忆内容…"></textarea>
+        <div class="row" style="margin-top:8px">
+          <select id="newk"><option>note</option><option>fact</option><option>preference</option><option>decision</option><option>todo</option></select>
+          <input id="newi" type="number" value="5" min="1" max="10" style="width:64px" title="重要度">
+          <input id="newt" placeholder="tags,逗号分隔" style="flex:1">
+          <button class="primary" onclick="doRemember()">保存</button>
+        </div>
+        <div class="hint">写入 MariaDB + Redis 热点,向量由定时器在 3 分钟内补齐。</div>
+      </div>
+      <div class="card">
+        <h3>清理</h3>
+        <div class="row">
+          <button onclick="act('/api/prune','归档清理预演')">归档清理预演</button>
+        </div>
+        <div class="hint">预演不写库。停用记忆请在上面的记忆表里操作(软删除,可恢复)。</div>
+      </div>
+    </div>
+    <pre id="actout" style="margin-top:14px;display:none"></pre>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => (s??'').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* 口令获取顺序:①网址 ?token=…(免输入直连,采用后立即从地址栏抹掉) ②localStorage ③手输。
+   localStorage 可能被浏览器禁用(隐私模式/嵌入环境),全程 try/catch,不让整页崩掉。 */
+let TOK = '';
+try { TOK = localStorage.getItem('atbrains_token') || ''; } catch (e) {}
+try {
+  const um = location.search.match(/[?&]token=([^&]+)/);
+  if (um) {
+    TOK = decodeURIComponent(um[1]).trim();
+    try { localStorage.setItem('atbrains_token', TOK); } catch (e) {}
+    history.replaceState(null, '', location.pathname);
+  }
+} catch (e) {}
+if (TOK) $('#tok').value = TOK;
+
+function saveTok(){ TOK = $('#tok').value.trim(); try { localStorage.setItem('atbrains_token', TOK); } catch (e) {} refresh(true); }
+function toast(msg, ms=4200){ const t=$('#toast'); t.textContent=msg; t.classList.add('show');
+  clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'), ms); }
+
+async function api(path, opts={}){
+  const sep = path.includes('?') ? '&' : '?';
+  const r = await fetch(path + (path.startsWith('/api') ? sep+'token='+encodeURIComponent(TOK) : ''),
+                        {headers:{'X-Auth-Token':TOK, ...(opts.headers||{})}, ...opts});
+  if (!r.ok) throw new Error((await r.text()).slice(0,300));
+  return r.json();
+}
+async function post(path, body){
+  return api(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body||{})});
+}
+
+/* ── 总览 ── */
+async function refresh(manual){
+  if (!TOK){ $('#conn').innerHTML = '<span class="dot warn"></span>请输入 token'; return; }
+  try{
+    const d = await api('/api/overview');
+    $('#conn').innerHTML = '<span class="dot ok"></span>已连接 · ' + esc(d.ts);
+    renderCards(d);
+    if (manual) toast('已刷新');
+  }catch(e){
+    $('#conn').innerHTML = '<span class="dot bad"></span>连接失败';
+    if (manual) toast('刷新失败:' + e.message);
+  }
+}
+
+function renderCards(d){
+  const st = d.stats?.mysql || {}, rd = d.stats?.redis || {}, q = d.qdrant || {}, v = d.vector || {}, tm = d.timer || {};
+  const cov = q.coverage || {};
+  const covOK = cov.active_memories != null && cov.with_vector === cov.active_memories;
+  const cards = [];
+
+  cards.push(`<div class="card"><h3>长期层 MariaDB</h3>
+    <div class="big">${st.memories_active ?? '?'}<span class="sub"> / ${st.memories_total ?? '?'} 条记忆</span></div>
+    <div class="kv"><span>对话轮次</span><b>${st.turns ?? '?'}</b></div>
+    <div class="kv"><span>会话</span><b>${st.sessions ?? '?'}</b></div>
+    <div class="kv"><span>库大小</span><b>${((st.size_bytes||0)/1048576).toFixed(2)} MB</b></div>
+    ${contCard('mariadb', d.containers)}
+  </div>`);
+
+  cards.push(`<div class="card"><h3>短期层 Redis</h3>
+    <div class="big">${rd.keys ?? '?'}<span class="sub"> keys</span></div>
+    <div class="kv"><span>对话流</span><b>${rd.recent_stream ?? '?'}</b></div>
+    <div class="kv"><span>热点索引</span><b>${rd.hot_index ?? '?'}</b></div>
+    <div class="kv"><span>内存占用</span><b>${esc(rd.used_memory || '?')}</b></div>
+    ${contCard('redis', d.containers)}
+  </div>`);
+
+  cards.push(`<div class="card"><h3>向量层 Qdrant</h3>
+    <div class="big">${q.points ?? '?'}<span class="sub"> 个向量</span></div>
+    <div class="kv"><span>维度 / 距离</span><b>${q.dim ?? '?'} / ${esc(q.distance||'?')}</b></div>
+    <div class="kv"><span>集合状态</span><b class="${q.status==='green'?'':'muted'}">${esc(q.status||q.error||'?')}</b></div>
+    <div class="kv"><span>覆盖率</span><b style="color:${covOK?'var(--ok)':'var(--warn)'}">
+      ${cov.with_vector ?? '?'} / ${cov.active_memories ?? '?'}${covOK?' ✅':''}</b></div>
+    ${contCard('qdrant', d.containers)}
+  </div>`);
+
+  cards.push(`<div class="card"><h3>自动化</h3>
+    <div class="big" style="font-size:18px">
+      <span class="pill ${tm.ActiveState==='active'?'on':'off'}">${esc(tm.ActiveState||'?')}</span>
+      <span class="sub">${tm.UnitFileState==='enabled'?'开机自启':'未自启'}</span></div>
+    <div class="kv"><span>上次运行</span><b>${esc((tm.lastRun||'?').replace('CST','').trim())}</b></div>
+    <div class="kv"><span>上次退出码</span><b style="color:${tm.lastExit==='0'?'var(--ok)':'var(--warn)'}">${esc(tm.lastExit??'?')}</b></div>
+    <div class="kv"><span>嵌入模型</span><b>${esc((v.embed_model||'?').split('/').pop())}</b></div>
+    <div class="kv"><span>向量开关</span><b>${v.enabled?'开':'关'}</b></div>
+  </div>`);
+
+  $('#cards').innerHTML = cards.join('');
+}
+
+function contCard(name, list){
+  const c = (list||[]).find(x => x.name === name);
+  if (!c) return `<div class="kv"><span>容器</span><b style="color:var(--bad)">未运行</b></div>`;
+  return `<div class="kv"><span>容器</span><b style="color:${c.up?'var(--ok)':'var(--bad)'}">
+    ${c.up?'运行中':'已停止'}${c.restarts!=='0'&&c.restarts!=='?'?` · 重启${c.restarts}次`:''}</b></div>`;
+}
+
+/* ── 记忆 ── */
+async function loadMem(){
+  try{
+    const q = encodeURIComponent($('#mq').value.trim());
+    const d = await api(`/api/memories?limit=300&active=${$('#mactive').value}&q=${q}`);
+    $('#mcnt').textContent = `共 ${d.total} 条,显示 ${d.items.length} 条`;
+    $('#mtb').innerHTML = d.items.map(m => `<tr>
+      <td>${m.id}</td>
+      <td><span class="pill ${m.active?'on':'off'}">${m.active?'活跃':'停用'}</span></td>
+      <td><code>${esc(m.kind)}</code><br><span class="sub">${esc(m.source||'')}</span></td>
+      <td>${esc(m.content).slice(0,600)}</td>
+      <td>${(m.tags||'').split(/[,\s]+/).filter(Boolean).slice(0,5).map(t=>`<span class="tag">${esc(t)}</span>`).join('')}</td>
+      <td>${m.importance}</td>
+      <td class="sub">${esc(m.machine||'—')}</td>
+      <td>${m.active ? '<button class="danger" onclick="doForget(' + m.id + ')">停用</button>' : '<span class="sub">—</span>'}</td>
+    </tr>`).join('') || '<tr><td colspan="8" class="muted">无数据</td></tr>';
+  }catch(e){ toast('加载记忆失败:'+e.message); }
+}
+
+/* ── 对话 ── */
+async function loadTurns(){
+  try{
+    const d = await api('/api/turns?limit=120');
+    $('#tcnt').textContent = `共 ${d.total} 轮,显示 ${d.items.length} 轮`;
+    $('#ttb').innerHTML = d.items.map(t => `<tr>
+      <td>${t.id}</td>
+      <td class="sub">${esc((t.ts||'').slice(0,16))}</td>
+      <td class="sub">${esc(t.machine||'—')}</td>
+      <td class="sub">${esc((t.session_id||'').slice(0,20))}<br>${esc(t.platform||'')}</td>
+      <td>${esc(t.u).slice(0,300)}</td>
+      <td class="sub">${esc(t.a).slice(0,220)}</td>
+    </tr>`).join('') || '<tr><td colspan="6" class="muted">无数据</td></tr>';
+  }catch(e){ toast('加载对话失败:'+e.message); }
+}
+
+/* ── 检索 ── */
+async function doSearch(){
+  const q = $('#sq').value.trim();
+  if (!q) return;
+  $('#sres').innerHTML = '<div class="muted">检索中…(向量嵌入可能需要几秒)</div>';
+  try{
+    const d = await api('/api/search?limit=12&q=' + encodeURIComponent(q));
+    const mem = d.memories || [], trn = d.turns || [];
+    $('#sres').innerHTML = `
+      <div class="card"><h3>命中记忆 (${mem.length})</h3>
+      ${mem.map((m,i)=>`<div style="padding:7px 0;border-bottom:1px solid var(--line)">
+        <b>${i+1}.</b> ${esc(m.content||m.preview||'')}
+        <div class="sub">${m.id?`id=${m.id} · `:''}${esc(m.kind||'')} ${m.score!=null?`· score=${Number(m.score).toFixed(3)}`:''}
+        ${(m.tags||'')?`· ${esc(m.tags)}`:''}</div></div>`).join('') || '<div class="muted">无命中</div>'}
+      </div>
+      <div class="card" style="margin-top:14px"><h3>命中历史对话 (${trn.length})</h3>
+      ${trn.map(t=>`<div style="padding:7px 0;border-bottom:1px solid var(--line)">
+        <div class="sub">${esc((t.ts||'').slice(0,19))} · ${esc(t.machine||'')}</div>
+        <div>${esc(t.user_content||t.u||'').slice(0,400)}</div></div>`).join('') || '<div class="muted">无命中</div>'}
+      </div>`;
+  }catch(e){ $('#sres').innerHTML = `<div class="muted">检索失败:${esc(e.message)}</div>`; }
+}
+
+/* ── 操作 ── */
+async function act(path, label){
+  try{
+    const d = await post(path, {dry_run:true});
+    $('#actout').style.display='block';
+    $('#actout').textContent = `$ ${label}\n` + JSON.stringify(d, null, 2).slice(0, 4000);
+    toast(label + (d.ok === false ? ' 执行有异常' : ' 完成'));
+    refresh();
+  }catch(e){ toast(label+' 失败:'+e.message); }
+}
+async function doRemember(){
+  const content = $('#newc').value.trim();
+  if (!content) return toast('内容不能为空');
+  try{
+    const d = await post('/api/remember', {content, kind:$('#newk').value,
+      importance:+$('#newi').value, tags:$('#newt').value});
+    toast(`已保存 id=${d.saved?.id} · 向量将在 3 分钟内自动补齐`);
+    $('#newc').value=''; $('#newt').value='';
+    loadMem(); refresh();
+  }catch(e){ toast('保存失败:'+e.message); }
+}
+
+async function doForget(id){
+  if (!confirm('停用记忆 #' + id + '?(软删除,记录保留,可恢复)')) return;
+  try{
+    await post('/api/forget', {id});
+    toast('已停用 #' + id + ' · 软删除,记录保留');
+    loadMem(); refresh();
+  }catch(e){ toast('停用失败:'+e.message); }
+}
+
+/* ── tabs ── */
+function tab(name, btn){
+  document.querySelectorAll('.tabs button').forEach(b=>b.classList.remove('on'));
+  btn.classList.add('on');
+  ['mem','turn','search','act'].forEach(k => $('#t-'+k).style.display = (k===name?'':'none'));
+  if (name==='mem') loadMem();
+  if (name==='turn') loadTurns();
+}
+
+refresh(); loadMem();
+setInterval(()=>{ if($('#auto').checked) refresh(); }, 10000);
+setInterval(()=>{ if($('#auto').checked && $('#t-turn').style.display==='') loadTurns(); }, 30000);
+</script>
+</body>
+</html>

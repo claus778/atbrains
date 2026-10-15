@@ -1,0 +1,9 @@
+[Unit]
+Description=brain vector layer incremental drain (语义向量增量回填)
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/hermes brain vector-drain
+Environment=HOME=/root
+Environment=HERMES_HOME=/root/.hermes

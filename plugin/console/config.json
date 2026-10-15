@@ -1,0 +1,6 @@
+{
+  "host": "0.0.0.0",
+  "port": 8787,
+  "qdrant_url": "http://127.0.0.1:6333",
+  "qdrant_collection": "brain_memories"
+}
