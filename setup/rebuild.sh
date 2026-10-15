@@ -1,8 +1,8 @@
 #!/bin/bash
 # =====================================================================
-# Agent 记忆数据库 —— 容器重建命令 (2026-10-12 定稿)
-# 数据在命名卷里 (mariadb_data / redis_data), 重建容器不丢数据。
-# init.sql 仅对空卷首次初始化生效; 已有数据的卷不受影响。
+# Agent 记忆数据库 —— 容器重建命令 (2026-10-12 定稿; 2026-10-15 起数据为绑定挂载)
+# 数据在宿主机目录: /root/mariadb (=mariadb) / /root/redis (=redis), 重建容器不丢数据 (旧命名卷 mariadb_data/redis_data 已弃用, 保留未删)。
+# init.sql 仅对空数据目录首次初始化生效; 已有数据的目录不受影响。
 # 时区: 固定 UTC (default-time-zone=+00:00, 99-timezone.cnf 挂载; 2026-10-13 曾切 +08:00 后按用户要求回退)。
 #
 # 布局台账 (详见同目录 credentials.txt):
@@ -24,7 +24,7 @@ docker run -d \
   -e MARIADB_DATABASE=hermes_agent_memory \
   -e MARIADB_USER=agent \
   -e MARIADB_PASSWORD='***REDACTED***' \
-  -v mariadb_data:/var/lib/mysql \
+  -v /root/mariadb:/var/lib/mysql \
   -v /root/agent-db/init.sql:/docker-entrypoint-initdb.d/10-agents.sql:ro \
   -v /root/agent-db/mysql-conf.d/99-timezone.cnf:/etc/mysql/conf.d/99-timezone.cnf:ro \
   mariadb:latest \
@@ -35,7 +35,7 @@ docker run -d \
   --name redis \
   --restart unless-stopped \
   -p 9079:6379 \
-  -v redis_data:/data \
+  -v /root/redis:/data \
   redis:latest \
   redis-server --appendonly yes --requirepass '***REDACTED***'
 

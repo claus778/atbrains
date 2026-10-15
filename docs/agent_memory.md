@@ -6,10 +6,10 @@
 
 ## 1. 总架构（短期 + 长期 双层记忆）
 
-| 层 | 载体 | 端口 / 数据卷 | 存放内容 | 生命周期 |
+| 层 | 载体 | 端口 / 数据目录 | 存放内容 | 生命周期 |
 |---|---|---|---|---|
-| 短期 | Redis 容器 `redis` | 0.0.0.0:9079 · 卷 `redis_data` | 最近对话流 `brain:recent`、会话状态 `brain:session:*`、热点记忆 `brain:hot:*`、检索缓存 `brain:qcache:*` | TTL 自动过期（14~30 天），无需维护 |
-| 长期 | MariaDB 容器 `mariadb` | 0.0.0.0:57306 · 卷 `mariadb_data` | `brain_memories`（事实/偏好/决策）、`brain_turns`（对话归档）、`brain_sessions`（会话索引）、`brain_archive`（压缩前存档） | 永久（`brain-prune.timer` 每周自动 prune：对话全量保留；sessions/archive/inactive 365 天） |
+| 短期 | Redis 容器 `redis` | 0.0.0.0:9079 · 目录 `/root/redis` | 最近对话流 `brain:recent`、会话状态 `brain:session:*`、热点记忆 `brain:hot:*`、检索缓存 `brain:qcache:*` | TTL 自动过期（14~30 天），无需维护 |
+| 长期 | MariaDB 容器 `mariadb` | 0.0.0.0:57306 · 目录 `/root/mariadb` | `brain_memories`（事实/偏好/决策）、`brain_turns`（对话归档）、`brain_sessions`（会话索引）、`brain_archive`（压缩前存档） | 永久（`brain-prune.timer` 每周自动 prune：对话全量保留；sessions/archive/inactive 365 天） |
 | 向量 | Qdrant 容器 `qdrant` | 127.0.0.1:6333 · 目录 `/root/qdrant` | 记忆向量集合 `brain_memories`（2560 维 / Qwen3-Embedding-4B / SiliconFlow） | 状态表 `brain_vector_index` 跟踪；软删记忆的向量随 drain 自动清理 |
 
 - 两个容器均 `--restart unless-stopped`；端口已去掉 127.0.0.1 限制（绑 0.0.0.0 双栈）。2026-10-13 外部多点实测：腾讯云安全组已放行 57306/9079，公网直连可达

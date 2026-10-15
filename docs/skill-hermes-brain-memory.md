@@ -94,7 +94,7 @@ python3 <skill_dir>/scripts/audit-memories.py [/path/to/.hermes]   # 默认 /roo
    先试 `docker start redis mariadb`；凭据在 `~/.hermes/.env`（Redis 需 `--requirepass`；MariaDB 用户 `agent`）。
    保数据重建：先记下两侧计数（brain_memories/turns/sessions、Redis DBSIZE 与 XLEN brain:recent）→
    `docker stop mariadb redis`（优雅停，别 `docker rm -f`，让 AOF/InnoDB 落盘）→ `docker rm` → 原命令 `docker run`，
-   务必挂回同名卷 `mariadb_data` / `redis_data`（数据在卷里，容器只是壳）→ 启动后核对计数 + 实连。
+   务必挂回数据目录 `/root/mariadb` / `/root/redis`（2026-10-15 起绑定挂载; 旧命名卷已弃用、保留未删）→ 启动后核对计数 + 实连。
    ⚠️ 改端口绑定的坑：docker 的 `-p` 只转发“绑定的那个 IP”——把 `-p 57306:3306` 改成单 IP 绑定（如
    `-p 10.11.12.1:57306:3306`）后，127.0.0.1 也会连不上（brain.json 默认走 127.0.0.1）。要么同端口加两条 -p
    （`127.0.0.1` + 目标 IP），要么同步改 `~/.hermes/brain.json` 的 mariadb_host / redis_host。

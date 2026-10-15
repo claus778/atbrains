@@ -18,7 +18,7 @@ docker --version && systemctl is-active docker
 ```bash
 docker run -d --name redis --restart unless-stopped \
   -p 9079:6379 \
-  -v redis_data:/data \
+  -v /root/redis:/data \
   redis:latest \
   redis-server --appendonly yes --requirepass '<REDIS_PASSWORD>'
 ```
@@ -27,7 +27,7 @@ docker run -d --name redis --restart unless-stopped \
 ```bash
 docker run -d --name mariadb --restart unless-stopped \
   -p 57306:3306 \
-  -v mariadb_data:/var/lib/mysql \
+  -v /root/mariadb:/var/lib/mysql \
   -e MARIADB_ROOT_PASSWORD='<MARIADB_ROOT_PASSWORD>' \
   -e MARIADB_DATABASE=hermes_agent_memory \
   -e MARIADB_USER=agent \
@@ -49,8 +49,8 @@ docker run -d --name qdrant --restart unless-stopped \
   qdrant/qdrant
 ```
 
-> ⚠️ 数据都在 **named volume**(`redis_data` / `mariadb_data`)和宿主机目录 `/root/qdrant` 里。
-> 重建容器**必须挂回同名卷**,否则数据全丢。
+> ⚠️ 数据都在宿主机目录里:`/root/mariadb`(MariaDB)、`/root/redis`(Redis)、`/root/qdrant`(Qdrant)。
+> 重建容器**必须挂回这些目录**(2026-10-15 起为绑定挂载; 旧命名卷 `mariadb_data` / `redis_data` 已弃用、保留未删),否则数据全丢。
 
 ## 2. 初始化数据库
 
