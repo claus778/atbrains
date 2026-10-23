@@ -1,5 +1,5 @@
 name: brain
-version: 1.2.1
+version: 1.3.0
 description: "brain — 本机双存储记忆：Redis 短期（最近对话流/会话状态/热点缓存）+ MariaDB 长期（事实/对话归档/全量转录层 brain_turn_messages/会话/压缩存档）。"
 # Python 依赖（redis / PyMySQL）以纯 Python 源码形式内置于本插件 vendor/ 目录，
 # 不参与 PM 依赖构建 —— 避免在国内镜像（缺 PEP 700 upload-time 元数据）环境下

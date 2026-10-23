@@ -303,6 +303,27 @@ def _mask_secret(value: str) -> str:
     return v[:4] + "…" if len(v) > 8 else "…"
 
 
+# ------------------------------------------------------------------ 入口名（platform）规范化
+
+# 词表：cli / desktop / weixin / telegram / discord / slack / email /
+#       cron / oneshot / subagent / unknown（新入口小写透传，别名先归并）
+_PLATFORM_ALIASES = {
+    "local": "desktop",   # 本机控制套接字的桌面/TUI 会话（Windows 桌面端写 desktop）
+    "tui": "desktop",
+    "gui": "desktop",
+    "tool": "cli",        # 工具触发的会话按命令行入口算（对齐 Hermes session_policy）
+}
+
+
+def normalize_platform(value: Any) -> str:
+    """把入口名收敛进词表：小写去空白，别名归并，空值→unknown。"""
+    v = str(value or "").strip().lower()
+    if not v:
+        return "unknown"
+    return _PLATFORM_ALIASES.get(v, v)
+
+
+
 # ------------------------------------------------------------------ 记忆分层 / 衰减
 
 _LAYER_BY_KIND = {
@@ -486,10 +507,74 @@ _DDL = (
         PRIMARY KEY (mem_id),
         KEY idx_vec_status (status)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    # 知识层（v6）：主张身份 + 版本 + 证据 + 情节头
+    """CREATE TABLE IF NOT EXISTS brain_claims (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        machine VARCHAR(48) NOT NULL DEFAULT '',
+        subject VARCHAR(191) NOT NULL,
+        predicate VARCHAR(96) NOT NULL,
+        kind VARCHAR(24) NOT NULL DEFAULT 'fact',
+        slot_key CHAR(32) NOT NULL,
+        current_revision INT UNSIGNED NOT NULL DEFAULT 1,
+        state VARCHAR(16) NOT NULL DEFAULT 'active',
+        importance TINYINT NOT NULL DEFAULT 5,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uniq_claim_slot (slot_key),
+        KEY idx_claim_subject (subject, predicate),
+        KEY idx_claim_state (state, updated_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    """CREATE TABLE IF NOT EXISTS brain_claim_versions (
+        claim_id BIGINT UNSIGNED NOT NULL,
+        revision INT UNSIGNED NOT NULL,
+        value_text MEDIUMTEXT NOT NULL,
+        basis VARCHAR(16) NOT NULL DEFAULT 'direct_report',
+        valid_from DATETIME NULL DEFAULT NULL,
+        valid_to DATETIME NULL DEFAULT NULL,
+        recorded_from DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        recorded_to DATETIME NULL DEFAULT NULL,
+        replaces_revision INT UNSIGNED NULL DEFAULT NULL,
+        source_turn_id BIGINT UNSIGNED NULL DEFAULT NULL,
+        source_seq SMALLINT UNSIGNED NULL DEFAULT NULL,
+        quote VARCHAR(2048) NOT NULL DEFAULT '',
+        confidence TINYINT UNSIGNED NOT NULL DEFAULT 80,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (claim_id, revision),
+        KEY idx_cv_source (source_turn_id),
+        KEY idx_cv_recorded (recorded_from)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    """CREATE TABLE IF NOT EXISTS brain_claim_evidence (
+        claim_id BIGINT UNSIGNED NOT NULL,
+        revision INT UNSIGNED NOT NULL,
+        turn_id BIGINT UNSIGNED NOT NULL,
+        seq SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+        relation VARCHAR(16) NOT NULL DEFAULT 'supports',
+        quote VARCHAR(2048) NOT NULL DEFAULT '',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (claim_id, revision, turn_id, seq, relation),
+        KEY idx_evidence_turn (turn_id, seq)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    """CREATE TABLE IF NOT EXISTS brain_episodes (
+        turn_id BIGINT UNSIGNED NOT NULL,
+        session_id VARCHAR(96) NOT NULL DEFAULT '',
+        machine VARCHAR(48) NOT NULL DEFAULT '',
+        goal TEXT NULL,
+        decisions MEDIUMTEXT NULL,
+        open_items MEDIUMTEXT NULL,
+        blockers MEDIUMTEXT NULL,
+        next_step TEXT NULL,
+        status VARCHAR(16) NOT NULL DEFAULT 'open',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (turn_id),
+        KEY idx_episode_session (session_id, turn_id),
+        KEY idx_episode_status (status, updated_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
 )
 
 # 模式版本与迁移（幂等；多进程/多机并发用 GET_LOCK 串行化）
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 _MIGRATIONS: dict[int, tuple[str, tuple[str, ...]]] = {
     1: ("machine 列（多设备归属）", (
@@ -545,6 +630,47 @@ _MIGRATIONS: dict[int, tuple[str, tuple[str, ...]]] = {
         "ALTER TABLE brain_turns ADD COLUMN IF NOT EXISTS message_count SMALLINT UNSIGNED NOT NULL DEFAULT 0 AFTER truncated",
         "ALTER TABLE brain_turns ADD COLUMN IF NOT EXISTS message_bytes INT UNSIGNED NOT NULL DEFAULT 0 AFTER message_count",
         "ALTER TABLE brain_sessions ADD COLUMN IF NOT EXISTS archived_messages INT UNSIGNED NOT NULL DEFAULT 0 AFTER turn_count",
+    )),
+    6: ("知识层：主张 / 版本 / 证据 / 情节", (
+        "CREATE TABLE IF NOT EXISTS brain_claims ("
+        "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, machine VARCHAR(48) NOT NULL DEFAULT '', "
+        "subject VARCHAR(191) NOT NULL, predicate VARCHAR(96) NOT NULL, "
+        "kind VARCHAR(24) NOT NULL DEFAULT 'fact', slot_key CHAR(32) NOT NULL, "
+        "current_revision INT UNSIGNED NOT NULL DEFAULT 1, state VARCHAR(16) NOT NULL DEFAULT 'active', "
+        "importance TINYINT NOT NULL DEFAULT 5, "
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (id), UNIQUE KEY uniq_claim_slot (slot_key), "
+        "KEY idx_claim_subject (subject, predicate), KEY idx_claim_state (state, updated_at)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        "CREATE TABLE IF NOT EXISTS brain_claim_versions ("
+        "claim_id BIGINT UNSIGNED NOT NULL, revision INT UNSIGNED NOT NULL, "
+        "value_text MEDIUMTEXT NOT NULL, basis VARCHAR(16) NOT NULL DEFAULT 'direct_report', "
+        "valid_from DATETIME NULL DEFAULT NULL, valid_to DATETIME NULL DEFAULT NULL, "
+        "recorded_from DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, recorded_to DATETIME NULL DEFAULT NULL, "
+        "replaces_revision INT UNSIGNED NULL DEFAULT NULL, source_turn_id BIGINT UNSIGNED NULL DEFAULT NULL, "
+        "source_seq SMALLINT UNSIGNED NULL DEFAULT NULL, quote VARCHAR(2048) NOT NULL DEFAULT '', "
+        "confidence TINYINT UNSIGNED NOT NULL DEFAULT 80, "
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (claim_id, revision), KEY idx_cv_source (source_turn_id), KEY idx_cv_recorded (recorded_from)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        "CREATE TABLE IF NOT EXISTS brain_claim_evidence ("
+        "claim_id BIGINT UNSIGNED NOT NULL, revision INT UNSIGNED NOT NULL, "
+        "turn_id BIGINT UNSIGNED NOT NULL, seq SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
+        "relation VARCHAR(16) NOT NULL DEFAULT 'supports', quote VARCHAR(2048) NOT NULL DEFAULT '', "
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (claim_id, revision, turn_id, seq, relation), KEY idx_evidence_turn (turn_id, seq)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        "CREATE TABLE IF NOT EXISTS brain_episodes ("
+        "turn_id BIGINT UNSIGNED NOT NULL, session_id VARCHAR(96) NOT NULL DEFAULT '', "
+        "machine VARCHAR(48) NOT NULL DEFAULT '', goal TEXT NULL, decisions MEDIUMTEXT NULL, "
+        "open_items MEDIUMTEXT NULL, blockers MEDIUMTEXT NULL, next_step TEXT NULL, "
+        "status VARCHAR(16) NOT NULL DEFAULT 'open', "
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (turn_id), KEY idx_episode_session (session_id, turn_id), "
+        "KEY idx_episode_status (status, updated_at)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
     )),
 }
 
@@ -968,15 +1094,210 @@ class BrainStore:
             pass
         return {"id": int(mem_id), "deactivated": rowcount}
 
+    # -------------------------------------------------- 知识层（v6：主张 / 证据 / 情节）
+
+    @staticmethod
+    def claim_slot_key(machine: str, subject: str, predicate: str, kind: str) -> str:
+        """一条主张的唯一槽位：同机 + 同主语 + 同谓词 + 同类 = 同一条主张的不同版本。"""
+        raw = "\x00".join([str(machine or ""), str(subject or ""), str(predicate or ""), str(kind or "")])
+        return hashlib.md5(raw.encode("utf-8", "replace")).hexdigest()
+
+    @staticmethod
+    def _json_list(value: Any) -> str:
+        """把 list / JSON 字符串统一成 JSON 数组文本（落库前校验）。"""
+        if value is None:
+            return "[]"
+        if isinstance(value, (list, tuple)):
+            return json.dumps([str(v) for v in value if str(v).strip()], ensure_ascii=False)
+        text = str(value).strip()
+        if not text:
+            return "[]"
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return json.dumps([str(v) for v in parsed], ensure_ascii=False)
+        except Exception:  # noqa: BLE001
+            pass
+        return json.dumps([text], ensure_ascii=False)
+
+    def claim_remember(self, subject: str, predicate: str, value: str, *,
+                       kind: str = "fact", basis: str = "direct_report",
+                       valid_from: Optional[str] = None, valid_to: Optional[str] = None,
+                       turn_id: Optional[int] = None, seq: Optional[int] = None,
+                       quote: str = "", confidence: int = 80, importance: int = 5,
+                       machine: str = "") -> dict[str, Any]:
+        """记一条结构化主张（subject/predicate/value），老版本自动封版。
+
+        与 brain_memories 的区别：这里是「一个槽位的当前值 + 历史版本」，
+        同槽位再写只递增 revision，不新增行；每条版本可挂证据（turn_id + seq + quote）。
+        """
+        subject = str(subject or "").strip()[:191]
+        predicate = str(predicate or "").strip()[:96]
+        value = str(value or "").strip()
+        if not subject or not predicate or not value:
+            raise BrainError("subject / predicate / value 都不能为空")
+        kind = (str(kind or "fact").strip() or "fact")[:24]
+        basis = (str(basis or "direct_report").strip() or "direct_report")[:16]
+        mach = str(machine or self.machine or "")[:48]
+        slot = self.claim_slot_key(mach, subject, predicate, kind)
+        try:
+            importance = max(1, min(10, int(importance)))
+            confidence = max(0, min(100, int(confidence)))
+        except (TypeError, ValueError):
+            importance, confidence = 5, 80
+        self.ensure_schema()
+        row = self._exec(
+            "SELECT id, current_revision FROM brain_claims WHERE slot_key = %s", (slot,), fetch=True)
+        if row:
+            claim_id = int(row[0]["id"])
+            revision = int(row[0]["current_revision"] or 0) + 1
+            self._exec(
+                "UPDATE brain_claims SET current_revision = %s, state = 'active', importance = %s, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = %s", (revision, importance, claim_id))
+            self._exec(
+                "UPDATE brain_claim_versions SET recorded_to = CURRENT_TIMESTAMP "
+                "WHERE claim_id = %s AND recorded_to IS NULL AND revision < %s", (claim_id, revision))
+            created = False
+        else:
+            _, claim_id = self._exec(
+                "INSERT INTO brain_claims (machine, subject, predicate, kind, slot_key, "
+                "current_revision, state, importance) VALUES (%s, %s, %s, %s, %s, 1, 'active', %s)",
+                (mach, subject, predicate, kind, slot, importance))
+            claim_id, revision, created = int(claim_id), 1, True
+        self._exec(
+            "INSERT INTO brain_claim_versions (claim_id, revision, value_text, basis, valid_from, "
+            "valid_to, replaces_revision, source_turn_id, source_seq, quote, confidence) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (claim_id, revision, value[:16000], basis, valid_from or None, valid_to or None,
+             revision - 1 if revision > 1 else None, int(turn_id) if turn_id else None,
+             int(seq) if seq is not None else None, str(quote or "")[:2000], confidence))
+        if turn_id:
+            self._exec(
+                "INSERT IGNORE INTO brain_claim_evidence (claim_id, revision, turn_id, seq, relation, quote) "
+                "VALUES (%s, %s, %s, %s, 'supports', %s)",
+                (claim_id, revision, int(turn_id), int(seq or 0), str(quote or "")[:2000]))
+        return {"claim_id": claim_id, "revision": revision, "slot_key": slot,
+                "subject": subject, "predicate": predicate, "kind": kind, "created": created}
+
+    def claim_recall(self, *, query: str = "", subject: str = "", predicate: str = "",
+                     limit: int = 10, history: bool = False) -> list[dict[str, Any]]:
+        """取当前有效主张（history=True 返回全部版本，按时间倒序）。"""
+        limit = max(1, min(50, int(limit or 10)))
+        self.ensure_schema()
+        if history:
+            sql = ("SELECT c.id AS claim_id, c.subject, c.predicate, c.kind, c.machine, v.revision, "
+                   "v.value_text, v.basis, v.confidence, v.valid_from, v.valid_to, "
+                   "v.recorded_from, v.recorded_to, v.source_turn_id, v.source_seq, v.quote "
+                   "FROM brain_claims c JOIN brain_claim_versions v ON v.claim_id = c.id WHERE 1=1 ")
+        else:
+            sql = ("SELECT c.id AS claim_id, c.subject, c.predicate, c.kind, c.machine, c.state, "
+                   "v.revision, v.value_text, v.basis, v.confidence, v.valid_from, v.valid_to, "
+                   "v.recorded_from, v.source_turn_id, v.source_seq, v.quote "
+                   "FROM brain_claims c JOIN brain_claim_versions v "
+                   "ON v.claim_id = c.id AND v.revision = c.current_revision "
+                   "WHERE c.state = 'active' ")
+        params: list[Any] = []
+        if subject:
+            sql += "AND c.subject LIKE %s "
+            params.append(f"%{subject}%")
+        if predicate:
+            sql += "AND c.predicate LIKE %s "
+            params.append(f"%{predicate}%")
+        if query:
+            terms = search_terms(query, max_terms=4) or [str(query)]
+            conds = []
+            for term in terms:
+                conds.append("(c.subject LIKE %s OR c.predicate LIKE %s OR v.value_text LIKE %s)")
+                like = f"%{term}%"
+                params += [like, like, like]
+            sql += "AND (" + " OR ".join(conds) + ") "
+        sql += "ORDER BY v.recorded_from DESC, c.id DESC LIMIT %s"
+        params.append(limit)
+        rows = [dict(r) for r in self._exec(sql, tuple(params), fetch=True)]
+        for r in rows:
+            for k, v in list(r.items()):
+                if isinstance(v, datetime):
+                    r[k] = v.isoformat(sep=" ", timespec="seconds")
+        return rows
+
+    def claim_retire(self, claim_id: int, reason: str = "") -> dict[str, Any]:
+        """撤回一条主张（保留版本与证据，只是不再算当前值）。"""
+        self.ensure_schema()
+        rowcount, _ = self._exec(
+            "UPDATE brain_claims SET state = 'retracted', updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = %s AND state <> 'retracted'", (int(claim_id),))
+        self._exec(
+            "UPDATE brain_claim_versions SET recorded_to = CURRENT_TIMESTAMP "
+            "WHERE claim_id = %s AND recorded_to IS NULL", (int(claim_id),))
+        return {"claim_id": int(claim_id), "retracted": rowcount, "reason": str(reason or "")[:200]}
+
+    def episode_set(self, turn_id: int, *, goal: Optional[str] = None,
+                    decisions: Any = None, open_items: Any = None, blockers: Any = None,
+                    next_step: Optional[str] = None, status: Optional[str] = None,
+                    session_id: str = "") -> dict[str, Any]:
+        """给某一轮挂一个情节头（目标/决策/未完成/阻碍/下一步）；只更新传入的字段。"""
+        tid = int(turn_id)
+        self.ensure_schema()
+        vals = {
+            "goal": None if goal is None else str(goal)[:4000],
+            "decisions": None if decisions is None else self._json_list(decisions),
+            "open_items": None if open_items is None else self._json_list(open_items),
+            "blockers": None if blockers is None else self._json_list(blockers),
+            "next_step": None if next_step is None else str(next_step)[:4000],
+            "status": None if status is None else str(status)[:16],
+        }
+        self._exec(
+            "INSERT INTO brain_episodes (turn_id, session_id, machine, goal, decisions, open_items, "
+            "blockers, next_step, status) VALUES (%s, %s, %s, COALESCE(%s,''), COALESCE(%s,'[]'), "
+            "COALESCE(%s,'[]'), COALESCE(%s,'[]'), COALESCE(%s,''), COALESCE(%s,'open')) "
+            "ON DUPLICATE KEY UPDATE goal = COALESCE(%s, goal), decisions = COALESCE(%s, decisions), "
+            "open_items = COALESCE(%s, open_items), blockers = COALESCE(%s, blockers), "
+            "next_step = COALESCE(%s, next_step), status = COALESCE(%s, status)",
+            (tid, str(session_id or "")[:96], self.machine[:48],
+             vals["goal"], vals["decisions"], vals["open_items"], vals["blockers"],
+             vals["next_step"], vals["status"],
+             vals["goal"], vals["decisions"], vals["open_items"], vals["blockers"],
+             vals["next_step"], vals["status"]))
+        return {"turn_id": tid, "updated": True}
+
+    def episode_get(self, turn_id: int = 0, *, session_id: str = "") -> dict[str, Any]:
+        """读某一轮的情节头；不传 turn_id 时取该会话最后一轮。"""
+        self.ensure_schema()
+        tid = int(turn_id or 0)
+        if not tid and session_id:
+            rows = self._exec(
+                "SELECT turn_id FROM brain_episodes WHERE session_id = %s ORDER BY turn_id DESC LIMIT 1",
+                (str(session_id)[:96],), fetch=True)
+            tid = int(rows[0]["turn_id"]) if rows else 0
+        if not tid:
+            return {"found": False, "reason": "需要 turn_id 或可用的 session_id"}
+        rows = self._exec(
+            "SELECT turn_id, session_id, machine, goal, decisions, open_items, blockers, next_step, "
+            "status, created_at, updated_at FROM brain_episodes WHERE turn_id = %s", (tid,), fetch=True)
+        if not rows:
+            return {"found": False, "turn_id": tid}
+        out = dict(rows[0])
+        for key in ("decisions", "open_items", "blockers"):
+            try:
+                out[key] = json.loads(out.get(key) or "[]")
+            except Exception:  # noqa: BLE001
+                out[key] = []
+        for k, v in list(out.items()):
+            if isinstance(v, datetime):
+                out[k] = v.isoformat(sep=" ", timespec="seconds")
+        out["found"] = True
+        return out
+
     def record_turn(self, session_id: str, user_content: str, assistant_content: str,
                     *, platform: str = "", author: str = "",
                     messages: Optional[list[dict[str, Any]]] = None) -> int:
+        platform = normalize_platform(platform)
         if self._remote_on() and int(self.cfg.get("remote_turn_sync") or 0):
             # 回合归档走远程（默认关）：服务端自己截断/写库，与本地路径口径一致
             try:
                 data = self._remote_call("/v1/memory/turn", {
                     "session_id": str(session_id or ""), "user": str(user_content or ""),
-                    "assistant": str(assistant_content or ""), "platform": str(platform or "")})
+                    "assistant": str(assistant_content or ""), "platform": platform})
                 return int(data.get("id") or 0)
             except Exception as exc:  # noqa: BLE001
                 if not int(self.cfg.get("remote_fallback") or 0):
@@ -984,7 +1305,7 @@ class BrainStore:
                     return 0
                 logger.warning("brain: 远程回合归档失败，回落本地: %s", str(exc)[:200])
         session_id = str(session_id or "")[:96]
-        platform = str(platform or "")[:48]
+        platform = platform[:48]
         author = str(author or "")[:64]
         u_raw, a_raw = str(user_content or ""), str(assistant_content or "")
         u, a = u_raw[:16000], a_raw[:16000]
@@ -1185,7 +1506,7 @@ class BrainStore:
                 "INSERT INTO brain_sessions (session_id, platform, machine, started_at, last_active, turn_count) "
                 "VALUES (%s, %s, %s, NOW(), NOW(), 0) "
                 "ON DUPLICATE KEY UPDATE last_active = NOW(), platform = VALUES(platform), machine = VALUES(machine)",
-                (session_id, str(platform or "")[:48], self.machine[:48]),
+                (session_id, normalize_platform(platform)[:48], self.machine[:48]),
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("brain: touch_session 失败: %s", exc)
@@ -1206,7 +1527,7 @@ class BrainStore:
         _, row_id = self._exec(
             "INSERT INTO brain_archive (session_id, machine, platform, kind, payload) "
             "VALUES (%s, %s, %s, %s, %s)",
-            (str(session_id or "")[:96], self.machine[:48], str(platform or "")[:48],
+            (str(session_id or "")[:96], self.machine[:48], normalize_platform(platform)[:48],
              str(kind or "precompress")[:24], payload),
         )
         return row_id
@@ -2570,6 +2891,9 @@ class BrainStore:
             "(SELECT COUNT(*) FROM brain_turns) AS turns, "
             "(SELECT COUNT(*) FROM brain_turn_messages) AS turn_messages, "
             "(SELECT COALESCE(SUM(raw_bytes), 0) FROM brain_turn_messages) AS turn_messages_raw_bytes, "
+            "(SELECT COUNT(*) FROM brain_claims WHERE state = 'active') AS claims_active, "
+            "(SELECT COUNT(*) FROM brain_claim_versions) AS claim_versions, "
+            "(SELECT COUNT(*) FROM brain_episodes) AS episodes, "
             "(SELECT COUNT(*) FROM brain_sessions) AS sessions, "
             "(SELECT COUNT(*) FROM brain_archive) AS archives",
             fetch=True)[0]
@@ -2646,6 +2970,19 @@ class BrainStore:
             else:
                 rowcount, _ = self._exec("DELETE m " + msg_cond, (t_days,))
                 out["turn_messages"] = int(rowcount)
+            # 情节头与证据链随轮次一起清（主张版本本身保留，只把断掉的证据引用摘掉）
+            ep_cond = "FROM brain_episodes e JOIN brain_turns t ON t.id = e.turn_id WHERE t.ts < (NOW() - INTERVAL %s DAY)"
+            ev_cond = ("FROM brain_claim_evidence e JOIN brain_turns t ON t.id = e.turn_id "
+                       "WHERE t.ts < (NOW() - INTERVAL %s DAY)")
+            if dry_run:
+                out["episodes"] = int(self._exec("SELECT COUNT(*) AS c " + ep_cond, (t_days,), fetch=True)[0]["c"] or 0)
+                out["claim_evidence"] = int(self._exec("SELECT COUNT(*) AS c " + ev_cond, (t_days,), fetch=True)[0]["c"] or 0)
+            else:
+                out["claim_evidence"] = int(self._exec("DELETE e " + ev_cond, (t_days,))[0] or 0)
+                out["episodes"] = int(self._exec("DELETE e " + ep_cond, (t_days,))[0] or 0)
+                self._exec(
+                    "UPDATE brain_claim_versions v LEFT JOIN brain_turns t ON t.id = v.source_turn_id "
+                    "SET v.source_turn_id = NULL WHERE v.source_turn_id IS NOT NULL AND t.id IS NULL")
         for name, delete_sql, count_sql, params in targets:
             if dry_run:
                 out[name] = int(self._exec(count_sql, params, fetch=True)[0]["c"] or 0)

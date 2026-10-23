@@ -7,7 +7,7 @@ Hermes 记忆提供者插件：把两台本机服务接进 agent 大脑。
 | 层 | 服务 | 内容 | 生命周期 |
 |---|---|---|---|
 | 短期 | Redis `127.0.0.1:9079` | `brain:recent` 最近对话流（Stream）、`brain:session:*` 会话状态、`brain:hot:*` 热点记忆镜像、`brain:qcache:*` 检索缓存 | TTL 自动过期（默认 14-30 天），无需维护 |
-| 长期 | MariaDB `127.0.0.1:57306` / 库 `hermes_agent_memory` | `brain_memories` 事实/偏好/决策、`brain_turns` 完整对话归档、`brain_turn_messages` 全量转录层（工具调用/输出/推理，zlib）、`brain_sessions` 会话索引、`brain_archive` 压缩前存档 | 永久，`hermes brain prune` 按保留期清理 |
+| 长期 | MariaDB `127.0.0.1:57306` / 库 `hermes_agent_memory` | `brain_memories` 事实/偏好/决策、`brain_claims`/`brain_claim_versions`/`brain_claim_evidence` 结构化主张与证据、`brain_episodes` 每轮情节头、`brain_turns` 完整对话归档、`brain_turn_messages` 全量转录层（工具调用/输出/推理，zlib）、`brain_sessions` 会话索引、`brain_archive` 压缩前存档 | 永久，`hermes brain prune` 按保留期清理 |
 
 ## 接入点（Hermes 钩子）
 
@@ -21,6 +21,35 @@ Hermes 记忆提供者插件：把两台本机服务接进 agent 大脑。
 ## 工具
 
 `brain_remember` · `brain_recall` · `brain_forget` · `brain_recent` · `brain_stats` · `brain_turn_detail`
+· `brain_claim_remember` · `brain_claim_recall` · `brain_episode_set` · `brain_episode_get`
+
+## 知识层（schema v6：主张 / 版本 / 证据 / 情节）
+
+`brain_memories` 是扁平文本（一段话 + kind/tags/importance），适合记「结论」；
+需要「可核对、可回溯、会随时间变化」的知识时用这一层：
+
+- `brain_claims` —— 一条主张的身份：`subject` / `predicate` / `kind` / `slot_key`（md5(machine|subject|predicate|kind)，唯一）
+  + `current_revision` + `state`（active/retracted）。同一槽位再写只递增版本，不新增行。
+- `brain_claim_versions` —— 每次写入的版本：`value_text`、`basis`（direct_report/observed/derived_summary/inferred_suggestion）、
+  `valid_from`/`valid_to`（事实有效期）、`recorded_from`/`recorded_to`（记录期）、`replaces_revision`、
+  `source_turn_id`/`source_seq`/`quote`（证据位置与引用）、`confidence`。
+- `brain_claim_evidence` —— 证据链：(claim_id, revision) → (turn_id, seq)，`relation` 为 supports/contradicts/derived_from；
+  指向 `brain_turn_messages` 的具体一条消息，可回读原文。
+- `brain_episodes` —— 每轮一个情节头（主键 turn_id）：`goal`、`decisions`、`open_items`、`blockers`、`next_step`、`status`（open/done/abandoned）。
+
+写入与读取：
+
+```
+brain_claim_remember(subject="服务器", predicate="时区", value="UTC",
+                     turn_id=750, seq=2, quote="库内时间一律 UTC")
+brain_claim_recall(subject="服务器")          # 当前值
+brain_claim_recall(query="时区", history=true) # 全部版本（含已封版/已撤回）
+brain_episode_set(turn_id=750, goal="…", decisions=[…], open_items=[…], next_step="…")
+brain_episode_get(turn_id=750)
+```
+
+`brain_turn_detail` 会自动带出该轮的 episode；`brain_recall` 的返回里多一个 `claims` 字段。
+`prune` 删轮次时，连带删该轮的 episode 与证据行（主张版本保留，只把断掉的 `source_turn_id` 置空）。
 
 ## 全量转录层（brain_turn_messages）
 

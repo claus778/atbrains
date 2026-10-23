@@ -53,6 +53,8 @@ def _cmd_status(args) -> int:
             _out(f"归档    对话 {m['turns']} 条 · 会话 {m['sessions']} 个 · 压缩存档 {m['archives']} 份")
             _out(f"转录    {m.get('turn_messages', 0)} 条消息 · "
                  f"{_fmt_bytes(m.get('turn_messages_raw_bytes', 0))} 原始（zlib 压缩存）")
+            _out(f"知识层  主张 {m.get('claims_active', 0)} 活跃 · 版本 {m.get('claim_versions', 0)} · "
+                 f"情节 {m.get('episodes', 0)}")
             _out(f"占用    MariaDB {_fmt_bytes(m['size_bytes'])} · Redis {r.get('keys', '?')} keys"
                  f" · 流 {r.get('recent_stream', '?')} 条 · {r.get('used_memory', '')}")
         except Exception as exc:  # noqa: BLE001
@@ -165,7 +167,8 @@ def _cmd_doctor(args) -> int:
     try:
         store.ensure_schema()
         _out(f"表结构: ✓ v{store.schema_version()}"
-             " (brain_memories / brain_turns / brain_sessions / brain_archive / brain_meta)")
+             " (brain_memories / brain_claims / brain_claim_versions / brain_claim_evidence / brain_episodes"
+             " / brain_turns / brain_turn_messages / brain_sessions / brain_archive / brain_meta)")
     except Exception as exc:  # noqa: BLE001
         ok = False
         _out(f"表结构: ✗ ({exc})")

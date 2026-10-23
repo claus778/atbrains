@@ -295,6 +295,27 @@ class StorePureTest(unittest.TestCase):
         self.assertLessEqual(len(text), 62)
 
 
+class ClaimLayerTest(unittest.TestCase):
+    def test_slot_key_stable_and_distinct(self) -> None:
+        a = BrainStore.claim_slot_key("server", "服务器", "时区", "fact")
+        b = BrainStore.claim_slot_key("server", "服务器", "时区", "fact")
+        c = BrainStore.claim_slot_key("server", "服务器", "时区", "preference")
+        d = BrainStore.claim_slot_key("r730", "服务器", "时区", "fact")
+        self.assertEqual(a, b)
+        self.assertNotEqual(a, c)
+        self.assertNotEqual(a, d)
+        self.assertEqual(len(a), 32)
+
+    def test_json_list_shapes(self) -> None:
+        f = BrainStore._json_list
+        self.assertEqual(json.loads(f(None)), [])
+        self.assertEqual(json.loads(f("")), [])
+        self.assertEqual(json.loads(f(["a", "b"])), ["a", "b"])
+        self.assertEqual(json.loads(f('["x","y"]')), ["x", "y"])
+        self.assertEqual(json.loads(f("单条")), ["单条"])
+        self.assertEqual(json.loads(f(["a", " "])), ["a"])
+
+
 class CliTest(unittest.TestCase):
     def test_fmt_bytes(self) -> None:
         self.assertEqual(cli._fmt_bytes(0), "0 B")

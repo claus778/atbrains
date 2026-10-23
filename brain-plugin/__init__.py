@@ -45,6 +45,8 @@ def _remote_configured(cfg: dict[str, Any]) -> bool:
 
 SYSTEM_PROMPT_BLOCK = """## brain 记忆库（Redis 短期 + MariaDB 长期，本机自托管）
 - 长期事实/偏好/决策：随时用 `brain_remember` 永久保存（MariaDB），检索用 `brain_recall`；两者跨会话生效。
+- 结构化主张（「X 的 Y 是 Z」这类可核对的值）：用 `brain_claim_remember(subject, predicate, value)`，同槽位只递增版本、旧版本自动封版；`brain_claim_recall` 取当前值或历史。
+- 每一轮的目标/决策/未完成项：用 `brain_episode_set(turn_id, …)` 挂情节头，`brain_episode_get` 读回。
 - 短期层（Redis）自动缓存最近对话流与会话状态，到期自动清理，不需要手工维护。
 - 每轮对话自动归档（MariaDB brain_turns + Redis brain:recent），工具调用/工具输出/推理另存于 brain_turn_messages（zlib 压缩），压缩前上下文自动存档，不会丢细节。
 - 需要最近发生了什么 → `brain_recent`；要复盘某一轮的工具过程 → `brain_turn_detail(turn_id 或 session_id)`；库的规模/健康 → `brain_stats`。"""
@@ -116,6 +118,71 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "session_id": {"type": "string", "description": "会话 id（不给 turn_id 时取该会话最后一轮）。"},
                 "max_chars": {"type": "integer", "minimum": 200, "maximum": 20000,
                               "description": "每条消息正文的字符上限，默认 1500。"},
+            },
+        },
+    },
+    {
+        "name": "brain_claim_remember",
+        "description": "记一条结构化主张（subject/predicate/value）：同一槽位再写只递增版本，旧版本自动封版；"
+                       "可挂证据（turn_id + seq + quote）指回 brain_turn_messages。适合「X 的 Y 是 Z」这类可核对的事实/偏好/决策。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "subject": {"type": "string", "description": "主语，如 服务器 / 用户 / 项目名（≤191 字符）。"},
+                "predicate": {"type": "string", "description": "谓词，如 磁盘布局 / 时区 / 首选模型（≤96 字符）。"},
+                "value": {"type": "string", "description": "当前值/内容（≤16000 字符）。"},
+                "kind": {"type": "string", "description": "fact | preference | constraint | decision | procedure | intention | alias（默认 fact）。"},
+                "basis": {"type": "string", "description": "direct_report | observed | derived_summary | inferred_suggestion（默认 direct_report）。"},
+                "turn_id": {"type": "integer", "description": "证据所在轮次 brain_turns.id（可选）。"},
+                "seq": {"type": "integer", "description": "证据在该轮转录里的 seq（可选）。"},
+                "quote": {"type": "string", "description": "证据原文引用（≤2000 字符，可选）。"},
+                "valid_from": {"type": "string", "description": "生效时间 YYYY-MM-DD HH:MM:SS（UTC，可选）。"},
+                "valid_to": {"type": "string", "description": "失效时间（可选）。"},
+                "confidence": {"type": "integer", "minimum": 0, "maximum": 100, "description": "置信度 0-100（默认 80）。"},
+                "importance": {"type": "integer", "minimum": 1, "maximum": 10, "description": "重要度 1-10（默认 5）。"},
+            },
+            "required": ["subject", "predicate", "value"],
+        },
+    },
+    {
+        "name": "brain_claim_recall",
+        "description": "检索结构化主张的当前值（history=true 返回全部历史版本，含证据 turn_id/seq/quote）。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "模糊匹配主语/谓词/值（可选）。"},
+                "subject": {"type": "string", "description": "只查某个主语（可选）。"},
+                "predicate": {"type": "string", "description": "只查某个谓词（可选）。"},
+                "history": {"type": "boolean", "description": "true = 返回全部版本（含已封版/已撤回），默认 false。"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "description": "条数，默认 10。"},
+            },
+        },
+    },
+    {
+        "name": "brain_episode_set",
+        "description": "给某一轮挂情节头（目标/决策/未完成项/阻碍/下一步），只更新传入的字段。用于「这轮在做什么、做到哪、下一步」。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "turn_id": {"type": "integer", "description": "brain_turns.id。"},
+                "goal": {"type": "string", "description": "这一轮的目标。"},
+                "decisions": {"type": "array", "items": {"type": "string"}, "description": "本轮做出的决策。"},
+                "open_items": {"type": "array", "items": {"type": "string"}, "description": "未完成项。"},
+                "blockers": {"type": "array", "items": {"type": "string"}, "description": "阻碍。"},
+                "next_step": {"type": "string", "description": "下一步。"},
+                "status": {"type": "string", "description": "open | done | abandoned（默认 open）。"},
+            },
+            "required": ["turn_id"],
+        },
+    },
+    {
+        "name": "brain_episode_get",
+        "description": "读某一轮的情节头（不传 turn_id 时取该会话最后一轮）。",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "turn_id": {"type": "integer"},
+                "session_id": {"type": "string"},
             },
         },
     },
@@ -394,6 +461,14 @@ class BrainMemoryProvider(MemoryProvider):
                 return self._tool_stats()
             if tool_name == "brain_turn_detail":
                 return self._tool_turn_detail(args or {})
+            if tool_name == "brain_claim_remember":
+                return self._tool_claim_remember(args or {})
+            if tool_name == "brain_claim_recall":
+                return self._tool_claim_recall(args or {})
+            if tool_name == "brain_episode_set":
+                return self._tool_episode_set(args or {})
+            if tool_name == "brain_episode_get":
+                return self._tool_episode_get(args or {})
         except BrainError as exc:
             return json.dumps({"ok": False, "error": str(exc)[:300]}, ensure_ascii=False)
         except Exception as exc:  # noqa: BLE001
@@ -426,6 +501,10 @@ class BrainMemoryProvider(MemoryProvider):
         include_turns = args.get("include_turns", True)
         mems = store.search_memories_hybrid(query, limit=limit, kind=str(kind) if kind else None)
         turns = store.search_turns(query, limit=min(limit, 5)) if include_turns else []
+        try:
+            claims = store.claim_recall(query=query, limit=min(limit, 5)) if query else []
+        except Exception:  # noqa: BLE001
+            claims = []
         for m in mems:
             for k, v in m.items():
                 if isinstance(v, datetime):
@@ -434,7 +513,7 @@ class BrainMemoryProvider(MemoryProvider):
             for k, v in t.items():
                 if isinstance(v, datetime):
                     t[k] = v.isoformat(sep=" ", timespec="seconds")
-        return json.dumps({"ok": True, "memories": mems, "turns": turns},
+        return json.dumps({"ok": True, "memories": mems, "turns": turns, "claims": claims},
                           ensure_ascii=False)
 
     def _tool_forget(self, args: dict[str, Any]) -> str:
@@ -469,6 +548,61 @@ class BrainMemoryProvider(MemoryProvider):
         result = store.turn_detail(int(turn_id) if turn_id is not None else 0,
                                    session_id=session_id,
                                    max_chars=int(max_chars))
+        if result.get("found"):
+            result["episode"] = store.episode_get(int(result["turn"]["id"]))
+        return json.dumps({"ok": True, **result}, ensure_ascii=False)
+
+    def _tool_claim_remember(self, args: dict[str, Any]) -> str:
+        store = self._require_store()
+        result = store.claim_remember(
+            str(args.get("subject") or ""),
+            str(args.get("predicate") or ""),
+            str(args.get("value") or ""),
+            kind=str(args.get("kind") or "fact"),
+            basis=str(args.get("basis") or "direct_report"),
+            valid_from=args.get("valid_from") or None,
+            valid_to=args.get("valid_to") or None,
+            turn_id=args.get("turn_id"),
+            seq=args.get("seq"),
+            quote=str(args.get("quote") or ""),
+            confidence=args.get("confidence") if args.get("confidence") is not None else 80,
+            importance=args.get("importance") if args.get("importance") is not None else 5,
+        )
+        return json.dumps({"ok": True, "claim": result}, ensure_ascii=False)
+
+    def _tool_claim_recall(self, args: dict[str, Any]) -> str:
+        store = self._require_store()
+        rows = store.claim_recall(
+            query=str(args.get("query") or ""),
+            subject=str(args.get("subject") or ""),
+            predicate=str(args.get("predicate") or ""),
+            limit=int(args.get("limit") or 10),
+            history=bool(args.get("history")),
+        )
+        return json.dumps({"ok": True, "claims": rows, "count": len(rows)}, ensure_ascii=False)
+
+    def _tool_episode_set(self, args: dict[str, Any]) -> str:
+        store = self._require_store()
+        turn_id = args.get("turn_id")
+        if turn_id is None:
+            raise BrainError("需要 turn_id（brain_recent 可查最近轮次）")
+        result = store.episode_set(
+            int(turn_id),
+            goal=args.get("goal"),
+            decisions=args.get("decisions"),
+            open_items=args.get("open_items"),
+            blockers=args.get("blockers"),
+            next_step=args.get("next_step"),
+            status=args.get("status"),
+            session_id=self._session_id,
+        )
+        return json.dumps({"ok": True, "episode": result}, ensure_ascii=False)
+
+    def _tool_episode_get(self, args: dict[str, Any]) -> str:
+        store = self._require_store()
+        turn_id = args.get("turn_id")
+        result = store.episode_get(int(turn_id) if turn_id is not None else 0,
+                                   session_id=str(args.get("session_id") or ""))
         return json.dumps({"ok": True, **result}, ensure_ascii=False)
 
     # -------------------------------------------------- 关停
