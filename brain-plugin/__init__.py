@@ -13,6 +13,7 @@
   on_delegation              → 子代理任务结果入库
 
 工具：brain_remember / brain_recall / brain_forget / brain_recent / brain_stats / brain_turn_detail
+      / brain_claim_remember / brain_claim_recall / brain_episode_set / brain_episode_get
 CLI：hermes brain <status|search|remember|recent|forget|prune|doctor>  (见 cli.py)
 """
 from __future__ import annotations
