@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import datetime
+import re
 import sqlite3
 import sys
 from pathlib import Path
@@ -38,6 +39,33 @@ IN_FLIGHT_SECONDS = 1800  # 末轮 30 分钟内视为进行中
 
 def norm(s: str) -> str:
     return " ".join((s or "").split())
+
+
+_KEY_RE = re.compile(r"sk-[A-Za-z0-9._\-]{4,}", re.I)
+
+
+def mask_keys(s: str) -> str:
+    """抹掉 sk-… 密钥：同一密钥在两处脱敏位数不同，规范化后才能比对。"""
+    return _KEY_RE.sub("<key>", s or "")
+
+
+_ORIGIN_PREFIX = "gateway message origin"
+
+
+def real_user_text(text: str) -> str | None:
+    """state.db 里的 user 行取「真正的用户文本」。None = 不算一轮（内部注入）。
+
+    * '[CONTEXT COMPACTION …]' / '[System: …]' → 不是用户轮，跳过；
+    * 'Gateway message origin (JSON…)' → 后面隔一个空行才是用户原话。
+    """
+    t = (text or "").strip()
+    low = t.lower()
+    if low.startswith("[context compaction") or low.startswith("[system"):
+        return None
+    if low.startswith(_ORIGIN_PREFIX):
+        parts = t.split("\n\n", 1)
+        return parts[1].strip() if len(parts) == 2 else ""
+    return t
 
 
 def to_utc(epoch: float) -> str:
@@ -104,6 +132,11 @@ def main() -> int:
         cur_t: dict | None = None
         for role, content, ts in msgs:
             text = content if isinstance(content, str) else str(content or "")
+            if role == "user":
+                real = real_user_text(text)
+                if real is None:
+                    continue
+                text = real
             if role == "user" and norm(text):
                 cur_t = {"u": text, "u_ts": float(ts), "a": None, "a_ts": None}
                 turns.append(cur_t)
@@ -115,11 +148,18 @@ def main() -> int:
         missing: list[dict] = []
         for t in turns:
             un = norm(t["u"])
+            mun = mask_keys(un)
             hit = None
             for i, b in enumerate(pool):
-                if b["u_norm"] == un:
+                if mask_keys(b["u_norm"]) == mun:
                     hit = i
                     break
+            if hit is None:
+                for i, b in enumerate(pool):
+                    bn = mask_keys(b["u_norm"])
+                    if (len(bn) >= 8 and mun.startswith(bn)) or (len(mun) >= 8 and bn.startswith(mun)):
+                        hit = i
+                        break
             if hit is None:
                 for i, b in enumerate(pool):
                     if un and b["u_norm"] and b["u_norm"][:60] == un[:60]:
