@@ -7,7 +7,7 @@ Hermes 记忆提供者插件：把两台本机服务接进 agent 大脑。
 | 层 | 服务 | 内容 | 生命周期 |
 |---|---|---|---|
 | 短期 | Redis `127.0.0.1:9079` | `brain:recent` 最近对话流（Stream）、`brain:session:*` 会话状态、`brain:hot:*` 热点记忆镜像、`brain:qcache:*` 检索缓存 | TTL 自动过期（默认 14-30 天），无需维护 |
-| 长期 | MariaDB `127.0.0.1:57306` / 库 `hermes_agent_memory` | `brain_memories` 事实/偏好/决策、`brain_claims`/`brain_claim_versions`/`brain_claim_evidence` 结构化主张与证据、`brain_episodes` 每轮情节头、`brain_turns` 完整对话归档、`brain_turn_messages` 全量转录层（工具调用/输出/推理，zlib）、`brain_sessions` 会话索引、`brain_archive` 压缩前存档 | 永久，`hermes brain prune` 按保留期清理 |
+| 长期 | MariaDB `127.0.0.1:57306` / 库 `agent_memory` | `brain_memories` 事实/偏好/决策、`brain_claims`/`brain_claim_versions`/`brain_claim_evidence` 结构化主张与证据、`brain_episodes` 每轮情节头、`brain_turns` 完整对话归档、`brain_turn_messages` 全量转录层（工具调用/输出/推理，zlib）、`brain_sessions` 会话索引、`brain_archive` 压缩前存档 | 永久，`hermes brain prune` 按保留期清理 |
 
 ## 接入点（Hermes 钩子）
 

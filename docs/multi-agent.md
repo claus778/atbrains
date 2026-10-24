@@ -9,7 +9,7 @@ brain 工具（记忆、检索、主张、情节）开放给任何支持 MCP 的
 
 ## 模型：一个共享库、一张表、agent 列
 
-- **长期层只有一个 MariaDB 库**：`hermes_agent_memory`；记忆只有一张
+- **长期层只有一个 MariaDB 库**：`agent_memory`；记忆只有一张
   `brain_memories` 表。Hermes、omp、dsh 写入的行都在同一张表里，召回默认跨 agent ——
   你对 omp 说过的偏好，Hermes 也能 recall 到。
 - **两条来源列，各管一件事**（schema v8 起）：
@@ -79,7 +79,7 @@ MCP 工具名与 Hermes 侧一致，客户端通常会加前缀（omp/dsh 显示
 ```
 
 验证：启动 omp 后工具列表里应出现 `mcp__brain__brain_*`；让它调用 `brain_stats`，
-应返回 `agent: omp`、`database: hermes_agent_memory`。
+应返回 `agent: omp`、`database: agent_memory`。
 
 > 本机验证脚本（SDK 方式，不依赖交互式 CLI）：
 > `cd ~/.bun/install/global/node_modules/@oh-my-pi/pi-coding-agent && bun examples/sdk/99-brain-mcp-test.ts`
@@ -116,7 +116,7 @@ ssh -p 7622 -L 8787:127.0.0.1:8787 root@111.230.71.79
 python3 /root/agent-db/mcp_client_test.py --url http://127.0.0.1:8787/mcp --agent omp --write-test
 ```
 
-应输出 `initialize` / `tools: 10` / `stats: agent=omp db=hermes_agent_memory` /
+应输出 `initialize` / `tools: 10` / `stats: agent=omp db=agent_memory` /
 `remember: True` / `recall: ... target_found= True` / `forget: True` /
 `bad token status: 401`。
 

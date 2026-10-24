@@ -6,7 +6,7 @@
 # 时区: 固定 UTC (default-time-zone=+00:00, 99-timezone.cnf 挂载; 2026-10-13 曾切 +08:00 后按用户要求回退)。
 #
 # 布局台账 (详见同目录 credentials.txt):
-#   hermes 系实例: 库 hermes_agent_memory  user agent | Redis db0-db4 预留(brain:; server=db0, x260-debian=db1, windows-laptop=db2, db3=新实例(10-13))
+#   hermes 系实例: 库 agent_memory  user agent | Redis db0-db4 预留(brain:; server=db0, x260-debian=db1, windows-laptop=db2, db3=新实例(10-13))
 #   omp        : 库 omp_agent_memory      user omp     | Redis db5  前缀 omp:
 #   dsh        : 库 dsh_agent_memory      user dsh     | Redis db6  前缀 dsh:
 #   artex      : 库 artex_agent_memory    user artex   | Redis db7  前缀 artex:
@@ -21,7 +21,7 @@ docker run -d \
   --restart unless-stopped \
   -p 57306:3306 \
   -e MARIADB_ROOT_PASSWORD='***REDACTED***' \
-  -e MARIADB_DATABASE=hermes_agent_memory \
+  -e MARIADB_DATABASE=agent_memory \
   -e MARIADB_USER=agent \
   -e MARIADB_PASSWORD='***REDACTED***' \
   -v /root/mariadb:/var/lib/mysql \

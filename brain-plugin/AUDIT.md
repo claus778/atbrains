@@ -10,7 +10,7 @@
 | 严重度 | 文件:行 | 问题 | 触发条件 | 修复方式 |
 |---|---|---|---|---|
 | P0 | `core.py:988-1035` `store_turn_messages` | 游标 `archived_messages` 是「先 SELECT、再 INSERT 消息、最后 UPDATE 游标」三步，无锁无事务。两个进程/线程同时同步同一 session 时都从同一 `done` 起写 → 同一段对话重复落库；进程在 INSERT 之后、UPDATE 之前退出 → 下次重复灌入；`brain_sessions` 行缺失时 UPDATE 命中 0 行且不报错，游标永不推进 | 网关 + CLI/cron 并发 sync 同一会话；写转录途中崩溃；会话行被 prune/手工删掉后继续 sync | **已修复**：会话级事务 + `SELECT ... FOR UPDATE` 行锁，先 `INSERT ... ON DUPLICATE KEY UPDATE` 保证会话行存在，消息与游标同一事务提交，异常回滚 |
-| P0 | `__init__.py:481` `get_config_schema` | `mariadb_db` 默认值是 `agent_memory`，而实际库、README、`DEFAULT_CONFIG` 是 `hermes_agent_memory`。setup 向导会把错误库名写进 `brain.json` | `hermes memory setup` / 配置向导保存（值来自 schema 默认值） | **已修复**：默认值改为 `hermes_agent_memory` |
+| P0 | `__init__.py:481` `get_config_schema` | `mariadb_db` 默认值是 `agent_memory`，而实际库、README、`DEFAULT_CONFIG` 是 `agent_memory`。setup 向导会把错误库名写进 `brain.json` | `hermes memory setup` / 配置向导保存（值来自 schema 默认值） | **已修复**：默认值改为 `agent_memory` |
 | P1 | `core.py:1203` `recent_turns` | DB 回退路径把库内 naive DATETIME（UTC）直接 `.timestamp()`，Python 会按**本机时区**解释 → 非 UTC 主机（Windows 桌面版、`TZ=Asia/Shanghai`）时间整体偏移，CLI 再 `localtime()` 又偏一次 | 主机时区不是 UTC 且 Redis 不可用/`source="db"` | **已修复**：新增 `_utc_epoch()`，naive 值显式按 UTC 解释 |
 | P1 | `core.py:1464` `_mark_vector` | `embedded_at` 用 `time.strftime()`（本机时区）写入，而库内时间统一 UTC；`vector-status` 的 `last_ok` 在非 UTC 主机上错位 | 非 UTC 主机完成向量化 | **已修复**：改用 `datetime.now(timezone.utc)` |
 | P1 | `core.py:166-195` `_dotenv_get` | 不处理行内注释：`KEY=pw # prod` 会把 ` # prod` 当密码；`KEY="pw"  # prod` 因末字符不是引号而整段返回；单引号值同理 | `.env` 里密码/令牌后面跟注释（常见手写） | **已修复**：新增 `_dotenv_value()`，先解析引号（含 `\"`/`\\`），未加引号时仅在空白后的 `#` 处截断 |
@@ -51,7 +51,7 @@
 | # | 文件:行（修复后） | 修改 | 对应问题 |
 |---|---|---|---|
 | 1 | `core.py:1042` `store_turn_messages` | 改为「会话行 upsert → `SELECT ... FOR UPDATE` → 写消息 → 推游标」同一事务，异常回滚；游标切片抽成纯函数 `_cursor_start`（`core.py:579`） | P0 游标并发/崩溃窗口、会话行缺失导致游标不推进 |
-| 2 | `__init__.py:499` `get_config_schema` | `mariadb_db` 默认值改为 `hermes_agent_memory` | P0 setup 把库名写成 `agent_memory`（写错库） |
+| 2 | `__init__.py:499` `get_config_schema` | `mariadb_db` 默认值改为 `agent_memory` | P0 setup 把库名写成 `agent_memory`（写错库） |
 | 3 | `core.py:343` `_utc_epoch`；`core.py:1261` `recent_turns` | DB 回退路径用 `_utc_epoch()`，naive DATETIME 显式按 UTC 解释 | P1 非 UTC 主机时间整体偏移 |
 | 4 | `core.py:1548` `_mark_vector` | `embedded_at` 改用 `datetime.now(timezone.utc)` | P1 `vector-status.last_ok` 错位 |
 | 5 | `core.py:166` `_dotenv_value`；`_dotenv_get` | 统一解析引号与行内注释（仅空白后的 `#` 截断） | P1 `.env` 密码/令牌被注释污染 |

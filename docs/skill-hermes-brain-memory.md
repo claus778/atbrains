@@ -32,7 +32,7 @@ brain = 本机自托管双存储记忆提供者（Redis 短期 + MariaDB 长期�
 - 总览文档：`/root/agent_memory.md`（整套记忆系统配置全景，用户维护入口）
 - 激活：`memory.provider: brain`（`hermes config set memory.provider brain`）；出现在 `plugins.enabled` 里只是通用插件登记的装饰，激活只看 memory.provider
 - 多设备：brain_memories / brain_turns / brain_sessions 带 `machine` 列标来源机（brain.json `machine`，缺省=主机名；服务器=server）；召回片段自动标注 [machine]；多设备库号规划（Redis db0-db4 预留 hermes 系；server=db0、x260-debian=db1（原 x260，2026-10-13 更名）、windows-laptop=db2、db3=新实例(10-13 交付)、db4 空位；非 hermes 从 db5 起）见 `references/namespace-separation.md`；新设备/新实例接入的提示词工单（可整段粘贴给目标机 Hermes 执行）见 `references/device-onboarding-prompt.md`
-- 服务：Redis 容器 `:9079`、MariaDB 容器 `:57306`（2026-10-12 重建后两端口已绑 0.0.0.0；127.0.0.1 仍可用；主机 nftables 只黑名单 :22；腾讯云安全组已放行 57306/9079，2026-10-13 外部多点实测公网直连可达），库 `hermes_agent_memory`（表：brain_memories / brain_turns / brain_sessions / brain_archive / brain_meta；多 agent 分库台账见 `/root/agent-db/credentials.txt`）
+- 服务：Redis 容器 `:9079`、MariaDB 容器 `:57306`（2026-10-12 重建后两端口已绑 0.0.0.0；127.0.0.1 仍可用；主机 nftables 只黑名单 :22；腾讯云安全组已放行 57306/9079，2026-10-13 外部多点实测公网直连可达），库 `agent_memory`（表：brain_memories / brain_turns / brain_sessions / brain_archive / brain_meta；多 agent 分库台账见 `/root/agent-db/credentials.txt`）
 
 ## 体检（先跑这些定位）
 
@@ -127,7 +127,7 @@ python3 <skill_dir>/scripts/audit-memories.py [/path/to/.hermes]   # 默认 /roo
 
 - 内置 MEMORY.md / USER.md 每轮固定注入，brain 是它的完整镜像（`on_memory_write` 钩子自动双写；replace/remove 按 `previous_content` 精确匹配表内旧行）。
 - 回填/导入内置记忆时**逐字节保留原文**（按行 `§` 拆分；不要做空白规范化，否则镜像的 replace/remove 匹配不上旧行）；导入前按 active 内容去重，脚本保持幂等。
-- 多 agent 命名空间分离已于 2026-10-12 执行：hermes→`hermes_agent_memory`（旧名 agent_memory 已删）；omp/dsh/artex→各自 `<name>_agent_memory`+同名用户+Redis db5-7（重排前曾为 db1-3）。交付物在 `/root/agent-db/`（credentials.txt 台账 / rebuild.sh 重建命令 / init.sql 空卷初始化 / verify-accounts.py 自检）。机制事实与执行记录见 `references/namespace-separation.md` —— 跨库 `RENAME TABLE` 是秒级无损的元数据操作。
+- 多 agent 命名空间分离已于 2026-10-12 执行：hermes→`agent_memory`（旧名 agent_memory 已删）；omp/dsh/artex→各自 `<name>_agent_memory`+同名用户+Redis db5-7（重排前曾为 db1-3）。交付物在 `/root/agent-db/`（credentials.txt 台账 / rebuild.sh 重建命令 / init.sql 空卷初始化 / verify-accounts.py 自检）。机制事实与执行记录见 `references/namespace-separation.md` —— 跨库 `RENAME TABLE` 是秒级无损的元数据操作。
 
 ## 记忆库整理（去重 / 清测试垃圾）
 
@@ -140,7 +140,7 @@ export MYSQL_PWD=$(python3 -c "
 for l in open('/root/.hermes/.env', encoding='utf-8', errors='replace'):
     if l.startswith('BRAIN_MARIADB_PASSWORD'):
         print(l.split('=',1)[1].strip().strip('\"').strip(chr(39))); break")
-M="mysql -h127.0.0.1 -P57306 -uagent hermes_agent_memory --default-character-set=utf8mb4 -N -B"
+M="mysql -h127.0.0.1 -P57306 -uagent agent_memory --default-character-set=utf8mb4 -N -B"
 $M -e "SELECT id,machine,kind,importance,active,LEFT(content,100) FROM brain_memories WHERE active=1 ORDER BY machine,id;"
 ```
 
@@ -232,7 +232,7 @@ prune 按保留期直接 DELETE（turns 默认还全量保留），所以 brain_
 - 检索时间窗：`search_turns_days`（默认 120 天）只影响召回/检索，不动归档数据。
 - ⚠️ `rebuild.sh`/`credentials.txt`/`init.sql` 由 `/root/agent-db/generate-artifacts.py` 生成（模板内嵌该脚本）
   ——手改这些文件必须同步改生成器模板，否则下次生成会被覆盖（时区/注释等已进模板）。
-- 备份：升级前全量 `backup-hermes_agent_memory-20261013-pre-v2.sql`；插件旧版在 `brain-plugin-backup-20261013/`
+- 备份：升级前全量 `backup-agent_memory-20261013-pre-v2.sql`；插件旧版在 `brain-plugin-backup-20261013/`
   （含 audit/rebuild 的 .orig）。分发包已更新 `dist/brain-plugin-20261013.tar.gz/.zip`（其他机器要用新版时换包）。
 
 ## 向量层（语义召回，2026-10-14 深夜接入）
@@ -416,7 +416,7 @@ brain 是 Hermes 专属 provider；omp / dsh / Codex 不能加载它。对外通
 
 - 代码：`plugin/brain_mcp.py`（`BrainMCP`）+ `plugin/console/server.py` 的 `_mcp()` 路由；
   令牌沿用 `service.py` 的 `service-tokens.json`（与 `/v1` 共用）。
-- **共享而非隔离**：所有 agent 写 `hermes_agent_memory`，以 `machine` 列标注来源（omp/dsh/Hermes
+- **共享而非隔离**：所有 agent 写 `agent_memory`，以 `machine` 列标注来源（omp/dsh/Hermes
   互相可 recall）。`omp_agent_memory` / `dsh_agent_memory` / `artex_agent_memory` 三个空库保留，
   作将来完全隔离的备选，默认不用。
 - 工具 10 个，与插件同名同参。omp 配置 `~/.omp/agent/mcp.json`；dsh 在

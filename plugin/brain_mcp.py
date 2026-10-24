@@ -12,7 +12,7 @@ Harness（dsh）、Codex 等 agent 不能直接用它。本模块把同一套 Br
     → initialize / tools/list / tools/call ...
 
 令牌决定 agent 身份（令牌表 machine 名）。所有 agent 共用同一个 MariaDB
-长期库（默认 hermes_agent_memory），写入以 `machine` 列标注来源 agent —— 与
+长期库（默认 agent_memory），写入以 `machine` 列标注来源 agent —— 与
 scope-recall 的 "shared store, each memory says which agent it came in through"
 同一模型。Redis 只做热点缓存，不承载跨 agent 的权威数据。
 

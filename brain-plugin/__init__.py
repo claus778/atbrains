@@ -635,7 +635,7 @@ class BrainMemoryProvider(MemoryProvider):
             {"key": "mariadb_port", "description": "MariaDB 端口", "type": "integer", "default": 57306},
             {"key": "mariadb_user", "description": "MariaDB 用户", "default": "agent"},
             # 与 DEFAULT_CONFIG / README / 实际库名保持一致（旧默认值会把 setup 写到错库）
-            {"key": "mariadb_db", "description": "MariaDB 数据库", "default": "hermes_agent_memory"},
+            {"key": "mariadb_db", "description": "MariaDB 数据库", "default": "agent_memory"},
         ]
 
     def save_config(self, values: dict[str, Any], hermes_home: str) -> None:

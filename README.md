@@ -201,7 +201,7 @@ python3 /root/agent-db/mcp_client_test.py --agent omp --write-test   # 端到端
 
 omp 的 `~/.omp/agent/mcp.json`、dsh 的 `cordis.patch.yml` 接法见
 [`docs/multi-agent.md`](docs/multi-agent.md)。要点:**所有 agent 共用
-`hermes_agent_memory` 长期库、同一张 `brain_memories` 表**,`agent` 列标写入方
+`agent_memory` 长期库、同一张 `brain_memories` 表**,`agent` 列标写入方
 (hermes/omp/dsh/…)、`machine` 列标主机;`brain_recall` 默认跨 agent 召回,
 传 `agent=` 可只看某一方。
 

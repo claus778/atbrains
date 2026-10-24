@@ -10,7 +10,7 @@ brain 是本机自托管的双层记忆库，已作为 Hermes 记忆提供者激
 
 - **Redis（短期）**：最近对话流 `brain:recent`、会话状态 `brain:session:*`、热点记忆 `brain:hot:*`、检索缓存。
   TTL 自动过期，不需要手工维护。用于「最近发生了什么」类问题和快速命中。
-- **MariaDB（长期）**：`hermes_agent_memory` 库。`brain_memories`（事实/偏好/决策）、
+- **MariaDB（长期）**：`agent_memory` 库。`brain_memories`（事实/偏好/决策）、
   `brain_claims` + `brain_claim_versions` + `brain_claim_evidence`（结构化主张 / 版本 / 证据链）、
   `brain_episodes`（每轮情节头：目标/决策/未完成/下一步）、`brain_turns`（全部对话归档）、
   `brain_turn_messages`（全量转录层：工具调用/工具输出/推理，zlib 压缩）、`brain_sessions`（会话索引）、`brain_archive`（压缩前存档）。永久保存。
@@ -51,7 +51,7 @@ hermes brain vector-test <查询>    # 同一查询：关键词/向量/融合 �
 
 ## 共享库约束（所有实例共同遵守，2026-10-24）
 
-本库是全机共用的：`hermes_agent_memory`（MariaDB）。写入前先读这里的口径，别自己发明取值。
+本库是全机共用的：`agent_memory`（MariaDB）。写入前先读这里的口径，别自己发明取值。
 
 ### platform 词表（brain_turns / brain_sessions / brain_archive）
 

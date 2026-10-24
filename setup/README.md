@@ -29,7 +29,7 @@ docker run -d --name mariadb --restart unless-stopped \
   -p 57306:3306 \
   -v /root/mariadb:/var/lib/mysql \
   -e MARIADB_ROOT_PASSWORD='<MARIADB_ROOT_PASSWORD>' \
-  -e MARIADB_DATABASE=hermes_agent_memory \
+  -e MARIADB_DATABASE=agent_memory \
   -e MARIADB_USER=agent \
   -e MARIADB_PASSWORD='<MARIADB_PASSWORD>' \
   mariadb:latest \
@@ -94,7 +94,7 @@ cat ~/.hermes/brain.json
 {
   "redis_host": "127.0.0.1", "redis_port": 9079, "redis_db": 0,
   "mariadb_host": "127.0.0.1", "mariadb_port": 57306,
-  "mariadb_user": "agent", "mariadb_db": "hermes_agent_memory",
+  "mariadb_user": "agent", "mariadb_db": "agent_memory",
   "machine": "server",
   "vector_enabled": 1,
   "embed_model": "Qwen/Qwen3-Embedding-4B",

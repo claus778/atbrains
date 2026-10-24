@@ -10,7 +10,7 @@ brain 是本机自托管的双层记忆库，已作为 Hermes 记忆提供者激
 
 - **Redis（短期）**：最近对话流 `brain:recent`、会话状态 `brain:session:*`、热点记忆 `brain:hot:*`、检索缓存。
   TTL 自动过期，不需要手工维护。用于「最近发生了什么」类问题和快速命中。
-- **MariaDB（长期）**：`hermes_agent_memory` 库。`brain_memories`（事实/偏好/决策）、`brain_turns`（全部对话归档）、
+- **MariaDB（长期）**：`agent_memory` 库。`brain_memories`（事实/偏好/决策）、`brain_turns`（全部对话归档）、
   `brain_sessions`（会话索引）、`brain_archive`（压缩前存档）。永久保存。
 - **Qdrant（向量层）**：本机 `127.0.0.1:6333` 集合 `brain_memories`（2560 维，Qwen3-Embedding-4B / SiliconFlow）。
   写入后台异步向量化（含 systemd 定时兜底，每 3 分钟自动补账）；检索为「关键词 + 向量」混合（RRF）；向量不可用时自动退回纯关键词。

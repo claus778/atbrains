@@ -21,11 +21,11 @@
 
 | 使用方 | MariaDB 库 | MariaDB 用户 | Redis DB | 键前缀 |
 |---|---|---|---|---|
-| hermes（服务器，我） | `hermes_agent_memory` | `agent` | db0 | `brain:` |
-| hermes@x260-debian（linux 笔记本，已接入；2026-10-13 由 x260 更名） | `hermes_agent_memory`（共享） | `agent` | db1 | `brain:` |
-| hermes@windows-laptop（桌面版，已接入） | `hermes_agent_memory`（共享） | `agent` | db2 | `brain:` |
-| hermes@新实例（2026-10-13 交付工单，接入中） | `hermes_agent_memory`（共享） | `agent` | db3 | `brain:` |
-| hermes 预留（新实例空位） | `hermes_agent_memory`（共享） | `agent` | db4 | `brain:` |
+| hermes（服务器，我） | `agent_memory` | `agent` | db0 | `brain:` |
+| hermes@x260-debian（linux 笔记本，已接入；2026-10-13 由 x260 更名） | `agent_memory`（共享） | `agent` | db1 | `brain:` |
+| hermes@windows-laptop（桌面版，已接入） | `agent_memory`（共享） | `agent` | db2 | `brain:` |
+| hermes@新实例（2026-10-13 交付工单，接入中） | `agent_memory`（共享） | `agent` | db3 | `brain:` |
+| hermes 预留（新实例空位） | `agent_memory`（共享） | `agent` | db4 | `brain:` |
 | omp | `omp_agent_memory` | `omp` | db5 | `omp:` |
 | dsh | `dsh_agent_memory` | `dsh` | db6 | `dsh:` |
 | artex | `artex_agent_memory` | `artex` | db7 | `artex:` |
@@ -44,7 +44,7 @@
   {
     "redis_host": "127.0.0.1", "redis_port": 9079, "redis_db": 0,
     "mariadb_host": "127.0.0.1", "mariadb_port": 57306,
-    "mariadb_user": "agent", "mariadb_db": "hermes_agent_memory",
+    "mariadb_user": "agent", "mariadb_db": "agent_memory",
     "machine": "server",
     "vector_enabled": 1, "embed_model": "Qwen/Qwen3-Embedding-4B", "embed_dim": 2560,
     "qdrant_url": "http://127.0.0.1:6333", "qdrant_collection": "brain_memories",
@@ -66,7 +66,7 @@
 - 保数据重建容器：`/root/agent-db/rebuild.sh`（优雅停 → 删 → 原参数重建，数据卷不动）
 - 空卷从零初始化：`/root/agent-db/init.sql`（自动建 omp/dsh/artex 的库与账号；hermes 库由容器 env 创建）
 - 迁移前备份：`/root/agent-db/backup-agent_memory-20261012.sql`
-- 结构 v2 升级前全量备份：`/root/agent-db/backup-hermes_agent_memory-20261013-pre-v2.sql`（945KB）
+- 结构 v2 升级前全量备份：`/root/agent-db/backup-agent_memory-20261013-pre-v2.sql`（945KB）
 - ⚠️ `rebuild.sh` / `credentials.txt` / `init.sql` 由 `generate-artifacts.py` 生成（模板内嵌其中）——手改后必须同步改生成器模板，否则下次生成会被覆盖
 - 时区配置：`mysql-conf.d/99-timezone.cnf`（固定 UTC +00:00；重建脚本已挂载，运行中容器内同路径文件亦在）
 - 账号自检：`python3 /root/agent-db/verify-accounts.py`
@@ -98,7 +98,7 @@ python3 /root/agent-db/brain-overview.py      # 全库总览（记忆/对话/会
 
 ## 6. 多设备共享（已启用：服务器 + x260-debian + windows-laptop）
 
-三台 Hermes（服务器 / linux 笔记本 / windows 笔记本）共享 `hermes_agent_memory` 长期库：
+三台 Hermes（服务器 / linux 笔记本 / windows 笔记本）共享 `agent_memory` 长期库：
 
 - 长期记忆互通；Redis 短期层各用各库号（db0=服务器、db1=x260-debian、db2=windows-laptop、db3=新实例（10-13 交付）；db4 留给后续新实例；非 hermes agent 在 db5 起）；召回片段自动标注来源机
 - 纪律：新事实用 `brain_remember`（三机共享）；内置 MEMORY.md 以服务器为"主"维护（各机文件不自动同步）
@@ -109,7 +109,7 @@ python3 /root/agent-db/brain-overview.py      # 全库总览（记忆/对话/会
 
 1. brain 双存储记忆接入（Redis 短期 + MariaDB 长期），核心测试（读写/召回/归档/工具/CLI）全通过
 2. 内置记忆 27 条迁入数据库（MEMORY.md 15 条 + USER.md 12 条，逐字节一致）
-3. 多 agent 命名空间分离：`hermes_agent_memory` + omp/dsh/artex 三库，跨库迁移零丢失（30/11/5/0 前后一致）
+3. 多 agent 命名空间分离：`agent_memory` + omp/dsh/artex 三库，跨库迁移零丢失（30/11/5/0 前后一致）
 4. `machine` 来源机标识加固：三表加列 + 插件自动升级 + 召回标注 + 台账登记笔记本 db4/db5
 5. 两个容器保数据重建（去掉 127.0.0.1 端口限制，数据卷原样挂回）
 6. 完整性审计与修复：回填 c59721 会话丢失的 7 轮对话（激活前 3 轮 + 库改名窗口写入失败 4 轮）、补回 1 条镜像记忆（17:14 写入失败）；新增审计脚本 `/root/agent-db/audit-turns.py`

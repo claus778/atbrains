@@ -33,8 +33,8 @@ for name in ("omp", "dsh", "artex"):
 
 # 自己的库应可访问, 别人的库应被拒
 checks = [
-    ("agent", "hermes_agent_memory", True),
-    ("omp", "hermes_agent_memory", False),
+    ("agent", "agent_memory", True),
+    ("omp", "agent_memory", False),
     ("dsh", "omp_agent_memory", False),
     ("artex", "dsh_agent_memory", False),
 ]

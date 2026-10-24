@@ -27,7 +27,7 @@
 | `Hermes · x260-debian` | `brain 插件 · Redis db1` |
 | `Hermes · r9000p-Windows` | `brain 插件 · Redis db2` |
 | `Hermes · gigabyte-debian` | `brain 插件 · Redis db3` |
-| `omp / dsh(独立 Agent,经 MCP)` | `共享 hermes_agent_memory · machine 标注 omp/dsh` |
+| `omp / dsh(独立 Agent,经 MCP)` | `共享 agent_memory · machine 标注 omp/dsh` |
 | `artex(独立 Agent)` | `独立库 artex_agent_memory · Redis db7` |
 
 > 前 4 个是同一套 Hermes 的 4 个实例;第 5 个是非 Hermes 的独立 agent。
@@ -71,7 +71,7 @@
 
 | 标题 | 内容行 |
 |---|---|
-| `MariaDB :57306` | `唯一权威 · 永久 · 全机共享`<br>`库 hermes_agent_memory`<br>`brain_memories / brain_turns / brain_sessions / brain_archive / brain_vector_index / brain_meta`<br>`schema v4 · utf8mb4 · 时区 UTC`<br>`新增列:memory_type / superseded_by / superseded_at` |
+| `MariaDB :57306` | `唯一权威 · 永久 · 全机共享`<br>`库 agent_memory`<br>`brain_memories / brain_turns / brain_sessions / brain_archive / brain_vector_index / brain_meta`<br>`schema v4 · utf8mb4 · 时区 UTC`<br>`新增列:memory_type / superseded_by / superseded_at` |
 | `Redis :9079` | `短期 · 全部键带 TTL`<br>`db0 server · db1 x260-debian · db2 r9000p-Windows`<br>`db3 gigabyte-debian · db4 预留 · db5-7 omp/dsh/artex`<br>`brain:recent 对话流 · brain:hot:* 热点镜像 · qcache / qemb 缓存`<br>`可选:key 前缀隔离(替代多 DB)〔默认关闭〕` |
 | `Qdrant :6333 / :6334` | `向量语义层 · 可随时重建`<br>`集合 brain_memories`<br>`2560 维 · Cosine`<br>`访问口令仅在配置文件(只读挂载)` |
 

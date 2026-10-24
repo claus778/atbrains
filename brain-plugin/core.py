@@ -11,7 +11,7 @@
     brain:qcache:<h>    检索结果缓存（短期记忆命中，避免重复查库）
   上述短期键名中的 "brain" 段由配置 redis_key_prefix 决定（默认空 = 仍为 "brain"，
   多实例共库时置为如 "brain:server"，键名即变为 brain:server:hot:index 等）。
-  MariaDB（长期，库 hermes_agent_memory）
+  MariaDB（长期，库 agent_memory）
     brain_memories      长期事实/偏好/决策（永久）
     brain_turns         完整对话归档（永久）
     brain_turn_messages 全量转录层：每轮的工具调用/工具输出/推理（zlib JSON，永久）
@@ -68,7 +68,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "mariadb_host": "127.0.0.1",
     "mariadb_port": 57306,
     "mariadb_user": "agent",
-    "mariadb_db": "hermes_agent_memory",
+    "mariadb_db": "agent_memory",
     "machine": "",
     # 行为参数（可在 brain.json 覆盖，不进入 setup 向导）
     "short_term_ttl_days": 14,   # Redis 流/会话 TTL

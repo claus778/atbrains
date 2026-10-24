@@ -1,6 +1,6 @@
 # brain 共享库约束（2026-10-24 定稿，所有 Hermes 实例共同遵守）
 
-适用：所有写入 `hermes_agent_memory`（MariaDB 127.0.0.1:57306 / 111.230.71.79:57306）的 Hermes 实例。
+适用：所有写入 `agent_memory`（MariaDB 127.0.0.1:57306 / 111.230.71.79:57306）的 Hermes 实例。
 库内时间一律 UTC（比北京时间慢 8 小时）。
 
 ## 0. agent / machine 口径（schema v8）
