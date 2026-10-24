@@ -1,4 +1,4 @@
-# brain 插件隐藏缺陷审计
+# atbrains 插件隐藏缺陷审计
 
 - 审计基线：commit `402861c`（`core.py` 2556 行 / `__init__.py` 520 行 / `cli.py` 433 行）。
 - 行号均为**审计基线**行号；修复处的当前行号见文末「修复清单」。
@@ -10,7 +10,7 @@
 | 严重度 | 文件:行 | 问题 | 触发条件 | 修复方式 |
 |---|---|---|---|---|
 | P0 | `core.py:988-1035` `store_turn_messages` | 游标 `archived_messages` 是「先 SELECT、再 INSERT 消息、最后 UPDATE 游标」三步，无锁无事务。两个进程/线程同时同步同一 session 时都从同一 `done` 起写 → 同一段对话重复落库；进程在 INSERT 之后、UPDATE 之前退出 → 下次重复灌入；`brain_sessions` 行缺失时 UPDATE 命中 0 行且不报错，游标永不推进 | 网关 + CLI/cron 并发 sync 同一会话；写转录途中崩溃；会话行被 prune/手工删掉后继续 sync | **已修复**：会话级事务 + `SELECT ... FOR UPDATE` 行锁，先 `INSERT ... ON DUPLICATE KEY UPDATE` 保证会话行存在，消息与游标同一事务提交，异常回滚 |
-| P0 | `__init__.py:481` `get_config_schema` | `mariadb_db` 默认值是 `agent_memory`，而实际库、README、`DEFAULT_CONFIG` 是 `agent_memory`。setup 向导会把错误库名写进 `brain.json` | `hermes memory setup` / 配置向导保存（值来自 schema 默认值） | **已修复**：默认值改为 `agent_memory` |
+| P0 | `__init__.py:481` `get_config_schema` | `mariadb_db` 默认值是 `agent_memory`，而实际库、README、`DEFAULT_CONFIG` 是 `agent_memory`。setup 向导会把错误库名写进 `atbrains.json` | `hermes memory setup` / 配置向导保存（值来自 schema 默认值） | **已修复**：默认值改为 `agent_memory` |
 | P1 | `core.py:1203` `recent_turns` | DB 回退路径把库内 naive DATETIME（UTC）直接 `.timestamp()`，Python 会按**本机时区**解释 → 非 UTC 主机（Windows 桌面版、`TZ=Asia/Shanghai`）时间整体偏移，CLI 再 `localtime()` 又偏一次 | 主机时区不是 UTC 且 Redis 不可用/`source="db"` | **已修复**：新增 `_utc_epoch()`，naive 值显式按 UTC 解释 |
 | P1 | `core.py:1464` `_mark_vector` | `embedded_at` 用 `time.strftime()`（本机时区）写入，而库内时间统一 UTC；`vector-status` 的 `last_ok` 在非 UTC 主机上错位 | 非 UTC 主机完成向量化 | **已修复**：改用 `datetime.now(timezone.utc)` |
 | P1 | `core.py:166-195` `_dotenv_get` | 不处理行内注释：`KEY=pw # prod` 会把 ` # prod` 当密码；`KEY="pw"  # prod` 因末字符不是引号而整段返回；单引号值同理 | `.env` 里密码/令牌后面跟注释（常见手写） | **已修复**：新增 `_dotenv_value()`，先解析引号（含 `\"`/`\\`），未加引号时仅在空白后的 `#` 处截断 |
@@ -18,10 +18,10 @@
 | P1 | `__init__.py:279-305` `on_memory_write` | `replace` 先 `deactivate_by_content(prev)` 再 `remember(content)`。若第二步失败（库抖动、内容被拒），旧记忆已被停用、新记忆没写进去 → 净丢失 | replace 写入时数据库短暂不可用 | **已修复**：先写新内容，成功后再停用旧内容；新旧内容相同时只做 dedupe 刷新、不停用 |
 | P1 | `core.py:776-780` `remember` | `(content or "").strip()` 对 list/dict 直接 `AttributeError`，不是 `BrainError`；调用方（hook/工具边界）只看到模糊异常 | 外部传入非字符串 `content`（list/ multimodal / dict） | **已修复**：先 `str()` 再校验；`deactivate_by_content` 同样处理 |
 | P1 | `core.py:593-608`（基线）`_exec` / 转录写入 | 参数里的 lone surrogate（如 JSON 里的 `"\ud800"`）无法被 PyMySQL 编码成 utf-8，抛 `UnicodeEncodeError` → 整条 INSERT（整轮对话/整条记忆）失败，hook 只记 warning | 模型/工具输出含非法 UTF-16 代理字符 | **已修复**：新增 `_db_safe()`（`core.py:564`），`_exec`（`core.py:666`）与 `store_turn_messages`（`core.py:1042`）写入前清洗；仅对无法编码的 str 做 `encode(utf-8, replace)` 兜底 |
-| P1 | `cli.py:95-102` `_cmd_remember` | 远程模式成功返回的 `saved` 由服务端决定，可能没有 `hot_cache`；CLI 直接 `result['hot_cache']` → 写入已成功却 KeyError 退出 | `remote_enabled=1` 时 `hermes brain remember` | **已修复**：全部改 `.get()`，并把远程明确失败时的 `error` 打出来 |
-| P1 | `core.py:2179` `_distill_tick` | `--now --turns N` 取「最近 N 轮」，随后把水位直接推到这批最大 id。若水位与这批之间还有积压轮次，它们被**永久跳过**（自动线程再也不会蒸馏） | 长时间停机后手动 `hermes brain distill --now` | **已修复**：仅当水位与手动批次之间没有更老的未处理轮次时才推进水位；有 gap 时保持原水位（重复批次由内容 hash 去重兜底） |
-| P1 | `core.py:907-921` `record_turn` | `remote_turn_sync=1` 时只 POST `session_id/user/assistant/platform`，本地路径直接 return：`messages` 全量转录层**静默丢失**（服务端接口不接收该字段） | 打开 `remote_turn_sync` 且依赖 `brain_turn_detail` | **未修复**（需要 Memory Service 接口契约，见文末） |
-| P1 | `core.py:855-878`、`1139-1174` | `deactivate_by_content` 与 `search_memories/_hybrid` 不感知远程模式：远程模式写的是权威库，`on_memory_write` 的 remove/replace 却在本地停用（无效），`brain_recall`/`prefetch` 本地检索可能读不到服务端数据 | `remote_enabled=1` | **未修复**（客户端没有对应远程端点，见文末） |
+| P1 | `cli.py:95-102` `_cmd_remember` | 远程模式成功返回的 `saved` 由服务端决定，可能没有 `hot_cache`；CLI 直接 `result['hot_cache']` → 写入已成功却 KeyError 退出 | `remote_enabled=1` 时 `hermes atbrains-memory remember` | **已修复**：全部改 `.get()`，并把远程明确失败时的 `error` 打出来 |
+| P1 | `core.py:2179` `_distill_tick` | `--now --turns N` 取「最近 N 轮」，随后把水位直接推到这批最大 id。若水位与这批之间还有积压轮次，它们被**永久跳过**（自动线程再也不会蒸馏） | 长时间停机后手动 `hermes atbrains-memory distill --now` | **已修复**：仅当水位与手动批次之间没有更老的未处理轮次时才推进水位；有 gap 时保持原水位（重复批次由内容 hash 去重兜底） |
+| P1 | `core.py:907-921` `record_turn` | `remote_turn_sync=1` 时只 POST `session_id/user/assistant/platform`，本地路径直接 return：`messages` 全量转录层**静默丢失**（服务端接口不接收该字段） | 打开 `remote_turn_sync` 且依赖 `atbrains_turn_detail` | **未修复**（需要 Memory Service 接口契约，见文末） |
+| P1 | `core.py:855-878`、`1139-1174` | `deactivate_by_content` 与 `search_memories/_hybrid` 不感知远程模式：远程模式写的是权威库，`on_memory_write` 的 remove/replace 却在本地停用（无效），`atbrains_recall`/`prefetch` 本地检索可能读不到服务端数据 | `remote_enabled=1` | **未修复**（客户端没有对应远程端点，见文末） |
 | P1 | `core.py:992-997` | 压缩检测只看条数：`done > len(msgs)` 才回退。若压缩/重写后条数不减少（摘要 + 保留尾部），索引错位，尾部新增消息可能被当作已归档而**跳过** | Hermes 用等长/更长摘要重写历史 | **未修复**（需要内容指纹，见文末） |
 | P1 | `core.py:489-495` | v4 迁移回填 `memory_type` 只映射 `builtin-memory/fact/decision`，漏了 `insight`、`preference`（`_LAYER_BY_KIND` 里两者是 `knowledge`）→ 老数据被标成 `episodic`，参与时间衰减 | 从 v3 升级上来且库里已有 `insight/preference` | **未修复**（工单禁止写迁移；已升级库改语句也无效） |
 | P2 | `core.py:623-651` `ensure_schema` | `GET_LOCK` 没拿到（超时/为 0）也继续跑迁移并写 `schema_version`；并发 DDL 只靠 `IF NOT EXISTS` + 容忍 errno 兜底 | 多进程同时首次启动 | 不改（迁移语句本身幂等；改动风险高于收益） |
@@ -35,7 +35,7 @@
 | P2 | `core.py:2114-2138` `_distill_tick` | 被过滤的行（空 user / `[IMPORTANT` 开头）不计入 `rows`，若它们是队尾，水位会停在其前面，每轮重复扫描 | 队尾恰好是系统注入轮次 | 不改（不会丢数据，只多一次空扫；推进水位需要区分「已处理」） |
 | P2 | `__init__.py:241-266` `queue_prefetch` | 每次调用起一个预热线程，无并发上限；慢查询/远程抖动时线程堆积 | 高频 `queue_prefetch` | 不改（线程短暂且 Hermes 调用频率有限） |
 | P2 | `__init__.py:180-211` `_start_vector_drainer` | drainer 是 **provider 实例**级，不是进程级；多个 provider 实例（子代理）会各起一个 drainer | 同时存在多个 provider 实例 | 不改（`drain_vectors` 幂等 + GET_LOCK 兜底） |
-| P2 | `__init__.py:484-507` `save_config` | 读-改-写 `brain.json` 无锁，两个进程同时保存会丢其中一份非密配置 | 并发 setup/保存 | 不改（非密配置，人工操作冲突概率低） |
+| P2 | `__init__.py:484-507` `save_config` | 读-改-写 `atbrains.json` 无锁，两个进程同时保存会丢其中一份非密配置 | 并发 setup/保存 | 不改（非密配置，人工操作冲突概率低） |
 | P2 | `cli.py:143-147` `_cmd_vector_drain` | `--max -5` 被 `max(0, ...)` 变成 0，语义从「负数」变成「不限量」 | 手误传负数 | 不改（CLI 参数边界，无数据风险） |
 | P2 | `__init__.py:430-443` `_tool_recent` | `what` 未知枚举值不报错，静默按 `turns` 返回 | LLM 传 `what="memory"` 等 | 不改（保持宽松兼容，字段名不变） |
 | P2 | `__init__.py:409` `_tool_recall` | `include_turns` 直接用真值判断；JSON 里若传字符串 `"false"` 仍为真 | 客户端传字符串而非布尔 | 不改（工具 schema 已声明 boolean） |
@@ -82,12 +82,12 @@
    远程端点只接收 `session_id/user/assistant/platform`，`messages` 没有字段可送；本地路径又直接
    return。修复要么改 Memory Service 接口（不在本工单范围/无法在客户端单方面保证服务端兼容），
    要么在远程模式下另写一份本地 turn+转录（会让 `turn_id` 语义分裂，且与「远程模式不写本地权威库」
-   的设计冲突）。风险：打开该开关的机器不能用 `brain_turn_detail` 复盘工具过程。
+   的设计冲突）。风险：打开该开关的机器不能用 `atbrains_turn_detail` 复盘工具过程。
 
 2. **远程模式下 `deactivate_by_content` / `search_memories(_hybrid)` 仍访问本地库**（`core.py:922-945`、`1224-1259`、`1710`）。
    客户端没有 `/v1/search`、也没有「按内容废止」的远程端点；擅自复用 `/v1/memory/forget`（按 id）
    需要先远程检索拿到 id，语义与失败回落都会变复杂。风险：远程模式下 `on_memory_write` 的
-   remove/replace 只停用本地镜像（服务端旧记忆仍在），`brain_recall` 可能读不到服务端新记忆。
+   remove/replace 只停用本地镜像（服务端旧记忆仍在），`atbrains_recall` 可能读不到服务端新记忆。
 
 3. **压缩后条数不减少时的游标误判**（`_cursor_start`，`core.py:579-596`）。
    现在只在 `done > len(msgs)` 时回退。若 Hermes 用等长/更长的摘要重写历史，索引整体错位，

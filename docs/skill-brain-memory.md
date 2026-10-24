@@ -18,11 +18,11 @@ brain 是本机自托管的双层记忆库，已作为 Hermes 记忆提供者激
 
 ## 何时用什么
 
-- 用户说「记住/别忘了/以后都用…」→ `brain_remember`（kind=preference/fact，带 tags）。
-- 需要找回旧信息（用户问「上次那个…」「之前说过…」）→ `brain_recall`；每轮对话也会自动预取注入。
-- 想知道最近聊了什么 → `brain_recent`。
-- 库的规模/健康检查 → `brain_stats`。
-- 记错了 → `brain_forget`（软删除，需要 id）。
+- 用户说「记住/别忘了/以后都用…」→ `atbrains_remember`（kind=preference/fact，带 tags）。
+- 需要找回旧信息（用户问「上次那个…」「之前说过…」）→ `atbrains_recall`；每轮对话也会自动预取注入。
+- 想知道最近聊了什么 → `atbrains_recent`。
+- 库的规模/健康检查 → `atbrains_stats`。
+- 记错了 → `atbrains_forget`（软删除，需要 id）。
 
 ## 不写进 brain 的东西
 
@@ -32,12 +32,12 @@ brain 是本机自托管的双层记忆库，已作为 Hermes 记忆提供者激
 ## 维护（CLI）
 
 ```
-hermes brain status / doctor      # 体检
-hermes brain search <关键词>       # 人工检索（关键词+语义混合）
-hermes brain prune --dry-run      # 清理预演（对话 180 天 / 存档 365 天 / 软删记忆 365 天）
-hermes brain vector-status        # 向量层：开关/模型/key 来源/已向量化统计
-hermes brain vector-drain         # 手动补向量（--force 全量重嵌）
-hermes brain vector-test <查询>    # 同一查询：关键词/向量/融合 三方对比
+hermes atbrains-memory status / doctor      # 体检
+hermes atbrains-memory search <关键词>       # 人工检索（关键词+语义混合）
+hermes atbrains-memory prune --dry-run      # 清理预演（对话 180 天 / 存档 365 天 / 软删记忆 365 天）
+hermes atbrains-memory vector-status        # 向量层：开关/模型/key 来源/已向量化统计
+hermes atbrains-memory vector-drain         # 手动补向量（--force 全量重嵌）
+hermes atbrains-memory vector-test <查询>    # 同一查询：关键词/向量/融合 三方对比
 ```
 
 配置：`~/.hermes/brain.json`（非密）+ `~/.hermes/.env`（BRAIN_REDIS_PASSWORD / BRAIN_MARIADB_PASSWORD）。

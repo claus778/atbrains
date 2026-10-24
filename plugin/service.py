@@ -4,13 +4,13 @@
 客户端不再本地直连 MariaDB/Redis/Qdrant。
 
 设计要点:
-  · 复用兄弟插件 brain 的 core.BrainStore(与 probe.py 同一套凭据解析与读写逻辑),
+  · 复用兄弟插件 brain 的 core.AtbrainsStore(与 probe.py 同一套凭据解析与读写逻辑),
     atbrains 不重造存储层;
   · 每个客户端令牌绑定一个 machine 名,**由服务端决定**:请求体/查询串里的 machine
     一律忽略,客户端无法伪造来源机(否则可冒名写入别人的记忆);
   · 令牌表 service-tokens.json(插件目录,权限 600,首次运行自动生成 {"server": <随机令牌>});
     令牌值绝不出现在日志/错误消息/响应体里;
-  · http.server 是多线程的:BrainStore 的 MySQL 连接是 thread-local、Redis 客户端自带锁,
+  · http.server 是多线程的:AtbrainsStore 的 MySQL 连接是 thread-local、Redis 客户端自带锁,
     本模块只需给 machine→store 字典与令牌缓存加锁;
   · /v1/* 与网页控制台 /api/* 共用一个端口,但令牌体系彼此独立(Bearer vs X-Auth-Token)。
 """
@@ -152,29 +152,29 @@ def token_rm(machine: str) -> bool:
 # ───────────────────────────── 服务 ─────────────────────────────
 
 def _new_store(hermes_home: str, machine: str, agent: str = "hermes") -> Any:
-    """构造 brain 的 BrainStore,并覆盖来源身份。
+    """构造 brain 的 AtbrainsStore,并覆盖来源身份。
 
     agent = 写入方身份（Hermes 客户端一律 hermes；MCP 通道用令牌名 omp/dsh/…）。
     machine = 来源主机；传空串表示「沿用配置里的主机名」——MCP 通道没有客户端
     主机信息，写入点就是跑本服务的这台机器，不能拿 agent 名冒充主机。
 
-    brain 插件位置与 sys.path 处理沿用 probe.py 的方式(_find_brain_plugin);
+    brain 插件位置与 sys.path 处理沿用 probe.py 的方式(_find_memory_plugin);
     cfg 含 MariaDB/Redis 口令,只在进程内传递,绝不进日志/响应。
     """
-    brain_dir = probe._find_brain_plugin()
+    brain_dir = probe._find_memory_plugin()
     if str(brain_dir) not in sys.path:
         sys.path.insert(0, str(brain_dir))
-    from core import BrainStore, resolve_config  # type: ignore
+    from core import AtbrainsStore, resolve_config  # type: ignore
 
     cfg = resolve_config(hermes_home)
     if machine:
         cfg["machine"] = machine            # 服务端决定来源机(客户端伪造无效)
     cfg["agent"] = agent
-    return BrainStore(cfg)
+    return AtbrainsStore(cfg)
 
 
 class MemoryService:
-    """Memory Service 的 HTTP 无关实现(路由 + 鉴权 + 每 machine 一个 BrainStore)。
+    """Memory Service 的 HTTP 无关实现(路由 + 鉴权 + 每 machine 一个 AtbrainsStore)。
 
     console/server.py 只做:收原始 body/headers → handle() → 回写 JSON。
     """
@@ -217,7 +217,7 @@ class MemoryService:
     # ---------------------------------------------------------- store
 
     def store_for(self, machine: str, agent: str = "hermes") -> Any:
-        """按 (agent, machine) 取 BrainStore(构造很快,锁内建,避免重复实例)。
+        """按 (agent, machine) 取 AtbrainsStore(构造很快,锁内建,避免重复实例)。
 
         Hermes 客户端:/v1 传入的是令牌名 = 主机名,agent 固定 hermes。
         MCP 客户端:service 层传 machine="",agent = 令牌名，主机沿用服务端配置。

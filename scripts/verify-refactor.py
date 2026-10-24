@@ -2,7 +2,7 @@
 """brain 改造(2/3/4 步)收尾验收 —— 一次跑完所有硬指标。"""
 import json, subprocess, sys, time, urllib.error, urllib.request
 
-BRAIN = "/root/.hermes/plugins/brain"
+BRAIN = "/root/.hermes/plugins/atbrains-memory"
 ATBRAINS = "/root/.hermes/plugins/atbrains"
 sys.path.insert(0, BRAIN)
 

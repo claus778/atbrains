@@ -1,7 +1,7 @@
-"""`hermes brain` 子命令：运维与手工操作 brain 双存储。
+"""`hermes atbrains-memory` 子命令：运维与手工操作 atbrains 双存储。
 
 命令：status | stats | search | remember | recent | forget | prune | doctor | vector-status | vector-drain | vector-test | supersede-detect | remote-check | unsupersede | distill
-仅在 brain 是活动记忆提供者时可见（由 Hermes CLI 发现机制门控）。
+仅在 atbrains 是活动记忆提供者时可见（由 Hermes CLI 发现机制门控）。
 """
 from __future__ import annotations
 
@@ -9,9 +9,9 @@ import json
 import sys
 
 try:  # 作为插件包模块加载时
-    from .core import BrainStore, resolve_config
+    from .core import AtbrainsStore, resolve_config
 except ImportError:  # 独立执行时兜底
-    from core import BrainStore, resolve_config  # type: ignore
+    from core import AtbrainsStore, resolve_config  # type: ignore
 
 
 def _out(text: str) -> None:
@@ -26,8 +26,8 @@ def _fmt_bytes(n: int) -> str:
     return f"{n:.1f} GB"
 
 
-def _store() -> BrainStore:
-    return BrainStore(resolve_config())
+def _store() -> AtbrainsStore:
+    return AtbrainsStore(resolve_config())
 
 
 # ---------------------------------------------------------------- 各子命令
@@ -35,9 +35,9 @@ def _store() -> BrainStore:
 def _cmd_status(args) -> int:
     store = _store()
     cfg = store.cfg
-    _out("brain 记忆库状态")
+    _out("atbrains 记忆库状态")
     _out("─" * 46)
-    _out(f"配置    ~/.hermes/brain.json + .env（HERMES_HOME={cfg.get('hermes_home')}）")
+    _out(f"配置    ~/.hermes/atbrains.json + .env（HERMES_HOME={cfg.get('hermes_home')}）")
     _out(f"Redis   {cfg['redis_host']}:{cfg['redis_port']} (db={cfg.get('redis_db', 0)})"
          f"  短期层：最近对话流 / 会话状态 / 热点镜像 / 检索缓存")
     _out(f"MariaDB {cfg['mariadb_host']}:{cfg['mariadb_port']} db={cfg['mariadb_db']} "
@@ -145,7 +145,7 @@ def _cmd_prune(args) -> int:
 
 def _cmd_doctor(args) -> int:
     ok = True
-    _out("brain doctor")
+    _out("atbrains doctor")
     _out("─" * 46)
     for pkg in ("redis", "pymysql"):
         try:
@@ -155,11 +155,11 @@ def _cmd_doctor(args) -> int:
             ok = False
             _out(f"依赖 {pkg}: ✗ ({exc})")
     cfg = resolve_config()
-    for key, var in (("redis_password", "BRAIN_REDIS_PASSWORD"),
-                     ("mariadb_password", "BRAIN_MARIADB_PASSWORD")):
+    for key, var in (("redis_password", "ATBRAINS_REDIS_PASSWORD"),
+                     ("mariadb_password", "ATBRAINS_MARIADB_PASSWORD")):
         _out(f"凭据 {var}: {'✓' if cfg.get(key) else '✗ 缺失'}")
         ok = ok and bool(cfg.get(key))
-    store = BrainStore(cfg)
+    store = AtbrainsStore(cfg)
     ping = store.ping()
     for name, val in ping.items():
         _out(f"{name}: {val}")
@@ -179,7 +179,7 @@ def _cmd_doctor(args) -> int:
 def _cmd_vector_status(args) -> int:
     store = _store()
     st = store.vector_status()
-    _out("brain 向量层状态（语义召回）")
+    _out("atbrains 向量层状态（语义召回）")
     _out("─" * 46)
     _out(f"开关    {'开启' if st['enabled'] else '关闭（纯关键词模式）'}")
     _out(f"模型    {st['embed_model']}（{st['embed_dim']} 维）")
@@ -256,19 +256,19 @@ def _cmd_remote_check(args) -> int:
     if getattr(args, "json", False):
         _out(json.dumps(st, ensure_ascii=False, indent=2))
         return 0 if st.get("ok") or not st["url"] else 1
-    _out("brain 远程模式自检（Memory Service 客户端）")
+    _out("atbrains 远程模式自检（Memory Service 客户端）")
     _out("─" * 46)
     _out(f"总开关   {'开启（远程优先，失败回落）' if st['enabled'] else '关闭（本地直连：Redis + MariaDB）'}")
     _out(f"服务端   {st['url'] or '（未配置 remote_url）'}")
     if st.get("token_configured"):
-        _out(f"令牌     已配置 {st['token_masked']}（来源：$HERMES_HOME/.env 的 BRAIN_REMOTE_TOKEN）")
+        _out(f"令牌     已配置 {st['token_masked']}（来源：$HERMES_HOME/.env 的 ATBRAINS_REMOTE_TOKEN）")
     else:
         _out("令牌     未配置 → 把令牌写进 $HERMES_HOME/.env：")
-        _out("         echo 'BRAIN_REMOTE_TOKEN=<令牌>' >> ~/.hermes/.env   # 令牌由服务端签发：hermes atbrains token-add <machine>")
+        _out("         echo 'ATBRAINS_REMOTE_TOKEN=<令牌>' >> ~/.hermes/.env   # 令牌由服务端签发：hermes atbrains token-add <machine>")
     _out(f"超时     {st['timeout_ms']} ms（关键路径召回）· 失败回落本地："
          f"{'开' if st['fallback'] else '关（失败即返回空）'} · 回合归档走远程：{'开' if st['turn_sync'] else '关'}")
     if not st["url"]:
-        _out("健康检查 跳过：在 $HERMES_HOME/brain.json 里配 remote_url + remote_enabled=1 后重跑")
+        _out("健康检查 跳过：在 $HERMES_HOME/atbrains.json 里配 remote_url + remote_enabled=1 后重跑")
         return 0
     if st.get("ok"):
         _out(f"健康检查 GET /v1/health → ok ✓ · 往返 {st['latency_ms']} ms")
@@ -294,7 +294,7 @@ def _cmd_distill(args) -> int:
     if not (args.dry_run or args.now):
         st = store.distill_status()
         c = st["counters"]
-        _out("brain 结论蒸馏（distill）")
+        _out("atbrains 结论蒸馏（distill）")
         _out("─" * 46)
         _out(f"开关     {'开启' if st['enabled'] else '关闭'}"
              f"（巡检间隔 {st['interval_min']} 分钟）")
@@ -346,7 +346,7 @@ def _cmd_distill(args) -> int:
 # ---------------------------------------------------------------- 注册
 
 def register_cli(subparser) -> None:
-    subs = subparser.add_subparsers(dest="brain_command")
+    subs = subparser.add_subparsers(dest="atbrains_memory_command")
 
     subs.add_parser("status", help="连通性 / 配置 / 统计总览")
     subs.add_parser("stats", help="JSON 格式统计")
@@ -403,11 +403,11 @@ def register_cli(subparser) -> None:
     g.add_argument("--now", action="store_true", help="手动强制跑一批并真实写入（无视开关）")
     p.add_argument("--turns", type=int, default=0, help="本批轮次数（0=distill_max_turns）")
 
-    subparser.set_defaults(func=brain_command)
+    subparser.set_defaults(func=atbrains_memory_command)
 
 
-def brain_command(args) -> None:
-    sub = getattr(args, "brain_command", None)
+def atbrains_memory_command(args) -> None:
+    sub = getattr(args, "atbrains_memory_command", None)
     handlers = {
         "status": _cmd_status,
         "stats": _cmd_stats,
@@ -427,14 +427,14 @@ def brain_command(args) -> None:
     }
     handler = handlers.get(sub)
     if handler is None:
-        print("用法: hermes brain <status|stats|search|remember|recent|forget|prune|doctor|"
+        print("用法: hermes atbrains-memory <status|stats|search|remember|recent|forget|prune|doctor|"
               "vector-status|vector-drain|vector-test|supersede-detect|remote-check|unsupersede|"
               "distill>")
         return
     try:
         rc = handler(args)
     except Exception as exc:  # noqa: BLE001
-        print(f"brain 命令失败: {exc}", file=sys.stderr)
+        print(f"atbrains 命令失败: {exc}", file=sys.stderr)
         rc = 1
     if rc:
         raise SystemExit(rc)

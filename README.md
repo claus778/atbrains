@@ -12,10 +12,10 @@
 
 ```
                     ┌──────────────────────────────────────────┐
-   Hermes 会话 ─────▶│  brain 插件  ~/.hermes/plugins/brain/     │
+   Hermes 会话 ─────▶│  atbrains-memory 插件  ~/.hermes/plugins/atbrains-memory/     │
    (agent)           │  __init__.py  提供者钩子 + 5 个工具        │
                     │  core.py      存储引擎(读写/检索/召回)   │
-                    │  cli.py       hermes brain 命令            │
+                    │  cli.py       hermes atbrains-memory 命令            │
                     └───────┬───────────────┬──────────────┬────┘
                             │               │              │
               短期层 ◀──────┘      长期层 ◀──┘      向量层 ◀─┘
@@ -87,7 +87,7 @@
 │   └── package.py                   打包/脱敏生成器(刷新 docs/scripts/setup 的拷贝)
 ├── docs/                            ← 原始文档与技能手册
 │   ├── agent_memory.md              整套记忆系统配置全景(用户维护入口)
-│   ├── plugin-README.md             brain 插件自带说明
+│   ├── plugin-README.md             atbrains-memory 插件自带说明
 │   ├── skill-hermes-brain-memory.md 维护手册(故障/修复/整理流程)
 │   ├── skill-brain-memory.md        日常使用指南
 │   └── brain-overview.txt           库内容快照
@@ -202,7 +202,7 @@ python3 /root/agent-db/mcp_client_test.py --agent omp --write-test   # 端到端
 omp 的 `~/.omp/agent/mcp.json`、dsh 的 `cordis.patch.yml` 接法见
 [`docs/multi-agent.md`](docs/multi-agent.md)。要点:**所有 agent 共用
 `agent_memory` 长期库、同一张 `brain_memories` 表**,`agent` 列标写入方
-(hermes/omp/dsh/…)、`machine` 列标主机;`brain_recall` 默认跨 agent 召回,
+(hermes/omp/dsh/…)、`machine` 列标主机;`atbrains_recall` 默认跨 agent 召回,
 传 `agent=` 可只看某一方。
 
 ---
@@ -228,9 +228,9 @@ omp 的 `~/.omp/agent/mcp.json`、dsh 的 `cordis.patch.yml` 接法见
 检索与注入侧自动过滤;`unsupersede <id>` 可无损回滚。
 
 ```bash
-hermes brain supersede-detect                  # 预演(默认,不写库)
-hermes brain supersede-detect --apply          # 应用
-hermes brain unsupersede <ID>                  # 回滚
+hermes atbrains-memory supersede-detect                  # 预演(默认,不写库)
+hermes atbrains-memory supersede-detect --apply          # 应用
+hermes atbrains-memory unsupersede <ID>                  # 回滚
 ```
 
 ### Rerank(默认关闭)
@@ -258,7 +258,7 @@ GET  /v1/memory/status
 - 令牌:`service-tokens.json`(600);`hermes atbrains token-list|token-add|token-rm`。
 - **客户端接入(远程模式)**:brain.json 开 `remote_enabled=1` + `remote_url`;令牌放
   `~/.hermes/.env` 的 `BRAIN_REMOTE_TOKEN`(不落 brain.json)。任何失败**自动回落本地直连**
-  (实测死地址 33ms 回落),`remote_timeout_ms=800`。`hermes brain remote-check` 自检。
+  (实测死地址 33ms 回落),`remote_timeout_ms=800`。`hermes atbrains-memory remote-check` 自检。
 
 ### Redis key 前缀(为摆脱多 DB,默认关闭)
 
@@ -271,15 +271,15 @@ GET  /v1/memory/status
 ## 六、日常运维(命令行)
 
 ```bash
-hermes brain status          # 连通性 + 计数总览
-hermes brain doctor          # 依赖/凭据/连接/表结构自检
-hermes brain stats           # JSON 格式统计(喂给脚本)
-hermes brain search <关键词>  # 人工检索
-hermes brain recent          # Redis 最近对话流
-hermes brain vector-status   # 向量层:开关/模型/key 来源/已向量化统计
-hermes brain vector-drain    # 手动增量回填(--force 全量重嵌)
-hermes brain vector-test     # 对比:关键词 / 向量 / 融合 三种召回
-hermes brain prune --dry-run # 清理预演(180/365/365 天保留期)
+hermes atbrains-memory status          # 连通性 + 计数总览
+hermes atbrains-memory doctor          # 依赖/凭据/连接/表结构自检
+hermes atbrains-memory stats           # JSON 格式统计(喂给脚本)
+hermes atbrains-memory search <关键词>  # 人工检索
+hermes atbrains-memory recent          # Redis 最近对话流
+hermes atbrains-memory vector-status   # 向量层:开关/模型/key 来源/已向量化统计
+hermes atbrains-memory vector-drain    # 手动增量回填(--force 全量重嵌)
+hermes atbrains-memory vector-test     # 对比:关键词 / 向量 / 融合 三种召回
+hermes atbrains-memory prune --dry-run # 清理预演(180/365/365 天保留期)
 ```
 
 **完整性审计**(发现问题时用)
@@ -289,7 +289,7 @@ python3 scripts/audit-turns.py --apply        # 回填(只写自己 machine)
 python3 scripts/audit-memories.py             # 内置记忆 ↔ brain 镜像对账
 ```
 
-**自动化(零 systemd)**:向量补漏由**插件内巡检**完成 —— 长命进程(网关)每 60 秒扫一次,短命进程尽力而为后 0.3 秒退出,遗留欠账由下一个长命进程接手(实测 100 秒内补齐)。数据库清理由插件内 `brain-maintenance` 线程负责(每 60 分钟检查,距上次超过 7 天才执行)。手动方式:`hermes brain vector-drain` / `hermes brain prune --dry-run`。
+**自动化(零 systemd)**:向量补漏由**插件内巡检**完成 —— 长命进程(网关)每 60 秒扫一次,短命进程尽力而为后 0.3 秒退出,遗留欠账由下一个长命进程接手(实测 100 秒内补齐)。数据库清理由插件内 `brain-maintenance` 线程负责(每 60 分钟检查,距上次超过 7 天才执行)。手动方式:`hermes atbrains-memory vector-drain` / `hermes atbrains-memory prune --dry-run`。
 
 ---
 
@@ -298,9 +298,9 @@ python3 scripts/audit-memories.py             # 内置记忆 ↔ brain 镜像对
 | 症状 | 先查 | 常见原因 |
 |---|---|---|
 | `brain_*` 工具没了 / 召回为空 | `hermes memory status` | `memory.provider` 被重置,或插件进了 `plugins.disabled` |
-| 连接失败 | `hermes brain doctor` | 容器挂了:`docker start redis mariadb qdrant` |
+| 连接失败 | `hermes atbrains-memory doctor` | 容器挂了:`docker start redis mariadb qdrant` |
 | 对话归档缺轮次 | `audit-turns.py` | 配置变更后未重启进程,写入静默失败 |
-| 向量不更新 | `hermes brain vector-status` + 控制台定时器卡片 | 嵌入服务 key 失效 / 定时器停了 |
+| 向量不更新 | `hermes atbrains-memory vector-status` + 控制台定时器卡片 | 嵌入服务 key 失效 / 定时器停了 |
 | 检索变差 | 控制台「向量覆盖率」 | 有活跃记忆缺向量 → 点「立即回填向量」 |
 | 控制台行为与仓库不一致 | `./install.sh check` | 安装副本落后于仓库 → `./install.sh`(然后按提示重启控制台) |
 

@@ -51,7 +51,7 @@ def main() -> int:
     ap.add_argument("--machine", default="server")
     ap.add_argument("--state-db", default=DEFAULT_STATE_DB)
     ap.add_argument("--hermes-home", default="/root/.hermes")
-    ap.add_argument("--plugin-dir", default="/root/.hermes/plugins/brain")
+    ap.add_argument("--plugin-dir", default="/root/.hermes/plugins/atbrains-memory")
     args = ap.parse_args()
 
     sys.path.insert(0, args.plugin_dir)

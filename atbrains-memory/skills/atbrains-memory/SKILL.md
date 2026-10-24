@@ -1,12 +1,12 @@
 ---
-name: brain-memory
-description: "Use when saving/recalling durable facts or inspecting the brain store (Redis short-term + MariaDB long-term + Qdrant vector layer)."
-version: 1.4.0
+name: atbrains-memory
+description: "Use when saving/recalling durable facts or inspecting the atbrains store (Redis short-term + MariaDB long-term + Qdrant vector layer)."
+version: 2.0.0
 ---
 
-# brain 记忆库使用指南
+# atbrains 记忆库使用指南
 
-brain 是本机自托管的双层记忆库，已作为 Hermes 记忆提供者激活：
+atbrains 是本机自托管的双层记忆库，已作为 Hermes 记忆提供者激活：
 
 - **Redis（短期）**：最近对话流 `brain:recent`、会话状态 `brain:session:*`、热点记忆 `brain:hot:*`、检索缓存。
   TTL 自动过期，不需要手工维护。用于「最近发生了什么」类问题和快速命中。
@@ -20,34 +20,34 @@ brain 是本机自托管的双层记忆库，已作为 Hermes 记忆提供者激
 
 ## 何时用什么
 
-- 用户说「记住/别忘了/以后都用…」→ `brain_remember`（kind=preference/fact，带 tags）。
-- 需要「X 的 Y 是 Z」这类可核对、会变化的结论 → `brain_claim_remember(subject, predicate, value)`：
+- 用户说「记住/别忘了/以后都用…」→ `atbrains_remember`（kind=preference/fact，带 tags）。
+- 需要「X 的 Y 是 Z」这类可核对、会变化的结论 → `atbrains_claim_remember(subject, predicate, value)`：
   同槽位再写只递增版本（`brain_claim_versions`），旧版本自动封版；可用 `turn_id`/`seq`/`quote` 挂证据。
-  `brain_claim_recall` 取当前值，`history=true` 取全部版本。
-- 一轮的目标/决策/未完成项/下一步 → `brain_episode_set(turn_id, …)`；`brain_turn_detail` 会带出该轮 episode。
-- 需要找回旧信息（用户问「上次那个…」「之前说过…」）→ `brain_recall`；每轮对话也会自动预取注入。
-- 想知道最近聊了什么 → `brain_recent`。
-- 想复盘某一轮到底跑了哪些命令、返回了什么 → `brain_turn_detail`（turn_id 或 session_id，max_chars 控制每条上限）。
-- 库的规模/健康检查 → `brain_stats`。
-- 记错了 → `brain_forget`（软删除，需要 id）。
+  `atbrains_claim_recall` 取当前值，`history=true` 取全部版本。
+- 一轮的目标/决策/未完成项/下一步 → `atbrains_episode_set(turn_id, …)`；`atbrains_turn_detail` 会带出该轮 episode。
+- 需要找回旧信息（用户问「上次那个…」「之前说过…」）→ `atbrains_recall`；每轮对话也会自动预取注入。
+- 想知道最近聊了什么 → `atbrains_recent`。
+- 想复盘某一轮到底跑了哪些命令、返回了什么 → `atbrains_turn_detail`（turn_id 或 session_id，max_chars 控制每条上限）。
+- 库的规模/健康检查 → `atbrains_stats`。
+- 记错了 → `atbrains_forget`（软删除，需要 id）。
 
-## 不写进 brain 的东西
+## 不写进 atbrains 的东西
 
-- 敏感凭据（密码、token）不要用 brain_remember 存明文；改用 .env。
+- 敏感凭据（密码、token）不要用 atbrains_remember 存明文；改用 .env。
 - 短命的临时状态（本轮任务进度）不必存 —— 对话归档自动覆盖。
 
 ## 维护（CLI）
 
 ```
-hermes brain status / doctor      # 体检
-hermes brain search <关键词>       # 人工检索（关键词+语义混合）
-hermes brain prune --dry-run      # 清理预演（对话默认不清理；会话/存档/软删记忆按保留期 365 天）
-hermes brain vector-status        # 向量层：开关/模型/key 来源/已向量化统计
-hermes brain vector-drain         # 手动补向量（--force 全量重嵌）
-hermes brain vector-test <查询>    # 同一查询：关键词/向量/融合 三方对比
+hermes atbrains-memory status / doctor      # 体检
+hermes atbrains-memory search <关键词>       # 人工检索（关键词+语义混合）
+hermes atbrains-memory prune --dry-run      # 清理预演（对话默认不清理；会话/存档/软删记忆按保留期 365 天）
+hermes atbrains-memory vector-status        # 向量层：开关/模型/key 来源/已向量化统计
+hermes atbrains-memory vector-drain         # 手动补向量（--force 全量重嵌）
+hermes atbrains-memory vector-test <查询>    # 同一查询：关键词/向量/融合 三方对比
 ```
 
-配置：`~/.hermes/brain.json`（非密）+ `~/.hermes/.env`（BRAIN_REDIS_PASSWORD / BRAIN_MARIADB_PASSWORD）。
+配置：`~/.hermes/atbrains.json`（非密）+ `~/.hermes/.env`（ATBRAINS_REDIS_PASSWORD / ATBRAINS_MARIADB_PASSWORD）。
 
 ## 共享库约束（所有实例共同遵守，2026-10-24）
 
@@ -82,7 +82,7 @@ hermes brain vector-test <查询>    # 同一查询：关键词/向量/融合 �
 
 - `agent` = 写入方身份（Hermes 固定 `hermes`；MCP 通道 = 令牌名 `omp`/`dsh`/…）。
 - `machine` = 来源主机（`server`/`r9000p-Windows`/…）；MCP 写入记服务端主机。
-- 召回默认**跨 agent**（不过滤）；`brain_recall(agent="dsh")` 只看某一方。
+- 召回默认**跨 agent**（不过滤）；`atbrains_recall(agent="dsh")` 只看某一方。
 - 结构化主张：`brain_claims.agent` 是当前值作者，`brain_claim_versions.agent` 是每一版作者。
 - **不要再建 `<agent>_agent_memory` 分库**：分库会让记忆不通用。旧的三个分库已并入共享库。
 

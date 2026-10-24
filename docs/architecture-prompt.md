@@ -17,16 +17,16 @@
 
 ### 层 1 · 客户端 / 各机器(一个大虚线框)
 
-框标题:`客户端 / 各机器 —— 均装 brain 插件 —— 长期层全机共享 · 短期层按库隔离`
+框标题:`客户端 / 各机器 —— 均装 atbrains-memory 插件 —— 长期层全机共享 · 短期层按库隔离`
 
 内部 5 个方框(每个框内两行):
 
 | 框名 | 第二行 |
 |---|---|
-| `Hermes · server(本机)` | `brain 插件 · Redis db0` |
-| `Hermes · x260-debian` | `brain 插件 · Redis db1` |
-| `Hermes · r9000p-Windows` | `brain 插件 · Redis db2` |
-| `Hermes · gigabyte-debian` | `brain 插件 · Redis db3` |
+| `Hermes · server(本机)` | `atbrains-memory 插件 · Redis db0` |
+| `Hermes · x260-debian` | `atbrains-memory 插件 · Redis db1` |
+| `Hermes · r9000p-Windows` | `atbrains-memory 插件 · Redis db2` |
+| `Hermes · gigabyte-debian` | `atbrains-memory 插件 · Redis db3` |
 | `omp / dsh(独立 Agent,经 MCP)` | `共享 agent_memory · machine 标注 omp/dsh` |
 | `artex(独立 Agent)` | `独立库 artex_agent_memory · Redis db7` |
 
@@ -50,7 +50,7 @@
    - `监控控制台 :8787`
      `6 面板 · token 鉴权`
    - `令牌表:服务端反查 machine(不可伪造)`
-2. `brain 插件 —— 检索与存储核心`
+2. `atbrains-memory 插件 —— 检索与存储核心`
    内部按管线顺序列(用 → 连接):
    - `关键词检索 + 向量检索(2560 维)`
    - `RRF 融合 k=60`
@@ -84,17 +84,17 @@
 
 ## 三、连线(源 → 目标 · 标签 · 线型)
 
-1. 客户端 brain 插件 → **Memory Service /v1** · `远程模式 HTTP recall/remember · Bearer 令牌`
+1. 客户端 atbrains-memory 插件 → **Memory Service /v1** · `远程模式 HTTP recall/remember · Bearer 令牌`
    · 蓝色虚线 ·〔默认关闭〕。旁边注:`失败自动回落本地直连(33ms)`
-2. 客户端 brain 插件 → **存储层(MariaDB + Redis)** · `本机直连 · SQL / RESP`
+2. 客户端 atbrains-memory 插件 → **存储层(MariaDB + Redis)** · `本机直连 · SQL / RESP`
    · 蓝色虚线 ·〔已启用〕(这是当前默认路径)
-3. **brain 插件核心** → **存储层** · `读写记忆 / 归档对话` · 实线
-4. **brain 插件核心** ↔ **Qdrant** · `向量读写` · 实线
-5. **brain 插件核心** ↔ **SiliconFlow** · `embed(2560 维) · rerank(可选)` · 蓝色虚线双向
-6. **进程内巡检循环** → **brain 插件核心** · `长命进程每 60 秒补缺失向量` · 灰色细虚线(它是插件自身的线程,可画成插件内部的环形箭头)
+3. **atbrains-memory 插件核心** → **存储层** · `读写记忆 / 归档对话` · 实线
+4. **atbrains-memory 插件核心** ↔ **Qdrant** · `向量读写` · 实线
+5. **atbrains-memory 插件核心** ↔ **SiliconFlow** · `embed(2560 维) · rerank(可选)` · 蓝色虚线双向
+6. **进程内巡检循环** → **atbrains-memory 插件核心** · `长命进程每 60 秒补缺失向量` · 灰色细虚线(它是插件自身的线程,可画成插件内部的环形箭头)
 7. **atbrains 插件** → **存储层** · `监控三读 + 手动回填` · 实线
 8. **监控控制台** ↔ 用户浏览器 · `:8787 · token 鉴权` · 细实线(可省)
-9. **omp / dsh** → **MCP 端点 /mcp** → **brain 插件核心** · `JSON-RPC · Bearer 令牌` · 蓝色虚线(公网/本机)
+9. **omp / dsh** → **MCP 端点 /mcp** → **atbrains-memory 插件核心** · `JSON-RPC · Bearer 令牌` · 蓝色虚线(公网/本机)
    旁注:`共享库 · 写入按令牌标注 agent`
 
 ## 四、数据流图例(右下角小框)

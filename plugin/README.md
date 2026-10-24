@@ -107,7 +107,7 @@ POST /api/prune      {dry_run:true}
 ## Memory Service(`/v1`)
 
 与网页控制台共用端口(默认 8787):`/v1/*` 走本插件 **`service.py`**,
-每个客户端令牌绑定一个 machine,**由服务端决定**;每个 machine 一个 `core.BrainStore` 实例
+每个客户端令牌绑定一个 machine,**由服务端决定**;每个 machine 一个 `core.AtbrainsStore` 实例
 (读的仍是同一份 MariaDB/Redis/Qdrant)。
 
 ### 接口(除注明外都是 POST,body 与响应都是 JSON/UTF-8,响应顶层带 `ok`)
@@ -165,8 +165,8 @@ hermes atbrains service                     # 自检:端口/路径/令牌数/健
 atbrains/plugin/               ← 仓库中的真实代码(git 管理)
 ├── plugin.yaml        清单(name/version/provides_tools;刻意不声明 pip_dependencies)
 ├── __init__.py        register(ctx):注册 2 个工具 + `hermes atbrains` 命令
-├── probe.py           ★ 唯一数据层(CLI/工具/网页共用);brain 插件路径自动定位
-├── service.py         ★ Memory Service(/v1):令牌表 + 路由 + 每 machine 一个 BrainStore
+├── probe.py           ★ 唯一数据层(CLI/工具/网页共用);atbrains-memory 插件路径自动定位
+├── service.py         ★ Memory Service(/v1):令牌表 + 路由 + 每 machine 一个 AtbrainsStore
 ├── cli.py             `hermes atbrains` 实现
 ├── tools.py           agent 工具实现
 ├── console/           网页控制台(server.py + index.html + config.json;.token 运行时生成)
@@ -181,17 +181,17 @@ atbrains/plugin/               ← 仓库中的真实代码(git 管理)
   会让解析失败、插件被自动禁用(本机踩过)。
 - **不注册 systemd** —— 控制台用 `serve` 按需起、`stop` 停;进程生命周期跟着用户的显式命令走。
 - **单一数据层** —— CLI/工具/网页都调 `probe.py`,避免"网页显示 65 条、CLI 显示 64 条"这类漂移;
-  `/v1` 服务端也只经 brain 的 `core.BrainStore` 读写,不另起一套 SQL。
+  `/v1` 服务端也只经 brain 的 `core.AtbrainsStore` 读写,不另起一套 SQL。
 - **`/v1` 与 `/api` 共用一个端口、两套门** —— 不新增监听端口、不新增 systemd 服务;
   `/v1` 用 `Bearer`(给机器),`/api` 用 `X-Auth-Token`(给浏览器),两套令牌互不通用。
 - **服务端决定 machine(防伪造)** —— `/v1` 请求的 machine **只**来自令牌匹配到的那条记录,
   请求体/查询串里的 machine 一律忽略。若让客户端自报 machine:任何拿到令牌的进程都能把记忆
   写成别的机器(污染他人检索画像),伪造的来源机还会污染长期库的机器维度与跨机镜像判断。
-  因此构造 `BrainStore` 前由服务端覆盖 `cfg["machine"]`。
+  因此构造 `AtbrainsStore` 前由服务端覆盖 `cfg["machine"]`。
 - **凭据不出服务端** —— 网页只拿到结果数据,DB/Qdrant 口令在服务端解析。
-- **依赖兄弟插件** —— 通过 brain 的 `core.BrainStore` 读写,复用其凭据解析与重试逻辑;
-  brain 插件缺失时报错清晰(`ProbeError`)而不是静默失败。brain 位置按
-  `ATBRAINS_BRAIN_PLUGIN` 环境变量 → 与插件并排目录 → `HERMES_HOME/plugins/brain` 依次探测。
+- **依赖兄弟插件** —— 通过 brain 的 `core.AtbrainsStore` 读写,复用其凭据解析与重试逻辑;
+  atbrains-memory 插件缺失时报错清晰(`ProbeError`)而不是静默失败。brain 位置按
+  `ATBRAINS_BRAIN_PLUGIN` 环境变量 → 与插件并排目录 → `HERMES_HOME/plugins/atbrains-memory` 依次探测。
 - **恢复(restore)与停用对偶** —— 都是「改 MariaDB active + 维护 Redis 热点镜像」;
   恢复会拒绝"同内容已有活跃条目"(库有唯一键防重),向量由定时器 ≤3 分钟补回。
 

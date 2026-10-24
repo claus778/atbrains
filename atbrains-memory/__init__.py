@@ -1,4 +1,4 @@
-"""brain — Hermes 记忆提供者：Redis（短期存储）+ MariaDB（长期存储）。
+"""atbrains — Hermes 记忆提供者：Redis（短期存储）+ MariaDB（长期存储）。
 
 分层：
   * Redis（短期）：最近对话流、会话状态、热点记忆镜像、检索缓存 —— TTL 自动过期。
@@ -12,9 +12,9 @@
   on_session_end / switch    → 会话边界维护
   on_delegation              → 子代理任务结果入库
 
-工具：brain_remember / brain_recall / brain_forget / brain_recent / brain_stats / brain_turn_detail
-      / brain_claim_remember / brain_claim_recall / brain_episode_set / brain_episode_get
-CLI：hermes brain <status|search|remember|recent|forget|prune|doctor>  (见 cli.py)
+工具：atbrains_remember / atbrains_recall / atbrains_forget / atbrains_recent / atbrains_stats / atbrains_turn_detail
+      / atbrains_claim_remember / atbrains_claim_recall / atbrains_episode_set / atbrains_episode_get
+CLI：hermes atbrains-memory <status|search|remember|recent|forget|prune|doctor>  (见 cli.py)
 """
 from __future__ import annotations
 
@@ -27,12 +27,12 @@ from typing import Any, Optional
 
 from agent.memory_provider import MemoryProvider, RecallStatus, spawn_context_thread
 
-from .core import BrainError, BrainStore, hermes_home_path, resolve_config
+from .core import BrainError, AtbrainsStore, hermes_home_path, resolve_config
 
 logger = logging.getLogger(__name__)
 
-PROVIDER_NAME = "brain"
-PROVIDER_LABEL = "brain"
+PROVIDER_NAME = "atbrains-memory"
+PROVIDER_LABEL = "atbrains"
 
 
 def _remote_configured(cfg: dict[str, Any]) -> bool:
@@ -44,18 +44,18 @@ def _remote_configured(cfg: dict[str, Any]) -> bool:
         return False
 
 
-SYSTEM_PROMPT_BLOCK = """## brain 记忆库（Redis 短期 + MariaDB 长期，本机自托管）
-- 长期事实/偏好/决策：随时用 `brain_remember` 永久保存（MariaDB），检索用 `brain_recall`；两者跨会话生效。
-- 结构化主张（「X 的 Y 是 Z」这类可核对的值）：用 `brain_claim_remember(subject, predicate, value)`，同槽位只递增版本、旧版本自动封版；`brain_claim_recall` 取当前值或历史。
-- 每一轮的目标/决策/未完成项：用 `brain_episode_set(turn_id, …)` 挂情节头，`brain_episode_get` 读回。
+SYSTEM_PROMPT_BLOCK = """## atbrains 记忆库（Redis 短期 + MariaDB 长期，本机自托管）
+- 长期事实/偏好/决策：随时用 `atbrains_remember` 永久保存（MariaDB），检索用 `atbrains_recall`；两者跨会话生效。
+- 结构化主张（「X 的 Y 是 Z」这类可核对的值）：用 `atbrains_claim_remember(subject, predicate, value)`，同槽位只递增版本、旧版本自动封版；`atbrains_claim_recall` 取当前值或历史。
+- 每一轮的目标/决策/未完成项：用 `atbrains_episode_set(turn_id, …)` 挂情节头，`atbrains_episode_get` 读回。
 - 短期层（Redis）自动缓存最近对话流与会话状态，到期自动清理，不需要手工维护。
 - 每轮对话自动归档（MariaDB brain_turns + Redis brain:recent），工具调用/工具输出/推理另存于 brain_turn_messages（zlib 压缩），压缩前上下文自动存档，不会丢细节。
-- 需要最近发生了什么 → `brain_recent`；要复盘某一轮的工具过程 → `brain_turn_detail(turn_id 或 session_id)`；库的规模/健康 → `brain_stats`。"""
+- 需要最近发生了什么 → `atbrains_recent`；要复盘某一轮的工具过程 → `atbrains_turn_detail(turn_id 或 session_id)`；库的规模/健康 → `atbrains_stats`。"""
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
-        "name": "brain_remember",
-        "description": "永久保存一条长期记忆（事实/偏好/决策/待办）到 brain 库（MariaDB 长期存储，Redis 热点缓存）。",
+        "name": "atbrains_remember",
+        "description": "永久保存一条长期记忆（事实/偏好/决策/待办）到 atbrains 库（MariaDB 长期存储，Redis 热点缓存）。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -70,8 +70,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "brain_recall",
-        "description": "从 brain 长期库检索记忆（语义向量+关键词混合召回，也返回相关历史对话片段）。",
+        "name": "atbrains_recall",
+        "description": "从 atbrains 长期库检索记忆（语义向量+关键词混合召回，也返回相关历史对话片段）。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -85,8 +85,8 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "brain_forget",
-        "description": "废止一条记忆（软删除，按 id）。id 从 brain_recall / brain_remember 返回中获得。",
+        "name": "atbrains_forget",
+        "description": "废止一条记忆（软删除，按 id）。id 从 atbrains_recall / atbrains_remember 返回中获得。",
         "parameters": {
             "type": "object",
             "properties": {"id": {"type": "integer", "description": "记忆的 id。"}},
@@ -94,7 +94,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "brain_recent",
+        "name": "atbrains_recent",
         "description": "查看最近的对话流（Redis 短期层）或最近写入的记忆（Redis 热点镜像）。",
         "parameters": {
             "type": "object",
@@ -105,14 +105,14 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "brain_stats",
-        "description": "brain 库统计：记忆/归档/会话数量、Redis 键数、存储占用。",
+        "name": "atbrains_stats",
+        "description": "atbrains 库统计：记忆/归档/会话数量、Redis 键数、存储占用。",
         "parameters": {"type": "object", "properties": {}},
     },
     {
-        "name": "brain_turn_detail",
+        "name": "atbrains_turn_detail",
         "description": "取回某一轮对话的完整过程：工具调用参数、工具输出、推理（brain_turn_messages 全量转录层）。"
-                       "不传 turn_id 时，用 session_id 取该会话最后一轮；brain_recent 可先查最近的轮次 id。",
+                       "不传 turn_id 时，用 session_id 取该会话最后一轮；atbrains_recent 可先查最近的轮次 id。",
         "parameters": {
             "type": "object",
             "properties": {
@@ -124,7 +124,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "brain_claim_remember",
+        "name": "atbrains_claim_remember",
         "description": "记一条结构化主张（subject/predicate/value）：同一槽位再写只递增版本，旧版本自动封版；"
                        "可挂证据（turn_id + seq + quote）指回 brain_turn_messages。适合「X 的 Y 是 Z」这类可核对的事实/偏好/决策。",
         "parameters": {
@@ -147,7 +147,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "brain_claim_recall",
+        "name": "atbrains_claim_recall",
         "description": "检索结构化主张的当前值（history=true 返回全部历史版本，含证据 turn_id/seq/quote）。",
         "parameters": {
             "type": "object",
@@ -161,7 +161,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "brain_episode_set",
+        "name": "atbrains_episode_set",
         "description": "给某一轮挂情节头（目标/决策/未完成项/阻碍/下一步），只更新传入的字段。用于「这轮在做什么、做到哪、下一步」。",
         "parameters": {
             "type": "object",
@@ -178,7 +178,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
-        "name": "brain_episode_get",
+        "name": "atbrains_episode_get",
         "description": "读某一轮的情节头（不传 turn_id 时取该会话最后一轮）。",
         "parameters": {
             "type": "object",
@@ -191,11 +191,11 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
-class BrainMemoryProvider(MemoryProvider):
+class AtbrainsMemoryProvider(MemoryProvider):
     """Redis（短期）+ MariaDB（长期）双存储记忆提供者。"""
 
     def __init__(self) -> None:
-        self._store: Optional[BrainStore] = None
+        self._store: Optional[AtbrainsStore] = None
         self._session_id: str = ""
         self._platform: str = ""
         self._hermes_home: str = ""
@@ -232,21 +232,21 @@ class BrainMemoryProvider(MemoryProvider):
             import pymysql  # noqa: F401
             import redis  # noqa: F401
         except Exception:  # noqa: BLE001
-            return ("brain 需要 python 包 redis 和 PyMySQL —— 运行 `hermes pm install` "
+            return ("atbrains 需要 python 包 redis 和 PyMySQL —— 运行 `hermes pm install` "
                     "让 PM 按插件声明安装（或 pip install redis pymysql）。")
         try:
             cfg = resolve_config(hermes_home_path())
         except Exception as exc:  # noqa: BLE001
-            return f"brain 配置读取失败: {exc}"
+            return f"atbrains 配置读取失败: {exc}"
         if _remote_configured(cfg):
             return ""
         missing = []
         if not cfg.get("redis_password"):
-            missing.append("BRAIN_REDIS_PASSWORD")
+            missing.append("ATBRAINS_REDIS_PASSWORD")
         if not cfg.get("mariadb_password"):
-            missing.append("BRAIN_MARIADB_PASSWORD")
+            missing.append("ATBRAINS_MARIADB_PASSWORD")
         if missing:
-            return ("brain 缺少凭据 " + ", ".join(missing) +
+            return ("atbrains 缺少凭据 " + ", ".join(missing) +
                     "（写入 ~/.hermes/.env，或运行 `hermes memory setup` 配置）。")
         return ""
 
@@ -258,20 +258,20 @@ class BrainMemoryProvider(MemoryProvider):
             self._primary = str(kwargs.get("agent_context") or "primary") in ("", "primary")
             try:
                 cfg = resolve_config(self._hermes_home)
-                store = BrainStore(cfg)
+                store = AtbrainsStore(cfg)
                 try:
                     store.ensure_schema()
                 except Exception as exc:  # noqa: BLE001
                     # 数据库暂时不可达不阻塞启动；后续操作会重试建表。
-                    logger.warning("brain: 建表延迟（数据库暂不可达）: %s", exc)
+                    logger.warning("atbrains: 建表延迟（数据库暂不可达）: %s", exc)
                 self._store = store
             except Exception as exc:  # noqa: BLE001
-                logger.warning("brain: 初始化失败 (%s)", exc)
+                logger.warning("atbrains: 初始化失败 (%s)", exc)
                 self._store = None
             try:
                 self._start_vector_drainer()
             except Exception as exc:  # noqa: BLE001
-                logger.debug("brain: 启动向量 drainer 失败: %s", exc)
+                logger.debug("atbrains: 启动向量 drainer 失败: %s", exc)
 
     def _start_vector_drainer(self) -> None:
         """每进程最多一个后台 drainer：被写入唤醒，另有周期兜底扫描。"""
@@ -288,14 +288,14 @@ class BrainMemoryProvider(MemoryProvider):
             try:
                 store.drain_vectors()   # 启动即扫一遍：清掉本进程启动前的欠账
             except Exception as exc:  # noqa: BLE001
-                logger.debug("brain: drainer 首扫异常: %s", exc)
+                logger.debug("atbrains: drainer 首扫异常: %s", exc)
             while True:
                 try:
                     store._vec_wake.wait(timeout=interval)
                     store._vec_wake.clear()
                     store.drain_vectors()
                 except Exception as exc:  # noqa: BLE001
-                    logger.debug("brain: 向量 drainer 轮次异常: %s", exc)
+                    logger.debug("atbrains: 向量 drainer 轮次异常: %s", exc)
                 time.sleep(0.5)
 
         threading.Thread(target=_loop, name="brain-vector-drain", daemon=True).start()
@@ -313,7 +313,7 @@ class BrainMemoryProvider(MemoryProvider):
         try:
             text, count = store.prefetch_block(query, session_id=session_id or self._session_id)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("brain: prefetch 失败: %s", exc)
+            logger.debug("atbrains: prefetch 失败: %s", exc)
             self._last_recall = None
             return ""
         if text:
@@ -331,7 +331,7 @@ class BrainMemoryProvider(MemoryProvider):
             try:
                 store.prefetch_block(query, session_id=session_id or self._session_id)
             except Exception as exc:  # noqa: BLE001
-                logger.debug("brain: 后台召回预热失败: %s", exc)
+                logger.debug("atbrains: 后台召回预热失败: %s", exc)
 
         try:
             spawn_context_thread(_warm, name="brain-prefetch-warm").start()
@@ -358,7 +358,7 @@ class BrainMemoryProvider(MemoryProvider):
                               assistant_content or "", platform=self._platform, author=author,
                               messages=messages)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("brain: sync_turn 写入失败: %s", exc)
+            logger.warning("atbrains: sync_turn 写入失败: %s", exc)
 
     def on_memory_write(self, action: str, target: str, content: str,
                         metadata: Optional[dict[str, Any]] = None) -> None:
@@ -388,7 +388,7 @@ class BrainMemoryProvider(MemoryProvider):
                 if target_content:
                     store.deactivate_by_content(target_content)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("brain: on_memory_write 镜像失败: %s", exc)
+            logger.warning("atbrains: on_memory_write 镜像失败: %s", exc)
 
     def on_pre_compress(self, messages: list[dict[str, Any]]) -> str:
         store = self._store
@@ -416,7 +416,7 @@ class BrainMemoryProvider(MemoryProvider):
                               json.dumps(payload, ensure_ascii=False),
                               platform=self._platform)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("brain: on_pre_compress 存档失败: %s", exc)
+            logger.warning("atbrains: on_pre_compress 存档失败: %s", exc)
         return ""
 
     def on_session_end(self, messages: list[dict[str, Any]]) -> None:
@@ -442,7 +442,7 @@ class BrainMemoryProvider(MemoryProvider):
             store.remember(content[:4000], kind="delegation", importance=4,
                            source="delegation", session_id=self._session_id)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("brain: on_delegation 记录失败: %s", exc)
+            logger.debug("atbrains: on_delegation 记录失败: %s", exc)
 
     # -------------------------------------------------- 工具
 
@@ -451,25 +451,25 @@ class BrainMemoryProvider(MemoryProvider):
 
     def handle_tool_call(self, tool_name: str, args: dict[str, Any], **kwargs) -> str:
         try:
-            if tool_name == "brain_remember":
+            if tool_name == "atbrains_remember":
                 return self._tool_remember(args or {})
-            if tool_name == "brain_recall":
+            if tool_name == "atbrains_recall":
                 return self._tool_recall(args or {})
-            if tool_name == "brain_forget":
+            if tool_name == "atbrains_forget":
                 return self._tool_forget(args or {})
-            if tool_name == "brain_recent":
+            if tool_name == "atbrains_recent":
                 return self._tool_recent(args or {})
-            if tool_name == "brain_stats":
+            if tool_name == "atbrains_stats":
                 return self._tool_stats()
-            if tool_name == "brain_turn_detail":
+            if tool_name == "atbrains_turn_detail":
                 return self._tool_turn_detail(args or {})
-            if tool_name == "brain_claim_remember":
+            if tool_name == "atbrains_claim_remember":
                 return self._tool_claim_remember(args or {})
-            if tool_name == "brain_claim_recall":
+            if tool_name == "atbrains_claim_recall":
                 return self._tool_claim_recall(args or {})
-            if tool_name == "brain_episode_set":
+            if tool_name == "atbrains_episode_set":
                 return self._tool_episode_set(args or {})
-            if tool_name == "brain_episode_get":
+            if tool_name == "atbrains_episode_get":
                 return self._tool_episode_get(args or {})
         except BrainError as exc:
             return json.dumps({"ok": False, "error": str(exc)[:300]}, ensure_ascii=False)
@@ -477,9 +477,9 @@ class BrainMemoryProvider(MemoryProvider):
             return json.dumps({"ok": False, "error": str(exc)[:300]}, ensure_ascii=False)
         return json.dumps({"ok": False, "error": f"未知工具 {tool_name}"}, ensure_ascii=False)
 
-    def _require_store(self) -> BrainStore:
+    def _require_store(self) -> AtbrainsStore:
         if self._store is None:
-            raise BrainError("brain 存储未初始化（检查连接与凭据）")
+            raise BrainError("atbrains 存储未初始化（检查连接与凭据）")
         return self._store
 
     def _tool_remember(self, args: dict[str, Any]) -> str:
@@ -590,7 +590,7 @@ class BrainMemoryProvider(MemoryProvider):
         store = self._require_store()
         turn_id = args.get("turn_id")
         if turn_id is None:
-            raise BrainError("需要 turn_id（brain_recent 可查最近轮次）")
+            raise BrainError("需要 turn_id（atbrains_recent 可查最近轮次）")
         result = store.episode_set(
             int(turn_id),
             goal=args.get("goal"),
@@ -625,10 +625,10 @@ class BrainMemoryProvider(MemoryProvider):
 
     def get_config_schema(self) -> list[dict[str, Any]]:
         return [
-            {"key": "redis_password", "description": "Redis 密码（brain 短期存储）",
-             "secret": True, "required": True, "env_var": "BRAIN_REDIS_PASSWORD"},
-            {"key": "mariadb_password", "description": "MariaDB 密码（brain 长期存储）",
-             "secret": True, "required": True, "env_var": "BRAIN_MARIADB_PASSWORD"},
+            {"key": "redis_password", "description": "Redis 密码（atbrains 短期存储）",
+             "secret": True, "required": True, "env_var": "ATBRAINS_REDIS_PASSWORD"},
+            {"key": "mariadb_password", "description": "MariaDB 密码（atbrains 长期存储）",
+             "secret": True, "required": True, "env_var": "ATBRAINS_MARIADB_PASSWORD"},
             {"key": "redis_host", "description": "Redis 主机", "default": "127.0.0.1"},
             {"key": "redis_port", "description": "Redis 端口", "type": "integer", "default": 9079},
             {"key": "mariadb_host", "description": "MariaDB 主机", "default": "127.0.0.1"},
@@ -640,10 +640,12 @@ class BrainMemoryProvider(MemoryProvider):
 
     def save_config(self, values: dict[str, Any], hermes_home: str) -> None:
         home = hermes_home_path(hermes_home)
-        path = home / "brain.json"
+        path = home / "atbrains.json"
         existing: dict[str, Any] = {}
         try:
-            data = json.loads(path.read_text(encoding="utf-8-sig"))
+            legacy = home / "brain.json"
+            src = path if path.exists() else (legacy if legacy.exists() else path)
+            data = json.loads(src.read_text(encoding="utf-8-sig"))
             if isinstance(data, dict):
                 existing = data
         except Exception:  # noqa: BLE001
@@ -663,15 +665,15 @@ DEFAULT_NON_SECRET_KEYS = {
 
 def register(ctx) -> None:
     """记忆插件发现系统入口。"""
-    ctx.register_memory_provider(BrainMemoryProvider())
+    ctx.register_memory_provider(AtbrainsMemoryProvider())
     try:
         from pathlib import Path
 
-        skill_path = Path(__file__).resolve().parent / "skills" / "brain" / "SKILL.md"
+        skill_path = Path(__file__).resolve().parent / "skills" / "atbrains-memory" / "SKILL.md"
         if skill_path.is_file():
             ctx.register_skill(
                 "memory", skill_path,
-                "How to use the brain memory store: Redis short-term + MariaDB long-term, and the brain_* tools.",
+                "How to use the atbrains memory store: Redis short-term + MariaDB long-term, and the brain_* tools.",
             )
     except Exception:  # noqa: BLE001
-        logger.debug("brain: 技能注册失败", exc_info=True)
+        logger.debug("atbrains: 技能注册失败", exc_info=True)

@@ -7,7 +7,7 @@ if [ -z "$PY" ]; then echo "找不到 Hermes 运行时 python"; exit 1; fi
 echo "== brain prune $(date '+%F %T %z') =="
 HERMES_DISABLE_LAZY_INSTALLS=1 exec "$PY" -I -c '
 import sys
-sys.path.insert(0, "/root/.hermes/plugins/brain")
+sys.path.insert(0, "/root/.hermes/plugins/atbrains-memory")
 from core import BrainStore, resolve_config
 store = BrainStore(resolve_config("/root/.hermes"))
 print("prune:", store.prune())

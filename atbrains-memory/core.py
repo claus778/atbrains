@@ -1,4 +1,4 @@
-"""brain 核心引擎：Redis（短期）+ MariaDB（长期）双存储。
+"""atbrains 核心引擎：Redis（短期）+ MariaDB（长期）双存储。
 
 独立模块：不依赖 Hermes 即可使用（需要 `redis` 和 `pymysql`）。
 被记忆提供者（./__init__.py）和 CLI（./cli.py）共用。
@@ -70,7 +70,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "mariadb_user": "agent",
     "mariadb_db": "agent_memory",
     "machine": "",
-    # 行为参数（可在 brain.json 覆盖，不进入 setup 向导）
+    # 行为参数（可在 atbrains.json 覆盖，不进入 setup 向导）
     "short_term_ttl_days": 14,   # Redis 流/会话 TTL
     "hot_ttl_days": 30,          # 热点镜像 TTL
     "stream_maxlen": 2000,       # 最近对话流最大条数
@@ -123,7 +123,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # → remote_enabled=0 时下面这些键一行远程代码都不执行，行为与本地直连逐字节一致。
     "remote_enabled": 0,             # 总开关（1 开 / 0 关）
     "remote_url": "",                # 例 "http://111.230.71.79:8787"（/v1 与 console 共用端口）
-    "remote_token": "",              # Bearer 令牌：不写进 brain.json，从 $HERMES_HOME/.env 读 BRAIN_REMOTE_TOKEN
+    "remote_token": "",              # Bearer 令牌：不写进 atbrains.json，从 $HERMES_HOME/.env 读 ATBRAINS_REMOTE_TOKEN
     "remote_timeout_ms": 800,        # 关键路径（每轮召回）超时，必须短：绝不允许无限等待
     "remote_fallback": 1,            # 远程失败是否回落本地（0=明确失败，不静默写本地）
     "remote_turn_sync": 0,           # 对话归档是否也走远程（默认关：本地写）
@@ -145,12 +145,12 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 SECRET_ENV_VARS = {
-    "redis_password": "BRAIN_REDIS_PASSWORD",
-    "mariadb_password": "BRAIN_MARIADB_PASSWORD",
+    "redis_password": "ATBRAINS_REDIS_PASSWORD",
+    "mariadb_password": "ATBRAINS_MARIADB_PASSWORD",
     "distill_api_key": "HERMES_CUSTOM_API_COMMANDCODE_AI_API_KEY",
 }
 
-PROVIDER_NAME = "brain"
+PROVIDER_NAME = "atbrains-memory"
 KEY_PREFIX = "brain:"
 
 
@@ -214,24 +214,32 @@ def _dotenv_get(env_path: Path, key: str) -> Optional[str]:
 
 
 def resolve_config(hermes_home: Optional[str] = None) -> dict[str, Any]:
-    """brian.json（非密） + 环境变量/.env（密码） + 默认值 合并。"""
+    """atbrains.json（非密，兼容旧 brain.json） + 环境变量/.env（密码） + 默认值 合并。"""
     home = hermes_home_path(hermes_home)
     cfg: dict[str, Any] = dict(DEFAULT_CONFIG)
-    cfg_path = home / "brain.json"
-    try:
-        data = json.loads(cfg_path.read_text(encoding="utf-8-sig"))
-        if isinstance(data, dict):
-            for k, v in data.items():
-                if k in DEFAULT_CONFIG and v is not None:
-                    cfg[k] = v
-    except FileNotFoundError:
-        pass
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("brain: 忽略无法解析的 %s: %s", cfg_path, exc)
+    cfg_path = None
+    for name in ("atbrains.json", "brain.json"):  # 新名优先；旧名保留兼容（其它机器仍在用）
+        candidate = home / name
+        if not candidate.exists():
+            continue
+        cfg_path = candidate
+        try:
+            data = json.loads(candidate.read_text(encoding="utf-8-sig"))
+            if isinstance(data, dict):
+                for k, v in data.items():
+                    if k in DEFAULT_CONFIG and v is not None:
+                        cfg[k] = v
+            break
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("atbrains: 忽略无法解析的 %s: %s", candidate, exc)
 
     env_file = home / ".env"
     for key, var in SECRET_ENV_VARS.items():
+        # 新变量名优先，旧 BRAIN_* 仍可读（凭据层向后兼容，老安装不用改 .env）
+        legacy = var.replace("ATBRAINS_", "BRAIN_", 1) if var.startswith("ATBRAINS_") else ""
         val = os.environ.get(var) or _dotenv_get(env_file, var)
+        if not val and legacy:
+            val = os.environ.get(legacy) or _dotenv_get(env_file, legacy)
         if val:
             cfg[key] = val
 
@@ -742,7 +750,7 @@ def _cursor_start(msgs: list[dict[str, Any]], done: int) -> int:
     return done
 
 
-class BrainStore:
+class AtbrainsStore:
     """Redis + MariaDB 双存储引擎。线程安全（连接按线程持有）。"""
 
     def __init__(self, config: Optional[dict[str, Any]] = None):
@@ -851,8 +859,8 @@ class BrainStore:
                                 except Exception as exc:  # noqa: BLE001
                                     if not _benign_ddl_error(exc):
                                         raise
-                                    logger.debug("brain: 迁移 v%s 语句已存在，跳过: %s", ver, exc)
-                            logger.info("brain: schema 迁移 v%s 完成（%s）", ver, desc)
+                                    logger.debug("atbrains: 迁移 v%s 语句已存在，跳过: %s", ver, exc)
+                            logger.info("atbrains: schema 迁移 v%s 完成（%s）", ver, desc)
                         cur.execute(
                             "INSERT INTO brain_meta (meta_key, meta_value) VALUES ('schema_version', %s) "
                             "ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value)",
@@ -904,16 +912,18 @@ class BrainStore:
             str(self.cfg.get("remote_url") or "").strip())
 
     def _remote_token(self) -> str:
-        """Bearer 令牌：优先 cfg；否则读 $HERMES_HOME/.env 的 BRAIN_REMOTE_TOKEN。
+        """Bearer 令牌：优先 cfg；否则读 $HERMES_HOME/.env 的 ATBRAINS_REMOTE_TOKEN。
 
-        逐行解析 .env 并去引号（不用 shell source）。约定的存放点是 .env：不落 brain.json、
+        逐行解析 .env 并去引号（不用 shell source）。约定的存放点是 .env：不落 atbrains.json、
         不进日志、不完整回显（CLI 只打掩码）；cfg["remote_token"] 仅作显式覆盖/调试用。
         """
         tok = str(self.cfg.get("remote_token") or "").strip()
         if tok:
             return tok
         home = str(self.cfg.get("hermes_home") or "").strip() or str(hermes_home_path())
-        return str(_dotenv_get(Path(home) / ".env", "BRAIN_REMOTE_TOKEN") or "").strip()
+        env_path = Path(home) / ".env"
+        return str(_dotenv_get(env_path, "ATBRAINS_REMOTE_TOKEN")
+                   or _dotenv_get(env_path, "BRAIN_REMOTE_TOKEN") or "").strip()
 
     def _remote_call(self, path: str, payload: dict, *, timeout_ms: int = 0) -> dict:
         """POST 一个 /v1 端点并校验返回体。
@@ -964,7 +974,7 @@ class BrainStore:
 
     def _rk(self, *parts) -> str:
         # redis_key_prefix 空 → KEY_PREFIX（"brain:"），键名与历史版本逐字节一致；
-        # 非空 → 用它替换 "brain"（去尾部冒号），实现「统一 db0 + 每实例一前缀」。
+        # 非空 → 用它替换 "atbrains"（去尾部冒号），实现「统一 db0 + 每实例一前缀」。
         pfx = str(self.cfg.get("redis_key_prefix") or "").strip().strip(":") or KEY_PREFIX.rstrip(":")
         return pfx + ":" + ":".join(str(p) for p in parts)
 
@@ -1017,11 +1027,11 @@ class BrainStore:
                         "memory_type": mtype, "hot_cache": False, "deduped": False}
             except Exception as exc:  # noqa: BLE001
                 if not int(self.cfg.get("remote_fallback") or 0):
-                    logger.warning("brain: 远程写入失败，未启用回落（明确失败）: %s", str(exc)[:200])
+                    logger.warning("atbrains: 远程写入失败，未启用回落（明确失败）: %s", str(exc)[:200])
                     return {"id": None, "kind": kind, "importance": importance,
                             "memory_type": mtype, "hot_cache": False, "deduped": False,
                             "error": str(exc)[:200]}
-                logger.warning("brain: 远程写入失败，回落本地: %s", str(exc)[:200])
+                logger.warning("atbrains: 远程写入失败，回落本地: %s", str(exc)[:200])
         self.ensure_schema()
         mem_id = None
         mem_vals: tuple = (kind, content, tags, importance)
@@ -1062,7 +1072,7 @@ class BrainStore:
             hot_ok = self._hot_put(int(mem_id), mem_vals[0], mem_vals[1], mem_vals[2], mem_vals[3],
                                    str(source or ""))
         except Exception as exc:  # noqa: BLE001
-            logger.debug("brain: Redis 热点镜像失败: %s", exc)
+            logger.debug("atbrains: Redis 热点镜像失败: %s", exc)
         try:
             self._vec_wake.set()   # 通知本进程 drainer 尽快向量化（不阻塞保存）
         except Exception:  # noqa: BLE001
@@ -1104,9 +1114,9 @@ class BrainStore:
                 return dict(res) if isinstance(res, dict) else {"id": int(mem_id), "deactivated": 0}
             except Exception as exc:  # noqa: BLE001
                 if not int(self.cfg.get("remote_fallback") or 0):
-                    logger.warning("brain: 远程废止失败，未启用回落（明确失败）: %s", str(exc)[:200])
+                    logger.warning("atbrains: 远程废止失败，未启用回落（明确失败）: %s", str(exc)[:200])
                     return {"id": int(mem_id), "deactivated": 0, "error": str(exc)[:200]}
-                logger.warning("brain: 远程废止失败，回落本地: %s", str(exc)[:200])
+                logger.warning("atbrains: 远程废止失败，回落本地: %s", str(exc)[:200])
         self.ensure_schema()
         rowcount, _ = self._exec(
             "UPDATE brain_memories SET active = 0, deactivated_at = CURRENT_TIMESTAMP "
@@ -1327,9 +1337,9 @@ class BrainStore:
                 return int(data.get("id") or 0)
             except Exception as exc:  # noqa: BLE001
                 if not int(self.cfg.get("remote_fallback") or 0):
-                    logger.warning("brain: 远程回合归档失败，未启用回落（明确失败）: %s", str(exc)[:200])
+                    logger.warning("atbrains: 远程回合归档失败，未启用回落（明确失败）: %s", str(exc)[:200])
                     return 0
-                logger.warning("brain: 远程回合归档失败，回落本地: %s", str(exc)[:200])
+                logger.warning("atbrains: 远程回合归档失败，回落本地: %s", str(exc)[:200])
         session_id = str(session_id or "")[:96]
         platform = platform[:48]
         author = str(author or "")[:64]
@@ -1355,14 +1365,14 @@ class BrainStore:
             try:
                 stored, stored_bytes = self.store_turn_messages(turn_id, session_id, messages)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("brain: 转录层写入失败（正文已存）: %s", str(exc)[:200])
+                logger.warning("atbrains: 转录层写入失败（正文已存）: %s", str(exc)[:200])
             if stored:
                 try:
                     self._exec(
                         "UPDATE brain_turns SET message_count = %s, message_bytes = %s WHERE id = %s",
                         (min(stored, 65535), min(stored_bytes, 4294967295), turn_id))
                 except Exception as exc:  # noqa: BLE001
-                    logger.debug("brain: 转录计数更新失败: %s", exc)
+                    logger.debug("atbrains: 转录计数更新失败: %s", exc)
         try:
             r = self.redis()
             stream = self._rk("recent")
@@ -1381,7 +1391,7 @@ class BrainStore:
             pipe.expire(skey, int(self.cfg["short_term_ttl_days"]) * 86400)
             pipe.execute()
         except Exception as exc:  # noqa: BLE001
-            logger.debug("brain: Redis 回合写入失败: %s", exc)
+            logger.debug("atbrains: Redis 回合写入失败: %s", exc)
         return turn_id
 
     # -------------------------------------------------- 全量转录层
@@ -1441,7 +1451,7 @@ class BrainStore:
                                    "content": str(content if content is not None else "")[:max_msg // 4]}
                         raw = json.dumps(payload, ensure_ascii=False).encode("utf-8", "replace")
                     if total + len(raw) > max_total:
-                        logger.warning("brain: 单轮转录超过 %s 字节上限，剩余 %s 条将在下一轮续存",
+                        logger.warning("atbrains: 单轮转录超过 %s 字节上限，剩余 %s 条将在下一轮续存",
                                        max_total, len(delta) - seq)
                         break
                     total += len(raw)
@@ -1479,7 +1489,7 @@ class BrainStore:
             tid = int(rows[0]["id"]) if rows else 0
         if tid <= 0:
             return {"found": False, "reason": "需要 turn_id，或可用的 session_id",
-                    "hint": "brain_recent 可看到最近轮次"}
+                    "hint": "atbrains_recent 可看到最近轮次"}
         head = self._exec(
             "SELECT id, session_id, platform, author, machine, truncated, message_count, "
             "message_bytes, ts, user_content, assistant_content FROM brain_turns WHERE id = %s",
@@ -1535,7 +1545,7 @@ class BrainStore:
                 (session_id, normalize_platform(platform)[:48], self.machine[:48]),
             )
         except Exception as exc:  # noqa: BLE001
-            logger.debug("brain: touch_session 失败: %s", exc)
+            logger.debug("atbrains: touch_session 失败: %s", exc)
         try:
             skey = self._rk("session", session_id)
             self.redis().hset(skey, "last_active", str(int(time.time())))
@@ -1627,7 +1637,7 @@ class BrainStore:
                     })
                 return out
             except Exception as exc:  # noqa: BLE001
-                logger.debug("brain: Redis 最近对话读取失败，回退 MariaDB: %s", exc)
+                logger.debug("atbrains: Redis 最近对话读取失败，回退 MariaDB: %s", exc)
                 source = "db"
         self.ensure_schema()
         rows = self._exec(
@@ -1675,9 +1685,9 @@ class BrainStore:
                 return str(data.get("text") or ""), int(data.get("count") or 0)
             except Exception as exc:  # noqa: BLE001
                 if not int(self.cfg.get("remote_fallback") or 0):
-                    logger.warning("brain: 远程召回失败，未启用回落（返回空）: %s", str(exc)[:200])
+                    logger.warning("atbrains: 远程召回失败，未启用回落（返回空）: %s", str(exc)[:200])
                     return "", 0
-                logger.warning("brain: 远程召回失败，回落本地: %s", str(exc)[:200])
+                logger.warning("atbrains: 远程召回失败，回落本地: %s", str(exc)[:200])
         cache_key = self._rk("qcache", hashlib.sha1(query.encode("utf-8")).hexdigest())
         if use_cache:
             try:
@@ -1706,7 +1716,7 @@ class BrainStore:
         budget = int(self.cfg["prefetch_max_chars"])
         blocks: list[str] = []
         if mems:
-            lines = ["[brain 长期记忆 · MariaDB]"]
+            lines = ["[atbrains 长期记忆 · MariaDB]"]
             for m in mems:
                 line = f"- [{m['kind']}·重要度{m['importance']}] {_clip(str(m['content']), 240)}"
                 if m.get("tags"):
@@ -1716,7 +1726,7 @@ class BrainStore:
                 lines.append(line)
             blocks.append("\n".join(lines))
         if turns:
-            lines = ["[brain 相关历史对话 · 归档]"]
+            lines = ["[atbrains 相关历史对话 · 归档]"]
             for t in turns:
                 ts = t.get("ts")
                 ts_s = ts.strftime("%Y-%m-%d") if hasattr(ts, "strftime") else str(ts)[:16]
@@ -1763,7 +1773,7 @@ class BrainStore:
                             key = val
                             break
         except Exception as exc:  # noqa: BLE001
-            logger.debug("brain: 读取 qdrant 配置文件失败: %s", exc)
+            logger.debug("atbrains: 读取 qdrant 配置文件失败: %s", exc)
         out: dict[str, str] = {}
         if key:
             out["qdrant"] = key
@@ -1832,7 +1842,7 @@ class BrainStore:
                 raise
             self._qdrant("PUT", f"/collections/{name}",
                          {"vectors": {"size": dim, "distance": "Cosine"}}, timeout=30)
-            logger.info("brain: 已创建 Qdrant 集合 %s（%s 维, Cosine）", name, dim)
+            logger.info("atbrains: 已创建 Qdrant 集合 %s（%s 维, Cosine）", name, dim)
             return
         vectors = (((data.get("result") or {}).get("config") or {})
                    .get("params") or {}).get("vectors")
@@ -1922,7 +1932,7 @@ class BrainStore:
             if not got:
                 # 锁被另一路 drain 占用（可能正卡在一次慢速 embed 上）：不再硬跳过，
                 # 直接继续——本管线幂等（同 id 覆盖写），最坏只是重复一次嵌入。
-                logger.info("brain: drain 锁被占用，仍然继续（幂等处理）")
+                logger.info("atbrains: drain 锁被占用，仍然继续（幂等处理）")
             self.qdrant_ensure_collection()
             model = str(self.cfg["embed_model"])
             batch_n = max(1, int(self.cfg.get("vector_drain_batch") or 8))
@@ -1938,13 +1948,13 @@ class BrainStore:
                 try:
                     vecs: list = list(self.embed_texts(texts))
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("brain: 批量向量化失败（%s），逐条重试", str(exc)[:160])
+                    logger.warning("atbrains: 批量向量化失败（%s），逐条重试", str(exc)[:160])
                     vecs = []
                     for t in texts:
                         try:
                             vecs.append(self.embed_texts([t])[0])
                         except Exception as exc2:  # noqa: BLE001
-                            logger.warning("brain: 单条向量化失败: %s", str(exc2)[:160])
+                            logger.warning("atbrains: 单条向量化失败: %s", str(exc2)[:160])
                             vecs.append(None)
                 ok_pairs = []
                 for row, vec in zip(pending, vecs):
@@ -1970,13 +1980,13 @@ class BrainStore:
                                               content_hash=row["content_hash"])
                             stats["embedded"] += 1
                     except Exception as exc:  # noqa: BLE001
-                        logger.warning("brain: Qdrant 写入失败: %s", str(exc)[:160])
+                        logger.warning("atbrains: Qdrant 写入失败: %s", str(exc)[:160])
                         for row, _vec in ok_pairs:
                             self._mark_vector(int(row["id"]), status="error", model=model,
                                               error=f"qdrant: {str(exc)[:200]}")
                         stats["errors"] += len(ok_pairs)
                 budget -= len(pending)
-                logger.info("brain: 向量化批次 +%s（成功累计 %s / 失败累计 %s）",
+                logger.info("atbrains: 向量化批次 +%s（成功累计 %s / 失败累计 %s）",
                             len(pending), stats["embedded"], stats["errors"])
                 if len(pending) < batch_n:
                     break
@@ -1989,7 +1999,7 @@ class BrainStore:
                 try:
                     self.qdrant_delete_points(ids)
                 except Exception as exc:  # noqa: BLE001
-                    logger.debug("brain: 清理 Qdrant 失活向量失败: %s", exc)
+                    logger.debug("atbrains: 清理 Qdrant 失活向量失败: %s", exc)
                 marks = ", ".join(["%s"] * len(ids))
                 self._exec(f"DELETE FROM brain_vector_index WHERE mem_id IN ({marks})", tuple(ids))
                 stats["deleted"] = len(ids)
@@ -2072,7 +2082,7 @@ class BrainStore:
             vec = self.vector_search_memories(
                 query, limit=int(self.cfg.get("vector_topk") or 12), kind=kind, agent=agent)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("brain: 向量检索失败，回落纯关键词: %s", str(exc)[:200])
+            logger.warning("atbrains: 向量检索失败，回落纯关键词: %s", str(exc)[:200])
             vec = []
         if not vec:
             for m in kw:
@@ -2110,7 +2120,7 @@ class BrainStore:
             try:
                 out = self.rerank(query, out, limit=int(limit))
             except Exception as exc:  # noqa: BLE001
-                logger.warning("brain: rerank 失败，保持 RRF 顺序: %s", str(exc)[:200])
+                logger.warning("atbrains: rerank 失败，保持 RRF 顺序: %s", str(exc)[:200])
         return out[: int(limit)]
 
     def _apply_decay(self, items: dict[int, dict], scores: dict[int, float]) -> None:
@@ -2203,7 +2213,7 @@ class BrainStore:
         try:
             vectors = self.qdrant_get_vectors([int(r["id"]) for r in rows])
         except Exception as exc:  # noqa: BLE001
-            logger.warning("brain: 读取 Qdrant 向量失败，本次不做取代检测: %s", str(exc)[:200])
+            logger.warning("atbrains: 读取 Qdrant 向量失败，本次不做取代检测: %s", str(exc)[:200])
             out["skipped"] = len(rows)
             out["error"] = str(exc)[:200]
             return out
@@ -2253,7 +2263,7 @@ class BrainStore:
                 if rowcount:
                     out["applied"] += 1
         if out["applied"]:
-            logger.info("brain: 取代检测标记 %s 条旧记忆（阈值 %s）", out["applied"], th)
+            logger.info("atbrains: 取代检测标记 %s 条旧记忆（阈值 %s）", out["applied"], th)
         return out
 
     def unsupersede(self, mem_id: int) -> dict[str, Any]:
@@ -2335,7 +2345,7 @@ class BrainStore:
         except Exception as exc:  # noqa: BLE001
             with self._maint_lock:
                 self._maint_started = False
-            logger.warning("brain: 启动维护线程失败: %s", exc)
+            logger.warning("atbrains: 启动维护线程失败: %s", exc)
 
     def _maintenance_loop(self) -> None:
         interval = max(0.01, float(self.cfg.get("maintenance_interval_min") or 60)) * 60.0
@@ -2346,7 +2356,7 @@ class BrainStore:
                 self._maintenance_tick()
             except Exception as exc:  # noqa: BLE001
                 # 线程绝不因单轮失败退出，更不向上抛。
-                logger.warning("brain: 维护循环异常（继续下一轮）: %s", exc)
+                logger.warning("atbrains: 维护循环异常（继续下一轮）: %s", exc)
             delay = interval
 
     def _maintenance_tick(self) -> None:
@@ -2366,14 +2376,14 @@ class BrainStore:
                         return
         rows = self._exec("SELECT GET_LOCK('brain_prune', 0) AS got", fetch=True)
         if not (rows and rows[0].get("got")):
-            logger.debug("brain: 维护清理跳过（另一进程正在清理）")
+            logger.debug("atbrains: 维护清理跳过（另一进程正在清理）")
             return
         try:
             result = self.prune(dry_run=False)
             now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
             self._meta_set("last_prune", now)
             next_txt = f"{int(every)} 天后" if every > 0 else "每轮巡检"
-            logger.info("brain: 维护清理完成 turns=%s sessions=%s archive=%s 下次 %s",
+            logger.info("atbrains: 维护清理完成 turns=%s sessions=%s archive=%s 下次 %s",
                         result.get("turns", 0), result.get("sessions", 0),
                         result.get("archives", 0), next_txt)
         finally:
@@ -2446,7 +2456,7 @@ class BrainStore:
         except Exception as exc:  # noqa: BLE001
             with self._distill_lock:
                 self._distill_started = False
-            logger.warning("brain: 启动蒸馏线程失败: %s", exc)
+            logger.warning("atbrains: 启动蒸馏线程失败: %s", exc)
 
     def _distill_loop(self) -> None:
         interval = max(0.01, float(self.cfg.get("distill_interval_min") or 60)) * 60.0
@@ -2456,7 +2466,7 @@ class BrainStore:
                 time.sleep(delay)
                 self._distill_tick()
             except Exception as exc:  # noqa: BLE001
-                logger.warning("brain: 蒸馏循环异常（继续下一轮）: %s", exc)
+                logger.warning("atbrains: 蒸馏循环异常（继续下一轮）: %s", exc)
             delay = interval
 
     def distill_status(self) -> dict[str, Any]:
@@ -2500,7 +2510,7 @@ class BrainStore:
         }
         if not force and not int(self.cfg.get("distill_enabled") or 0):
             result["reason"] = "disabled"
-            logger.debug("brain: 蒸馏未启用，跳过")
+            logger.debug("atbrains: 蒸馏未启用，跳过")
             return result
         self.ensure_schema()
         cfg = self.cfg
@@ -2516,13 +2526,13 @@ class BrainStore:
             wm = 0
         if not override and wm_txt in (None, ""):
             if dry_run:
-                logger.info("brain: 蒸馏水位未初始化，dry-run 按 0 计（不写库）")
+                logger.info("atbrains: 蒸馏水位未初始化，dry-run 按 0 计（不写库）")
             else:
                 row = self._exec(
                     "SELECT COALESCE(MAX(id), 0) AS m FROM brain_turns", fetch=True)[0]
                 wm = int(row["m"] or 0)
                 self._meta_set("distill_watermark", str(wm))
-                logger.info("brain: 蒸馏水位初始化 id=%s（不回灌历史）", wm)
+                logger.info("atbrains: 蒸馏水位初始化 id=%s（不回灌历史）", wm)
                 result["reason"] = "initialized"
                 result["watermark"] = wm
                 return result
@@ -2591,7 +2601,7 @@ class BrainStore:
         if not dry_run:
             got = self._exec("SELECT GET_LOCK('brain_distill', 0) AS got", fetch=True)
             if not (got and got[0].get("got")):
-                logger.debug("brain: 蒸馏跳过（另一进程正在蒸馏）")
+                logger.debug("atbrains: 蒸馏跳过（另一进程正在蒸馏）")
                 result["reason"] = "locked"
                 return result
             lock_held = True
@@ -2605,7 +2615,7 @@ class BrainStore:
                 result["error"] = str(exc)[:300]
                 if not dry_run:
                     self._meta_incr("distill_errors", 1)
-                logger.warning("brain: 蒸馏提取失败（不推水位）: %s", str(exc)[:200])
+                logger.warning("atbrains: 蒸馏提取失败（不推水位）: %s", str(exc)[:200])
                 return result
 
             items = self._distill_candidates(candidates, dry_run=dry_run)
@@ -2634,7 +2644,7 @@ class BrainStore:
             if advance:
                 self._meta_set("distill_watermark", str(batch_max))
             else:
-                logger.info("brain: 手动蒸馏批次之前仍有积压轮次，水位保持 %s（不跳到 %s）",
+                logger.info("atbrains: 手动蒸馏批次之前仍有积压轮次，水位保持 %s（不跳到 %s）",
                             wm, batch_max)
             self._meta_set("last_distill", now.strftime("%Y-%m-%d %H:%M:%S"))
             self._meta_incr("distill_runs", 1)
@@ -2647,7 +2657,7 @@ class BrainStore:
             result["watermark"] = batch_max if advance else wm
             result["added"] = added_ids
             result["updated"] = updated_ids
-            logger.info("brain: 蒸馏完成 新增=%s 更新=%s 跳过=%s (批 %s 轮, id %s-%s)",
+            logger.info("atbrains: 蒸馏完成 新增=%s 更新=%s 跳过=%s (批 %s 轮, id %s-%s)",
                         len(added_ids), len(updated_ids), result["skipped"],
                         len(rows), rows[0]["id"], rows[-1]["id"])
             return result
@@ -2824,13 +2834,13 @@ class BrainStore:
                 continue
             if self._DISTILL_SENSITIVE_RE.search(content):
                 item["decision"], item["reason"] = "skip", "sensitive"
-                logger.warning("brain: 蒸馏候选命中敏感信息，已丢弃")
+                logger.warning("atbrains: 蒸馏候选命中敏感信息，已丢弃")
                 continue
             hits: list[dict[str, Any]] = []
             try:
                 hits = self.vector_search_memories(content, limit=3)
             except Exception as exc:  # noqa: BLE001
-                logger.debug("brain: 蒸馏对账向量检索失败（按新增）: %s", str(exc)[:160])
+                logger.debug("atbrains: 蒸馏对账向量检索失败（按新增）: %s", str(exc)[:160])
             if hits:
                 item["sim"] = float(hits[0].get("vscore") or 0.0)
             if item["sim"] is not None and item["sim"] >= high:
@@ -2853,7 +2863,7 @@ class BrainStore:
                     for i, it in enumerate(gray)
                 ])
             except Exception as exc:  # noqa: BLE001
-                logger.warning("brain: 蒸馏对账失败，灰区全部按新增: %s", str(exc)[:200])
+                logger.warning("atbrains: 蒸馏对账失败，灰区全部按新增: %s", str(exc)[:200])
                 decisions = {}
             for i, it in enumerate(gray):
                 dec = decisions.get(i) or {}
@@ -2882,7 +2892,7 @@ class BrainStore:
                                       importance=it["importance"], source="distill")
             except Exception as exc:  # noqa: BLE001
                 it["decision"], it["reason"] = "skip", "write_failed"
-                logger.warning("brain: 蒸馏写入失败: %s", str(exc)[:200])
+                logger.warning("atbrains: 蒸馏写入失败: %s", str(exc)[:200])
                 continue
             new_id = saved.get("id")
             it["id"] = new_id
@@ -2900,7 +2910,7 @@ class BrainStore:
                         "updated_at = updated_at WHERE id = %s AND active = 1",
                         (int(new_id), now_txt, int(it["target_id"])))
                 except Exception as exc:  # noqa: BLE001
-                    logger.warning("brain: 标记旧记忆取代失败（新记忆已写入）: %s", str(exc)[:200])
+                    logger.warning("atbrains: 标记旧记忆取代失败（新记忆已写入）: %s", str(exc)[:200])
         return items
 
     def ping(self) -> dict[str, Any]:
@@ -2948,7 +2958,7 @@ class BrainStore:
                               "active": int(r["active"] or 0)} for r in agent_rows]
         except Exception as exc:  # noqa: BLE001
             out["agents"] = []
-            logger.debug("brain: agent 统计失败: %s", str(exc)[:160])
+            logger.debug("atbrains: agent 统计失败: %s", str(exc)[:160])
         try:
             r = self.redis()
             out["redis"] = {
@@ -3039,3 +3049,7 @@ class BrainStore:
                                                   ("inactive_memories", i_days), ("sessions", s_days))
                           if days <= 0]
         return out
+
+
+# 兼容旧名（老脚本/外部工具仍 import BrainStore）
+BrainStore = AtbrainsStore

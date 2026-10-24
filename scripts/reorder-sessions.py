@@ -38,7 +38,7 @@ def main() -> int:
     ap.add_argument("--apply", action="store_true")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--hermes-home", default="/root/.hermes")
-    ap.add_argument("--plugin-dir", default="/root/.hermes/plugins/brain")
+    ap.add_argument("--plugin-dir", default="/root/.hermes/plugins/atbrains-memory")
     args = ap.parse_args()
     write = bool(args.apply) and not args.dry_run
 

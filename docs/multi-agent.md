@@ -1,6 +1,6 @@
 # 多 agent 接入 atbrains 长期记忆（MCP）
 
-brain 插件本身是 **Hermes 专属**的 memory provider：只有 Hermes 会加载它、调用它的
+atbrains-memory 插件本身是 **Hermes 专属**的 memory provider：只有 Hermes 会加载它、调用它的
 prefetch/sync_turn 钩子。omp、DeepSeek Harness（dsh）、Codex、Claude Code 等 agent
 不能直接加载这个插件。
 
@@ -21,7 +21,7 @@ brain 工具（记忆、检索、主张、情节）开放给任何支持 MCP 的
   分库会让记忆天然不通用（同一条事实三份副本、互相召回不到），现已全部并入共享库，
   用 `agent` 列区分来源；需要严格隔离时也不建分库，改用 `agent` 过滤。
 - **召回默认不过滤 agent**；只看某一方就传 `agent` 参数（MCP 与 Hermes 的
-  `brain_recall` 都支持）。结构化主张（claims）的版本也记录了写入方 agent。
+  `atbrains_recall` 都支持）。结构化主张（claims）的版本也记录了写入方 agent。
 - **Redis 只是热点缓存**：召回缓存、最近记忆索引，丢了会自动重建；权威数据在 MariaDB。
 
 这与 scope-recall 的 "shared store, each memory says which agent it came in through"
@@ -49,14 +49,14 @@ MCP 工具名与 Hermes 侧一致，客户端通常会加前缀（omp/dsh 显示
 
 | 工具 | 用途 |
 |---|---|
-| `brain_remember` | 保存一条长期记忆（fact/preference/decision/note/todo） |
-| `brain_recall` | 混合召回（关键词 + 向量 RRF），附历史对话与结构化主张 |
-| `brain_forget` | 按 id 软删除一条记忆 |
-| `brain_recent` | 最近写入的记忆 / 最近对话流 |
-| `brain_stats` | 本 agent 身份、库名、计数、存储占用 |
-| `brain_turn_detail` | 某一轮的完整工具过程（转录层） |
-| `brain_claim_remember` / `brain_claim_recall` | 结构化主张（同槽位版本化） |
-| `brain_episode_set` / `brain_episode_get` | 某一轮的目标/决策/未完成项 |
+| `atbrains_remember` | 保存一条长期记忆（fact/preference/decision/note/todo） |
+| `atbrains_recall` | 混合召回（关键词 + 向量 RRF），附历史对话与结构化主张 |
+| `atbrains_forget` | 按 id 软删除一条记忆 |
+| `atbrains_recent` | 最近写入的记忆 / 最近对话流 |
+| `atbrains_stats` | 本 agent 身份、库名、计数、存储占用 |
+| `atbrains_turn_detail` | 某一轮的完整工具过程（转录层） |
+| `atbrains_claim_remember` / `atbrains_claim_recall` | 结构化主张（同槽位版本化） |
+| `atbrains_episode_set` / `atbrains_episode_get` | 某一轮的目标/决策/未完成项 |
 
 `initialize` 会返回一段 `instructions`，告诉模型什么时候该 recall、什么时候该 remember。
 不同 agent 拿到的 instructions 会带上自己的 agent 名。
@@ -78,7 +78,7 @@ MCP 工具名与 Hermes 侧一致，客户端通常会加前缀（omp/dsh 显示
 }
 ```
 
-验证：启动 omp 后工具列表里应出现 `mcp__brain__brain_*`；让它调用 `brain_stats`，
+验证：启动 omp 后工具列表里应出现 `mcp__brain__brain_*`；让它调用 `atbrains_stats`，
 应返回 `agent: omp`、`database: agent_memory`。
 
 > 本机验证脚本（SDK 方式，不依赖交互式 CLI）：
@@ -123,12 +123,12 @@ python3 /root/agent-db/mcp_client_test.py --url http://127.0.0.1:8787/mcp --agen
 ## 边界与注意
 
 - **不会自动归档非 Hermes agent 的对话**：`brain_turns` 的写入依赖 Hermes 的
-  `sync_turn` 钩子。omp/dsh 只有显式调用 `brain_remember` 的内容会进库。
+  `sync_turn` 钩子。omp/dsh 只有显式调用 `atbrains_remember` 的内容会进库。
   需要「每轮全量转录」的话，得给对应 agent 写 hook/plugin，不是 MCP 能解决的。
-- **`brain_forget` 是全局的**：共享库里任何 agent 都能停用任何 id 的记忆（与 Hermes 同等权限）。
+- **`atbrains_forget` 是全局的**：共享库里任何 agent 都能停用任何 id 的记忆（与 Hermes 同等权限）。
 - **向量召回在服务端做**：Qdrant/embedding 都在服务器上，客户端不需要装向量依赖；
   向量层故障时自动回落关键词。
-- **刚写入的低重要度记忆**：MCP 的 `brain_recall` 会先做一次「整句精确包含」直查，
+- **刚写入的低重要度记忆**：MCP 的 `atbrains_recall` 会先做一次「整句精确包含」直查，
   避免被高重要度旧条目挤出 top-k；Hermes 侧排序未改。
 - 令牌泄露 = 记忆库读写权限泄露。不要把令牌写进 git、聊天记录或截图；
   泄露后 `hermes atbrains token-add <agent>` 轮换即可。

@@ -1,4 +1,4 @@
-# brain — Redis（短期）+ MariaDB（长期）记忆插件
+# atbrains — Redis（短期）+ MariaDB（长期）记忆插件
 
 Hermes 记忆提供者插件：把两台本机服务接进 agent 大脑。
 
@@ -7,7 +7,7 @@ Hermes 记忆提供者插件：把两台本机服务接进 agent 大脑。
 | 层 | 服务 | 内容 | 生命周期 |
 |---|---|---|---|
 | 短期 | Redis `127.0.0.1:9079` | `brain:recent` 最近对话流（Stream）、`brain:session:*` 会话状态、`brain:hot:*` 热点记忆镜像、`brain:qcache:*` 检索缓存 | TTL 自动过期（默认 14-30 天），无需维护 |
-| 长期 | MariaDB `127.0.0.1:57306` / 库 `agent_memory` | `brain_memories` 事实/偏好/决策、`brain_claims`/`brain_claim_versions`/`brain_claim_evidence` 结构化主张与证据、`brain_episodes` 每轮情节头、`brain_turns` 完整对话归档、`brain_turn_messages` 全量转录层（工具调用/输出/推理，zlib）、`brain_sessions` 会话索引、`brain_archive` 压缩前存档 | 永久，`hermes brain prune` 按保留期清理 |
+| 长期 | MariaDB `127.0.0.1:57306` / 库 `agent_memory` | `brain_memories` 事实/偏好/决策、`brain_claims`/`brain_claim_versions`/`brain_claim_evidence` 结构化主张与证据、`brain_episodes` 每轮情节头、`brain_turns` 完整对话归档、`brain_turn_messages` 全量转录层（工具调用/输出/推理，zlib）、`brain_sessions` 会话索引、`brain_archive` 压缩前存档 | 永久，`hermes atbrains-memory prune` 按保留期清理 |
 
 ## 接入点（Hermes 钩子）
 
@@ -20,8 +20,8 @@ Hermes 记忆提供者插件：把两台本机服务接进 agent 大脑。
 
 ## 工具
 
-`brain_remember` · `brain_recall` · `brain_forget` · `brain_recent` · `brain_stats` · `brain_turn_detail`
-· `brain_claim_remember` · `brain_claim_recall` · `brain_episode_set` · `brain_episode_get`
+`atbrains_remember` · `atbrains_recall` · `atbrains_forget` · `atbrains_recent` · `atbrains_stats` · `atbrains_turn_detail`
+· `atbrains_claim_remember` · `atbrains_claim_recall` · `atbrains_episode_set` · `atbrains_episode_get`
 
 ## 知识层（schema v6：主张 / 版本 / 证据 / 情节）
 
@@ -40,15 +40,15 @@ Hermes 记忆提供者插件：把两台本机服务接进 agent 大脑。
 写入与读取：
 
 ```
-brain_claim_remember(subject="服务器", predicate="时区", value="UTC",
+atbrains_claim_remember(subject="服务器", predicate="时区", value="UTC",
                      turn_id=750, seq=2, quote="库内时间一律 UTC")
-brain_claim_recall(subject="服务器")          # 当前值
-brain_claim_recall(query="时区", history=true) # 全部版本（含已封版/已撤回）
-brain_episode_set(turn_id=750, goal="…", decisions=[…], open_items=[…], next_step="…")
-brain_episode_get(turn_id=750)
+atbrains_claim_recall(subject="服务器")          # 当前值
+atbrains_claim_recall(query="时区", history=true) # 全部版本（含已封版/已撤回）
+atbrains_episode_set(turn_id=750, goal="…", decisions=[…], open_items=[…], next_step="…")
+atbrains_episode_get(turn_id=750)
 ```
 
-`brain_turn_detail` 会自动带出该轮的 episode；`brain_recall` 的返回里多一个 `claims` 字段。
+`atbrains_turn_detail` 会自动带出该轮的 episode；`atbrains_recall` 的返回里多一个 `claims` 字段。
 `prune` 删轮次时，连带删该轮的 episode 与证据行（主张版本保留，只把断掉的 `source_turn_id` 置空）。
 
 ## 全量转录层（brain_turn_messages）
@@ -61,7 +61,7 @@ brain_episode_get(turn_id=750)
 - 增量：Hermes 每轮传的是「到目前为止的完整对话」，已归档条数记在
   `brain_sessions.archived_messages`，只写尾部新增，避免 N² 重复；历史被压缩/回退（条数变少）时
   退回最后一个 `user` 消息重新起算。
-- 读取：`brain_turn_detail(turn_id=… | session_id=…)`，`max_chars` 控制每条正文上限；
+- 读取：`atbrains_turn_detail(turn_id=… | session_id=…)`，`max_chars` 控制每条正文上限；
   `brain_turns.message_count / message_bytes` 可先看这轮存了多少。
 - 上限：单条 `turn_msg_max_bytes`（默认 1 MiB，超出截断并留 `_truncated_bytes`），
   单轮 `turn_total_max_bytes`（默认 16 MiB，超出部分下一轮续存）。
@@ -71,21 +71,21 @@ brain_episode_get(turn_id=750)
 ## CLI
 
 ```
-hermes brain status            # 连通性 / 配置 / 统计总览
-hermes brain search <关键词>   # 检索记忆与历史对话
-hermes brain remember <内容>   # 手工存一条长期记忆
-hermes brain recent            # Redis 最近对话流
-hermes brain forget <id>       # 废止记忆（软删除）
-hermes brain prune --dry-run   # 清理预演
-hermes brain doctor            # 自检
-hermes brain remote-check      # 远程模式自检（开关 / URL / 令牌掩码 / 健康检查往返耗时）
+hermes atbrains-memory status            # 连通性 / 配置 / 统计总览
+hermes atbrains-memory search <关键词>   # 检索记忆与历史对话
+hermes atbrains-memory remember <内容>   # 手工存一条长期记忆
+hermes atbrains-memory recent            # Redis 最近对话流
+hermes atbrains-memory forget <id>       # 废止记忆（软删除）
+hermes atbrains-memory prune --dry-run   # 清理预演
+hermes atbrains-memory doctor            # 自检
+hermes atbrains-memory remote-check      # 远程模式自检（开关 / URL / 令牌掩码 / 健康检查往返耗时）
 ```
 
 ## 配置
 
-- 非密配置：`$HERMES_HOME/brain.json`（host/port/user/db + 行为参数，见 `core.py` DEFAULT_CONFIG）。
-- 密码：`$HERMES_HOME/.env` 中 `BRAIN_REDIS_PASSWORD` / `BRAIN_MARIADB_PASSWORD`（经 `save_env_value` 写入）。
-- 激活：`memory.provider: brain`（`hermes config set memory.provider brain`）。
+- 非密配置：`$HERMES_HOME/atbrains.json`（host/port/user/db + 行为参数，见 `core.py` DEFAULT_CONFIG）。
+- 密码：`$HERMES_HOME/.env` 中 `ATBRAINS_REDIS_PASSWORD` / `ATBRAINS_MARIADB_PASSWORD`（经 `save_env_value` 写入）。
+- 激活：`memory.provider: atbrains`（`hermes config set memory.provider atbrains`）。
 - 多 agent 分库布局与容器重建命令：`/root/agent-db/`（credentials.txt 台账 / rebuild.sh / init.sql）。
 
 ## Python 依赖（重要设计决策）
@@ -108,11 +108,11 @@ Memory Service（`atbrains` 插件，`/v1/*` 与网页控制台**共用同一个
 可以把本机切成**远程模式**：召回/写入走 HTTP 调服务端，由服务端统一读写权威库。
 
 ```
-hermes brain remote-check        # 自检：开关 / URL / 令牌掩码 / GET /v1/health 往返耗时
-hermes brain remote-check --json
+hermes atbrains-memory remote-check        # 自检：开关 / URL / 令牌掩码 / GET /v1/health 往返耗时
+hermes atbrains-memory remote-check --json
 ```
 
-### 配置（`$HERMES_HOME/brain.json`，全部默认关闭）
+### 配置（`$HERMES_HOME/atbrains.json`，全部默认关闭）
 
 | 键 | 默认 | 含义 |
 |---|---|---|
@@ -126,12 +126,12 @@ hermes brain remote-check --json
 { "remote_enabled": 1, "remote_url": "http://111.230.71.79:8787", "remote_timeout_ms": 800 }
 ```
 
-### 令牌放 .env，不放 brain.json
+### 令牌放 .env，不放 atbrains.json
 
-- 文件：`$HERMES_HOME/.env`，变量名 `BRAIN_REMOTE_TOKEN`（可带引号，逐行解析、自动去引号）。
+- 文件：`$HERMES_HOME/.env`，变量名 `ATBRAINS_REMOTE_TOKEN`（可带引号，逐行解析、自动去引号）。
 - 签发：在服务端机器上 `hermes atbrains token-add <machine>`（只显示一次），删令牌 `hermes atbrains token-rm`。
-- 读取顺序：`cfg["remote_token"]`（仅调试用）→ `$HERMES_HOME/.env` 的 `BRAIN_REMOTE_TOKEN`。
-- 为什么：`brain.json` 是非密配置（常被抄进版本库/同步盘/工单）；`.env` 与 MariaDB 密码同处、权限更紧。
+- 读取顺序：`cfg["remote_token"]`（仅调试用）→ `$HERMES_HOME/.env` 的 `ATBRAINS_REMOTE_TOKEN`。
+- 为什么：`atbrains.json` 是非密配置（常被抄进版本库/同步盘/工单）；`.env` 与 MariaDB 密码同处、权限更紧。
   令牌**只用于请求头** `Authorization: Bearer <令牌>`，**绝不写回配置、绝不进日志、CLI 只打印掩码**（如 `tok_…`）。
 - 客户端**不传 machine**：服务端用令牌反查 machine，写库时自动打上该机器的来源标记。
 
@@ -153,7 +153,7 @@ hermes brain remote-check --json
 2. **不**给服务端自己开远程模式（`remote_enabled` 保持 `0`）——服务端进程内直接读写库，
    开了会指向自己造成自调用。远端客户端才是要打开的对象。
 3. 先在一台客户端上开：`{"remote_enabled": 1, "remote_url": ..., "remote_timeout_ms": 800}`，
-   令牌写入该机 `.env` 后 `hermes brain remote-check` 应显示 `ok ✓` 与毫秒级往返。
+   令牌写入该机 `.env` 后 `hermes atbrains-memory remote-check` 应显示 `ok ✓` 与毫秒级往返。
 4. 观察一两轮对话：召回内容应来自服务端（同一份库）；`remote_fallback=1` 保证服务端抖动时
    该机自动回落本地，不会丢记忆也不会卡住对话。
 5. 稳定后再逐台铺开；需要归档也集中到服务端时再开 `remote_turn_sync`。
@@ -174,7 +174,7 @@ hermes brain remote-check --json
   brain: 维护清理完成 turns=0 sessions=0 archive=0 下次 7 天后
   ```
 
-配置（`$HERMES_HOME/brain.json`，均有默认值）：
+配置（`$HERMES_HOME/atbrains.json`，均有默认值）：
 
 | 键 | 默认 | 含义 |
 |---|---|---|
@@ -188,8 +188,8 @@ hermes brain remote-check --json
 
 ```bash
 python3 /root/agent-db/prune.sh
-hermes brain prune
-hermes brain prune --dry-run
+hermes atbrains-memory prune
+hermes atbrains-memory prune --dry-run
 ```
 
 ## 结论蒸馏（distill）
@@ -221,7 +221,7 @@ remember(source='distill') → brain_memories；update 时旧条标记 supersede
 - 只处理 `ts` 早于 120 秒的轮次（给正在写入的对话留出落库窗口），跳过以 `[IMPORTANT` 开头的轮次。
 - 任何异常只 warning + 计数，绝不向上抛、绝不影响记忆读写主路径。
 
-### 配置（`$HERMES_HOME/brain.json`，均有默认值）
+### 配置（`$HERMES_HOME/atbrains.json`，均有默认值）
 
 | 键 | 默认 | 含义 |
 |---|---|---|
@@ -240,19 +240,19 @@ remember(source='distill') → brain_memories；update 时旧条标记 supersede
 | `distill_api_model` | `deepseek/deepseek-v4.1-flash` | 蒸馏模型 |
 | `distill_api_timeout` | `120` | 单次 LLM 请求超时（秒） |
 
-API key 不进 `brain.json`：从环境变量 / `$HERMES_HOME/.env` 的
+API key 不进 `atbrains.json`：从环境变量 / `$HERMES_HOME/.env` 的
 `HERMES_CUSTOM_API_COMMANDCODE_AI_API_KEY` 解析（与数据库密码同一机制）。
 任何日志 / CLI 只报告「已配置 / 缺失」，绝不打印完整值。
 
 ### CLI
 
 ```bash
-hermes brain distill                    # 默认 = --status
-hermes brain distill --status           # 开关 / 水位 / 待蒸馏轮次 / 上次时间 / 五项计数 / API 配置
-hermes brain distill --dry-run          # 预演：默认最近 distill_max_turns 轮，真实提取+对账，零写入
-hermes brain distill --dry-run --turns 8
-hermes brain distill --now              # 手动强制跑一批并真实写入（无视 distill_enabled）
-hermes brain distill --now --turns 8
+hermes atbrains-memory distill                    # 默认 = --status
+hermes atbrains-memory distill --status           # 开关 / 水位 / 待蒸馏轮次 / 上次时间 / 五项计数 / API 配置
+hermes atbrains-memory distill --dry-run          # 预演：默认最近 distill_max_turns 轮，真实提取+对账，零写入
+hermes atbrains-memory distill --dry-run --turns 8
+hermes atbrains-memory distill --now              # 手动强制跑一批并真实写入（无视 distill_enabled）
+hermes atbrains-memory distill --now --turns 8
 ```
 
 `--dry-run` 只读：不取锁、不写 MariaDB、不动水位、不累加计数；结尾固定打印
@@ -262,7 +262,7 @@ hermes brain distill --now --turns 8
 ### 启用步骤
 
 1. 确认 `$HERMES_HOME/.env` 里有 `HERMES_CUSTOM_API_COMMANDCODE_AI_API_KEY`。
-2. 在 `$HERMES_HOME/brain.json` 加 `{"distill_enabled": 1}`（可同时调整间隔/模型等）。
+2. 在 `$HERMES_HOME/atbrains.json` 加 `{"distill_enabled": 1}`（可同时调整间隔/模型等）。
 3. **需要新进程生效**：网关重启或开一个新会话；配置不会热加载。未显式打开时默认关闭。
 
 ### 成本与隐私
@@ -275,7 +275,7 @@ hermes brain distill --now --turns 8
 
 ## 设计说明
 
-- 多设备共享：`brain_memories` / `brain_turns` / `brain_sessions` 均带 `machine` 列（来源机标识，取自 `brain.json` 的 `machine`，缺省=主机名）；召回片段自动标注来源。
+- 多设备共享：`brain_memories` / `brain_turns` / `brain_sessions` 均带 `machine` 列（来源机标识，取自 `atbrains.json` 的 `machine`，缺省=主机名）；召回片段自动标注来源。
 - 检索使用 LIKE 词法匹配（中文按双字组切分），个人库规模下足够快；不依赖分词/嵌入服务。
 - 写入路径失败只告警不抛出 —— 数据库暂不可达不阻塞对话。
 - 库内时间戳统一按 UTC 解释（容器 `+00:00`；客户端不得按本机时区解读 naive DATETIME）。

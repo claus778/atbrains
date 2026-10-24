@@ -7,7 +7,7 @@ Hermes 记忆提供者插件：把两台本机服务接进 agent 大脑。
 | 层 | 服务 | 内容 | 生命周期 |
 |---|---|---|---|
 | 短期 | Redis `127.0.0.1:9079` | `brain:recent` 最近对话流（Stream）、`brain:session:*` 会话状态、`brain:hot:*` 热点记忆镜像、`brain:qcache:*` 检索缓存 | TTL 自动过期（默认 14-30 天），无需维护 |
-| 长期 | MariaDB `127.0.0.1:57306` / 库 `agent_memory` | `brain_memories` 事实/偏好/决策、`brain_turns` 完整对话归档、`brain_sessions` 会话索引、`brain_archive` 压缩前存档 | 永久，`hermes brain prune` 按保留期清理 |
+| 长期 | MariaDB `127.0.0.1:57306` / 库 `agent_memory` | `brain_memories` 事实/偏好/决策、`brain_turns` 完整对话归档、`brain_sessions` 会话索引、`brain_archive` 压缩前存档 | 永久，`hermes atbrains-memory prune` 按保留期清理 |
 
 ## 接入点（Hermes 钩子）
 
@@ -20,25 +20,25 @@ Hermes 记忆提供者插件：把两台本机服务接进 agent 大脑。
 
 ## 工具
 
-`brain_remember` · `brain_recall` · `brain_forget` · `brain_recent` · `brain_stats`
+`atbrains_remember` · `atbrains_recall` · `atbrains_forget` · `atbrains_recent` · `atbrains_stats`
 
 ## CLI
 
 ```
-hermes brain status            # 连通性 / 配置 / 统计总览
-hermes brain search <关键词>   # 检索记忆与历史对话
-hermes brain remember <内容>   # 手工存一条长期记忆
-hermes brain recent            # Redis 最近对话流
-hermes brain forget <id>       # 废止记忆（软删除）
-hermes brain prune --dry-run   # 清理预演
-hermes brain doctor            # 自检
+hermes atbrains-memory status            # 连通性 / 配置 / 统计总览
+hermes atbrains-memory search <关键词>   # 检索记忆与历史对话
+hermes atbrains-memory remember <内容>   # 手工存一条长期记忆
+hermes atbrains-memory recent            # Redis 最近对话流
+hermes atbrains-memory forget <id>       # 废止记忆（软删除）
+hermes atbrains-memory prune --dry-run   # 清理预演
+hermes atbrains-memory doctor            # 自检
 ```
 
 ## 配置
 
 - 非密配置：`$HERMES_HOME/brain.json`（host/port/user/db + 行为参数，见 `core.py` DEFAULT_CONFIG）。
 - 密码：`$HERMES_HOME/.env` 中 `BRAIN_REDIS_PASSWORD` / `BRAIN_MARIADB_PASSWORD`（经 `save_env_value` 写入）。
-- 激活：`memory.provider: brain`（`hermes config set memory.provider brain`）。
+- 激活：`memory.provider: brain`（`hermes config set memory.provider atbrains-memory`）。
 - 多 agent 分库布局与容器重建命令：`/root/agent-db/`（credentials.txt 台账 / rebuild.sh / init.sql）。
 
 ## Python 依赖（重要设计决策）

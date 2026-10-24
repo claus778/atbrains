@@ -29,7 +29,7 @@ KEY_RE = re.compile(r"sk-[A-Za-z0-9._\-]{4,}", re.I)
 
 DEFAULT_STATE_DB = "/root/.hermes/state.db"
 DEFAULT_HERMES_HOME = "/root/.hermes"
-DEFAULT_PLUGIN_DIR = "/root/.hermes/plugins/brain"
+DEFAULT_PLUGIN_DIR = "/root/.hermes/plugins/atbrains-memory"
 
 MAX_MSG_BYTES = 1048576
 MAX_TURN_BYTES = 16777216

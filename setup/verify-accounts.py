@@ -2,7 +2,7 @@
 import re
 import sys
 
-sys.path.insert(0, "/root/.hermes/plugins/brain/vendor")
+sys.path.insert(0, "/root/.hermes/plugins/atbrains-memory/vendor")
 import pymysql  # noqa: E402
 
 SQL = "/root/agent-db/migration-20261012.sql"

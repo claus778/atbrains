@@ -4,7 +4,7 @@ import re
 import sqlite3
 import sys
 
-sys.path.insert(0, "/root/.hermes/plugins/brain")
+sys.path.insert(0, "/root/.hermes/plugins/atbrains-memory")
 from core import BrainStore, resolve_config  # noqa: E402
 
 KEY_RE = re.compile(r"sk-[A-Za-z0-9._\-]{4,}", re.I)

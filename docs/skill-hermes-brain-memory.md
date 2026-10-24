@@ -19,18 +19,18 @@ brain = 本机自托管双存储记忆提供者（Redis 短期 + MariaDB 长期�
 - brain 工具（brain_remember / brain_recall / brain_recent / brain_stats）在会话中不可用或召回为空；
 - `hermes memory status` 显示 brain 不再 available/active，或它出现在 `plugins.disabled`；
 - Hermes 大版本更新之后需要验证/恢复 brain；
-- 需要修改 brain 插件代码、配置或排查它的存储;
+- 需要修改 atbrains-memory 插件代码、配置或排查它的存储;
 - 开发/修改 atbrains 监控控制台(插件形态:`hermes atbrains`;代码在 `/root/atbrains` git 仓库,见「交付物」节)。
 
 ## 结构（改代码前先读这里）
 
-- 插件目录：`/root/.hermes/plugins/brain/`
-  - `__init__.py` 提供者（钩子 + 5 个工具）；`core.py` 存储引擎（双库读写/检索/召回）；`cli.py` = `hermes brain` 命令
+- 插件目录：`/root/.hermes/plugins/atbrains-memory/`
+  - `__init__.py` 提供者（钩子 + 5 个工具）；`core.py` 存储引擎（双库读写/检索/召回）；`cli.py` = `hermes atbrains-memory` 命令
   - `vendor/` 内置纯 Python 的 redis-py + PyMySQL（**不要**改成 plugin.yaml `pip_dependencies`，见下）
   - `skills/brain/SKILL.md` 注册为 `brain:memory` 技能（provider 激活时可见）
 - 配置：`~/.hermes/brain.json`（非密）；密码 `~/.hermes/.env`：`BRAIN_REDIS_PASSWORD` / `BRAIN_MARIADB_PASSWORD`
 - 总览文档：`/root/agent_memory.md`（整套记忆系统配置全景，用户维护入口）
-- 激活：`memory.provider: brain`（`hermes config set memory.provider brain`）；出现在 `plugins.enabled` 里只是通用插件登记的装饰，激活只看 memory.provider
+- 激活：`memory.provider: brain`（`hermes config set memory.provider atbrains-memory`）；出现在 `plugins.enabled` 里只是通用插件登记的装饰，激活只看 memory.provider
 - 多设备：brain_memories / brain_turns / brain_sessions 带 `machine` 列标来源机（brain.json `machine`，缺省=主机名；服务器=server）；召回片段自动标注 [machine]；多设备库号规划（Redis db0-db4 预留 hermes 系；server=db0、x260-debian=db1（原 x260，2026-10-13 更名）、windows-laptop=db2、db3=新实例(10-13 交付)、db4 空位；非 hermes 从 db5 起）见 `references/namespace-separation.md`；新设备/新实例接入的提示词工单（可整段粘贴给目标机 Hermes 执行）见 `references/device-onboarding-prompt.md`
 - 服务：Redis 容器 `:9079`、MariaDB 容器 `:57306`（2026-10-12 重建后两端口已绑 0.0.0.0；127.0.0.1 仍可用；主机 nftables 只黑名单 :22；腾讯云安全组已放行 57306/9079，2026-10-13 外部多点实测公网直连可达），库 `agent_memory`（表：brain_memories / brain_turns / brain_sessions / brain_archive / brain_meta；多 agent 分库台账见 `/root/agent-db/credentials.txt`）
 
@@ -38,8 +38,8 @@ brain = 本机自托管双存储记忆提供者（Redis 短期 + MariaDB 长期�
 
 ```bash
 hermes memory status            # provider 是否 available/active
-hermes brain doctor             # 依赖/凭据/连接/表结构
-hermes brain status             # 连通性 + 计数
+hermes atbrains-memory doctor             # 依赖/凭据/连接/表结构
+hermes atbrains-memory status             # 连通性 + 计数
 ```
 
 端到端验证（改过 provider、迁移或重建容器后必做）：`hermes chat -q "只凭记忆回答：<只有库里知道的事实>"`——
@@ -50,7 +50,7 @@ hermes brain status             # 连通性 + 计数
 
 ```bash
 HERMES_DISABLE_LAZY_INSTALLS=1 /root/.hermes/tools/python-3.14.7+*/bin/python3 -I -c \
-  'import sys; sys.path.insert(0,"/root/.hermes/plugins/brain");
+  'import sys; sys.path.insert(0,"/root/.hermes/plugins/atbrains-memory");
    from core import BrainStore, resolve_config;
    s=BrainStore(resolve_config("/root/.hermes")); print(s.ping())'
 ```
@@ -80,16 +80,16 @@ python3 <skill_dir>/scripts/audit-memories.py [/path/to/.hermes]   # 默认 /roo
    原因：只要 plugin.yaml 声明了 `pip_dependencies`，PM 会把插件并入 uv workspace 重解析；本服务器 PyPI 腾讯镜像缺 PEP 700 `upload-time` 元数据（uv exclude-newer 隔离需要），解析必败 → PM 驱逐插件。
    修复：确认 plugin.yaml 没有 `pip_dependencies`（依赖必须保持 vendor 方式）；然后
    `hermes config set plugins.disabled '[]'` 或从 config.yaml 的 plugins.disabled 移除 brain，
-   再 `hermes config set memory.provider brain`。
-   新设备报「找不到 brain 插件」时：先复核插件目录与 vendor 完整性（Windows=%USERPROFILE%\.hermes\plugins\brain），再看 `hermes plugins list`、`hermes memory status` 定位；服务器压包见 /root/agent-db/dist/（最新 `brain-plugin-20261013.tar.gz/.zip`）。详见 references/device-onboarding-prompt.md 步骤 1。
+   再 `hermes config set memory.provider atbrains-memory`。
+   新设备报「找不到 atbrains-memory 插件」时：先复核插件目录与 vendor 完整性（Windows=%USERPROFILE%\.hermes\plugins\brain），再看 `hermes plugins list`、`hermes memory status` 定位；服务器压包见 /root/agent-db/dist/（最新 `atbrains-memory-20261013.tar.gz/.zip`）。详见 references/device-onboarding-prompt.md 步骤 1。
 
 2) **新会话工具里没有 brain_remember / 召回为空**
-   检查 provider：`hermes memory status`（available ✓）；若 unavailable 看 `hermes brain doctor` 输出。
+   检查 provider：`hermes memory status`（available ✓）；若 unavailable 看 `hermes atbrains-memory doctor` 输出。
    常见：`.env` 里的 BRAIN_* 密码被覆盖/删除 → 重写（用 `hermes_cli.config.save_env_value`，别手写引号）。
 
 3) **`import redis` / `import pymysql` 失败**
    vendor 目录损坏或缺失。修复：
-   `pip download redis PyMySQL -d /tmp/w && python3 -m zipfile -e /tmp/w/redis-*.whl /root/.hermes/plugins/brain/vendor/ && python3 -m zipfile -e /tmp/w/pymysql-*.whl /root/.hermes/plugins/brain/vendor/`
+   `pip download redis PyMySQL -d /tmp/w && python3 -m zipfile -e /tmp/w/redis-*.whl /root/.hermes/plugins/atbrains-memory/vendor/ && python3 -m zipfile -e /tmp/w/pymysql-*.whl /root/.hermes/plugins/atbrains-memory/vendor/`
 
 4) **数据库/缓存容器挂了 / 需保数据重建**
    先试 `docker start redis mariadb`；凭据在 `~/.hermes/.env`（Redis 需 `--requirepass`；MariaDB 用户 `agent`）。
@@ -150,13 +150,13 @@ $M -e "SELECT id,machine,kind,importance,active,LEFT(content,100) FROM brain_mem
    a) 重复项来自内置记忆（`source='memory_write'` / `migration`）→ **先改内置**：
       用 `memory` 工具 replace/remove 把行并掉；镜像自动跟随
       （replace = 停用旧行 + 写一条新行；remove = 停用旧行）。
-   b) 纯 brain 条目（手工写的 / 别的机器遗留）→ `brain_remember` 一条合并版 + `brain_forget` 掉旧的。
-   c) 若此前已手工 `brain_remember` 写过合并条目，此时它会与 (a) 产生的镜像行重复 ——
+   b) 纯 brain 条目（手工写的 / 别的机器遗留）→ `atbrains_remember` 一条合并版 + `atbrains_forget` 掉旧的。
+   c) 若此前已手工 `atbrains_remember` 写过合并条目，此时它会与 (a) 产生的镜像行重复 ——
       停用 `source='tool'` 那几条，保留 `source='memory_write'` 的镜像行。
    d) 收尾跑 `scripts/audit-memories.py`，必须报「未镜像 0 条」。
 3. 清测试垃圾：`source='standalone-test'`、或内容含「验证 / 测试 / 接入 OK」的接入期条目——
    它们常被标成 `importance=9`，会污染召回排序。
-4. 收尾核对：`brain_stats`（active 数下降 + `redis.hot_index` 应同步下降）+ `hermes brain doctor`。
+4. 收尾核对：`atbrains_stats`（active 数下降 + `redis.hot_index` 应同步下降）+ `hermes atbrains-memory doctor`。
 
 ### 排序与浏览（2026-10-13 起口径：最新在前）
 
@@ -164,7 +164,7 @@ $M -e "SELECT id,machine,kind,importance,active,LEFT(content,100) FROM brain_mem
 - 全库总览/快照：`python3 /root/agent-db/brain-overview.py [--all] [--machine X] [--out FILE]`（纯 stdlib + mysql CLI，不需要插件运行时）。
 - 裸表没有固定显示顺序（InnoDB 按主键聚簇，裸看默认老在前）；手动查询用 `ORDER BY created_at/ts/last_active DESC`。
 - **回填/修正 machine 的 UPDATE 必须带 `updated_at=updated_at`** —— 否则 `ON UPDATE CURRENT_TIMESTAMP` 会把老条目的 updated_at 顶成当下，扰动召回排序（memory 表的坑；turns/sessions 无此列）。
-- 改完 machine 后跑 `/root/agent-db/refresh-hot-machine.py`（插件运行时 python 执行，先 `--dry-run`；加 `--redis-db N` 可校正其它 agent 的库，如 x260-debian 的 db1）：`brain:hot:<id>` 是写入时快照、`brain_recent(what=memories)` 直接读快照，不同步会残留旧标签/空标签。
+- 改完 machine 后跑 `/root/agent-db/refresh-hot-machine.py`（插件运行时 python 执行，先 `--dry-run`；加 `--redis-db N` 可校正其它 agent 的库，如 x260-debian 的 db1）：`brain:hot:<id>` 是写入时快照、`atbrains_recent(what=memories)` 直接读快照，不同步会残留旧标签/空标签。
 - 「最新在前」只约束浏览/列表口径；召回（prefetch / search_memories）保持「重要度优先、同重要度最新在前」，别改。
 - **2026-10-14 全表重排**：`brain_turns` 已按 ts 重建、连续重编号 1..N（id 即时间序，浏览/对账都顺）；旧编号仅保留在 `backup-brain_turns-20261014-pre-rebuild.sql`（库内备份表 `brain_turns_bak_20261014` 已于 2026-10-14 验证后删除）。再整理跑 `/root/agent-db/reorder-turns.sh`（v3：时间戳 dump + dump 恢复自检 + **显式 ROW_NUMBER 行号插入** + orig_id 漂移追踪 + 阻断式校验含 `next_id==MAX(id)+1`；不留库内 bak，回滚窗口=old_tmp）。⚠️ 教训：用大批量 `INSERT...SELECT` 重建表会触发 InnoDB auto_increment 按 2 的幂预留下一个值（实测 550 行 → 计数器停在 1024，真实 id 出现跳变）；凡重建/批量写入表必须显式指定 id 并校验 next_id = MAX(id)+1。注意：重编号后任何回填都会再次在尾部引入「旧时间行」（id 序≠ts 序），属正常语义、不是故障。
 - **删除库内备份表前必须验证**：把随附 dump 恢复进 scratch 表与备份表逐行比对（行数 + 全列 JOIN + CRC32 聚合三项全一致才 DROP，比对时逐行确认备份表内容已全部存在于现表）；dump 文件本身保留在 `/root/agent-db/`。
@@ -219,7 +219,7 @@ prune 按保留期直接 DELETE（turns 默认还全量保留），所以 brain_
 - 服务器 MariaDB **13.0.2**（`11.8.6` 只是客户端版本号）；已实测幂等能力：
   `ADD INDEX/UNIQUE KEY/CONSTRAINT/COLUMN IF NOT EXISTS`、STORED 生成列、CHECK（错值报 4025）、`VECTOR(n)+向量索引`。
 - 结构版本记录在 `brain_meta.schema_version`（当前 **v2**）；插件 `ensure_schema()` 启动时自动幂等迁移
-  （`_MIGRATIONS` + `GET_LOCK` 串行化），`hermes brain doctor` 显示版本号。
+  （`_MIGRATIONS` + `GET_LOCK` 串行化），`hermes atbrains-memory doctor` 显示版本号。
 - v2 内容：`brain_memories` 活跃行防重唯一键 `uniq_active_content`（生成列 MD5，撞 1062 时 `remember()`
   自动降级为「刷新既有行」并返回 `deduped:true`）、`idx_recall (active, importance, updated_at)`、
   `deactivated_at`（prune 计时用它）、CHECK(importance/active)、`content`→MEDIUMTEXT；
@@ -228,12 +228,12 @@ prune 按保留期直接 DELETE（turns 默认还全量保留），所以 brain_
   同日按用户要求回退为 UTC，数据已 -8h 还原）。看库/写脚本一律按 UTC（比北京时间慢 8 小时）；
   audit-turns.py 回填口径=UTC（各机旧副本同为 UTC 口径可继续用；新版另含 truncated 列写入）。
 - prune 默认：`turns_keep_days=0`（对话不清理）、`sessions_keep_days=365`（无近轮会话才删）；
-  清理由**插件内维护循环**执行（见「维护与自动化」），手动仍可 `python3 /root/agent-db/prune.sh` 或 `hermes brain prune`。
+  清理由**插件内维护循环**执行（见「维护与自动化」），手动仍可 `python3 /root/agent-db/prune.sh` 或 `hermes atbrains-memory prune`。
 - 检索时间窗：`search_turns_days`（默认 120 天）只影响召回/检索，不动归档数据。
 - ⚠️ `rebuild.sh`/`credentials.txt`/`init.sql` 由 `/root/agent-db/generate-artifacts.py` 生成（模板内嵌该脚本）
   ——手改这些文件必须同步改生成器模板，否则下次生成会被覆盖（时区/注释等已进模板）。
-- 备份：升级前全量 `backup-agent_memory-20261013-pre-v2.sql`；插件旧版在 `brain-plugin-backup-20261013/`
-  （含 audit/rebuild 的 .orig）。分发包已更新 `dist/brain-plugin-20261013.tar.gz/.zip`（其他机器要用新版时换包）。
+- 备份：升级前全量 `backup-agent_memory-20261013-pre-v2.sql`；插件旧版在 `atbrains-memory-backup-20261013/`
+  （含 audit/rebuild 的 .orig）。分发包已更新 `dist/atbrains-memory-20261013.tar.gz/.zip`（其他机器要用新版时换包）。
 
 ## 向量层（语义召回，2026-10-14 深夜接入）
 
@@ -260,7 +260,7 @@ prune 按保留期直接 DELETE（turns 默认还全量保留），所以 brain_
   `vector-test <q>`（三方对比）；查询向量缓存 Redis `brain:qemb:*`（TTL 1h）；schema v3 表 `brain_vector_index`；
   软删记忆的向量由下一次 drain 顺带清理。
 - 实测基准（2026-10-14）：63 条回填 0 失败；embed 单条 0.3~22s 波动（服务端排队），查询侧 20s 超时即降级；
-  改动前备份 `backup-brain-plugin-20261014-234745.tar.gz`（插件目录 + brain.json）。
+  改动前备份 `backup-atbrains-memory-20261014-234745.tar.gz`（插件目录 + brain.json）。
 - 隔离度演练（用户问「向量层会不会拖垮整个记忆」时跑）：`scripts/vector-fallback-test.py` —— 把 store 指向
   死 qdrant/死 embed/坏 key 路径，各 case 应打印 `回落纯关键词` 且返回关键词结果、不抛异常（2026-10-15 实测
   4/4 通过，0.0~0.1s 快速失败；结论：向量层故障只降级语义召回，不阻断记忆读写）。
@@ -289,7 +289,7 @@ prune 按保留期直接 DELETE（turns 默认还全量保留），所以 brain_
 - `detect_supersedes(dry_run=True, threshold=0.90)`：同 `memory_type` 内两两比**已存在的 Qdrant 向量**
   （不重新 embed），相似度 ≥ 阈值的一对里 **`created_at` 更新者胜**，旧条打标记并计一条 marked（保证无环）。
 - 检索侧四处过滤 `superseded_by IS NULL`（关键词 / 向量 / hybrid / 取代扫描本身）——已取代的记忆不再注入。
-- CLI：`hermes brain supersede-detect`（**默认预演**）/ `--apply` / `hermes brain unsupersede <id>`。
+- CLI：`hermes atbrains-memory supersede-detect`（**默认预演**）/ `--apply` / `hermes atbrains-memory unsupersede <id>`。
 - **踩过的坑**：首版比较方向写反（较新者被判为「被取代」）。现象是 dry-run 输出里
   `id 大/时间新的那条` 出现在 `id` 字段。验收必须核对方向，不能只看「检出 N 组」。
 - 阈值口味：0.90 只抓近似重复（实测库里 2 组）；0.80 会抓到 8 组（开始出现同主题不同版本的条目）。
@@ -307,10 +307,10 @@ prune 按保留期直接 DELETE（turns 默认还全量保留），所以 brain_
 - 服务端在 **atbrains 插件**（`service.py`），与监控控制台**共用 8787 端口**；
   `/v1/*` 走 Bearer 令牌（`service-tokens.json`，600，不入 git），`/api/*` 仍走控制台 token，两者互不通用。
 - **服务端用令牌反查 machine**（客户端在 body 里塞 machine 无效）——这是防伪造的设计要点。
-- 客户端（brain 插件）：`remote_enabled` 等 6 个配置**默认全关**，开了之后 `prefetch_block` / `remember` /
+- 客户端（atbrains-memory 插件）：`remote_enabled` 等 6 个配置**默认全关**，开了之后 `prefetch_block` / `remember` /
   `forget` / `record_turn`(需 `remote_turn_sync=1`) 走 HTTP；**任何失败自动回落本地直连**
   （实测死地址 33ms 回落），令牌放 `.env` 的 `BRAIN_REMOTE_TOKEN`（不进 brain.json）。
-- `hermes brain remote-check` 自检；`hermes atbrains token-list|token-add|token-rm|service` 管令牌。
+- `hermes atbrains-memory remote-check` 自检；`hermes atbrains token-list|token-add|token-rm|service` 管令牌。
 - 迁移策略：**客户端先切、服务端自己留本地**（服务端本地直连本来就是最短路径）。
 
 ### Redis key 前缀（默认关闭）
@@ -375,15 +375,15 @@ brain 有一套**可打包/可交付/可归档**的整理件：`/root/atbrains/`
      `str(v)[:16]`(cli.py 的 `_ts()` 助手),任何读库脚本同理。
   2. **验收要完整跑命令并核对 exit code,不要截断输出** —— 用管道只取前/后几行会把 Traceback
      藏掉,崩溃会混过整轮验收(turns/search 的崩溃就是这样漏过一轮「回归」的)。
-  3. **probe 找 brain 插件是三级探测**(`ATBRAINS_BRAIN_PLUGIN` → 与插件并排的 `../brain` →
-     `HERMES_HOME/plugins/brain`):仓库直跑(plugin/ 不在 plugins/ 下)时靠第三级命中。
+  3. **probe 找 atbrains-memory 插件是三级探测**(`ATBRAINS_BRAIN_PLUGIN` → 与插件并排的 `../brain` →
+     `HERMES_HOME/plugins/atbrains-memory`):仓库直跑(plugin/ 不在 plugins/ 下)时靠第三级命中。
   4. **timer 的「下次运行」**:本机 systemd `NextElapseUSecRealtime` 取空;probe 改从
      `systemctl list-timers` 正则解析(`timer.nextRun`),别用 `systemctl show` 那个属性。
   5. **无头 Chromium 缺 emoji 字体**(✅/⚠️ 渲染成方块)—— 关键状态文字别依赖 emoji,用颜色类名;
      截图验收时留意。
   6. **测「停用/恢复」别拿库里现成条目当靶子** —— 停用行可能是刻意清理的残留(测试垃圾/去重);
      自建一条测试记忆走完整「建→停→恢复→停」并收尾保持停用;「已是活跃」幂等分支拿任意活跃 ID 测即可(不写库)。
-- **依赖 brain 插件**:通过其 `core.BrainStore` 读写,复用凭据解析与重试;
+- **依赖 atbrains-memory 插件**:通过其 `core.BrainStore` 读写,复用凭据解析与重试;
   brain 缺失时抛 `ProbeError` 明确报错,不静默失败。
 - **启用/排障**:`hermes plugins enable atbrains`(工具集在**新会话**生效;
   `hermes tools list | grep atbrains` 应显示 `✓ enabled`)、`hermes plugins info atbrains`(版本对照 plugin/plugin.yaml)。

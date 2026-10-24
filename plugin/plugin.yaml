@@ -1,7 +1,7 @@
 name: atbrains
-version: "1.3.0"
+version: "2.0.0"
 description: >-
-  atbrains —— brain 记忆系统(Redis 短期 + MariaDB 长期 + Qdrant 向量)的监控与控制台。
+  atbrains —— 记忆系统(Redis 短期 + MariaDB 长期 + Qdrant 向量)的监控与控制台。
   提供 `hermes atbrains status|serve|stop|open|drain|doctor|memories|turns|sessions|search|remember|forget|restore`
   命令行、两个 agent 工具(atbrains_status / atbrains_control),以及**按需启动**的网页控制台
   (`hermes atbrains serve`,不注册任何 systemd 服务)。
@@ -13,6 +13,6 @@ platforms:
 provides_tools:
   - atbrains_status
   - atbrains_control
-# 说明:本插件不声明 pip_dependencies —— 只用 stdlib 和兄弟插件 brain 的 vendor 库。
+# 说明:本插件不声明 pip_dependencies —— 只用 stdlib 和兄弟插件 atbrains-memory 的 vendor 库。
 # 这是刻意的:一旦声明依赖,PM 会把插件并入 uv workspace 重解析,而国内镜像缺
 # PEP 700 upload-time 元数据会让解析失败、插件被自动禁用(本机踩过这个坑)。

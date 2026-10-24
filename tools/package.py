@@ -13,9 +13,9 @@ import os, re, shutil, subprocess, json, sys
 SRC_TO_DST = [
     # (源, 目标相对路径)
     ("/root/agent_memory.md",                          "docs/agent_memory.md"),
-    ("/root/.hermes/plugins/brain/README.md",          "docs/plugin-README.md"),
+    ("/root/.hermes/plugins/atbrains-memory/README.md",          "docs/plugin-README.md"),
     ("/root/.hermes/skills/devops/hermes-brain-memory/SKILL.md", "docs/skill-hermes-brain-memory.md"),
-    ("/root/.hermes/plugins/brain/skills/brain/SKILL.md",        "docs/skill-brain-memory.md"),
+    ("/root/.hermes/plugins/atbrains-memory/skills/brain/SKILL.md",        "docs/skill-brain-memory.md"),
     ("/root/agent-db/brain-overview.txt",              "docs/brain-overview.txt"),
     ("/root/agent-db/migration-20261012.sql",          "setup/migration-20261012.sql"),
     ("/root/agent-db/init.sql",                        "setup/init.sql"),

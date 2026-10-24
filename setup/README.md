@@ -68,11 +68,11 @@ docker exec -i mariadb sh -c 'exec mariadb -u root -p"$MARIADB_ROOT_PASSWORD"' <
 见 `migration-20261012.sql` 后半段;账号自检用 `verify-accounts.py`。
 Redis 库号规划:**db0-4 留给 hermes 系**(server=db0、x260=db1…),非 hermes 从 db5 起。
 
-## 3. 部署 brain 插件
+## 3. 部署 atbrains-memory 插件
 
 ```bash
 # 插件目录(Windows 是 %USERPROFILE%\.hermes\plugins\brain)
-ls ~/.hermes/plugins/brain/{__init__.py,core.py,cli.py,plugin.yaml,vendor,skills}
+ls ~/.hermes/plugins/atbrains-memory/{__init__.py,core.py,cli.py,plugin.yaml,vendor,skills}
 ```
 
 **关键约束(踩过的坑)**
@@ -81,7 +81,7 @@ ls ~/.hermes/plugins/brain/{__init__.py,core.py,cli.py,plugin.yaml,vendor,skills
   workspace 重解析,而腾讯 pip 镜像缺 PEP 700 元数据(uv 的 `exclude-newer` 需要),
   解析必失败 → 插件被自动驱逐。
 - 依赖必须保持 **vendor 方式**:`vendor/` 里内置纯 Python 的 `redis` + `pymysql`。
-- 插件目录损坏时,可用分发包 `dist/brain-plugin-<日期>.zip` 恢复。
+- 插件目录损坏时,可用分发包 `dist/atbrains-memory-<日期>.zip` 恢复。
 
 ## 4. 配置
 
@@ -113,7 +113,7 @@ cat ~/.hermes/brain.json
 
 **激活 provider**
 ```bash
-hermes config set memory.provider brain
+hermes config set memory.provider atbrains-memory
 hermes memory status      # 应显示 brain available
 ```
 
@@ -153,10 +153,10 @@ curl -H "api-key: $KEY" http://127.0.0.1:6333/collections/brain_memories
 ## 7. 验证(逐层)
 
 ```bash
-hermes brain doctor                       # 依赖/凭据/连接/表结构
-hermes brain status                       # 计数总览
-hermes brain vector-status                # 向量层开关/模型/key 来源
-hermes brain vector-test                  # 关键词 vs 向量 vs 融合
+hermes atbrains-memory doctor                       # 依赖/凭据/连接/表结构
+hermes atbrains-memory status                       # 计数总览
+hermes atbrains-memory vector-status                # 向量层开关/模型/key 来源
+hermes atbrains-memory vector-test                  # 关键词 vs 向量 vs 融合
 # 端到端:新会话里"只凭记忆回答 <只有库里知道的事实>",应在 0 工具调用下答对
 
 # 完整性(可选,发现缺口时)

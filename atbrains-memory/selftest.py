@@ -1,4 +1,4 @@
-"""brain 插件纯函数自测（只依赖标准库 + 插件自身）。
+"""atbrains 插件纯函数自测（只依赖标准库 + 插件自身）。
 
 不连接 MariaDB / Redis / Qdrant，不发网络请求；临时文件只用系统临时目录。
 运行：`python3 selftest.py`（退出码 0 = 全部通过）。
@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import cli  # noqa: E402
 from core import (  # noqa: E402
-    BrainStore,
+    AtbrainsStore,
     DEFAULT_CONFIG,
     _age_days,
     _benign_ddl_error,
@@ -39,8 +39,8 @@ from core import (  # noqa: E402
 )
 
 TEST_ENV = {
-    "BRAIN_REDIS_PASSWORD": "",
-    "BRAIN_MARIADB_PASSWORD": "",
+    "ATBRAINS_REDIS_PASSWORD": "",
+    "ATBRAINS_MARIADB_PASSWORD": "",
     "HERMES_CUSTOM_API_COMMANDCODE_AI_API_KEY": "",
 }
 
@@ -160,14 +160,14 @@ class DotenvTest(unittest.TestCase):
             env = Path(tmp) / ".env"
             env.write_text(
                 "# comment line\n"
-                'export BRAIN_REDIS_PASSWORD="s3cr#t"  # prod\n'
-                "BRAIN_MARIADB_PASSWORD=pw # note\n"
+                'export ATBRAINS_REDIS_PASSWORD="s3cr#t"  # prod\n'
+                "ATBRAINS_MARIADB_PASSWORD=pw # note\n"
                 "EMPTY=\n"
                 "NOT_ME=x\n",
                 encoding="utf-8",
             )
-            self.assertEqual(_dotenv_get(env, "BRAIN_REDIS_PASSWORD"), "s3cr#t")
-            self.assertEqual(_dotenv_get(env, "BRAIN_MARIADB_PASSWORD"), "pw")
+            self.assertEqual(_dotenv_get(env, "ATBRAINS_REDIS_PASSWORD"), "s3cr#t")
+            self.assertEqual(_dotenv_get(env, "ATBRAINS_MARIADB_PASSWORD"), "pw")
             self.assertEqual(_dotenv_get(env, "EMPTY"), "")
             self.assertIsNone(_dotenv_get(env, "MISSING"))
         self.assertIsNone(_dotenv_get(Path("/nonexistent/.env"), "X"))
@@ -178,7 +178,7 @@ class ResolveConfigTest(unittest.TestCase):
     def test_merge_and_types(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
-            (home / "brain.json").write_text(json.dumps({
+            (home / "atbrains.json").write_text(json.dumps({
                 "redis_port": "6380",
                 "mariadb_db": "custom_db",
                 "vector_enabled": False,
@@ -186,8 +186,8 @@ class ResolveConfigTest(unittest.TestCase):
                 "redis_host": None,
             }), encoding="utf-8")
             (home / ".env").write_text(
-                'BRAIN_REDIS_PASSWORD="r3d#is"  # 注释\n'
-                "BRAIN_MARIADB_PASSWORD=maria # 注释\n"
+                'ATBRAINS_REDIS_PASSWORD="r3d#is"  # 注释\n'
+                "ATBRAINS_MARIADB_PASSWORD=maria # 注释\n"
                 "HERMES_CUSTOM_API_COMMANDCODE_AI_API_KEY=\"dk\"\n",
                 encoding="utf-8",
             )
@@ -208,10 +208,10 @@ class ResolveConfigTest(unittest.TestCase):
     def test_invalid_json_and_bad_int(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
-            (home / "brain.json").write_text('{"redis_port": "nope"}', encoding="utf-8")
+            (home / "atbrains.json").write_text('{"redis_port": "nope"}', encoding="utf-8")
             cfg = resolve_config(str(home))
             self.assertEqual(cfg["redis_port"], DEFAULT_CONFIG["redis_port"])
-            (home / "brain.json").write_text("{not json", encoding="utf-8")
+            (home / "atbrains.json").write_text("{not json", encoding="utf-8")
             cfg = resolve_config(str(home))
             self.assertEqual(cfg["mariadb_db"], DEFAULT_CONFIG["mariadb_db"])
 
@@ -262,17 +262,17 @@ class ErrorPredicateTest(unittest.TestCase):
 
 class StorePureTest(unittest.TestCase):
     def test_redis_key_prefix(self) -> None:
-        store = BrainStore(dict(DEFAULT_CONFIG))
+        store = AtbrainsStore(dict(DEFAULT_CONFIG))
         self.assertEqual(store._rk("hot", "index"), "brain:hot:index")
         cfg = dict(DEFAULT_CONFIG)
         cfg["redis_key_prefix"] = "brain:server"
-        self.assertEqual(BrainStore(cfg)._rk("hot", "index"), "brain:server:hot:index")
+        self.assertEqual(AtbrainsStore(cfg)._rk("hot", "index"), "brain:server:hot:index")
         cfg["redis_key_prefix"] = "server:"
-        self.assertEqual(BrainStore(cfg)._rk("session", "s1"), "server:session:s1")
+        self.assertEqual(AtbrainsStore(cfg)._rk("session", "s1"), "server:session:s1")
 
     def test_compose(self) -> None:
         cfg = dict(DEFAULT_CONFIG)
-        store = BrainStore(cfg)
+        store = AtbrainsStore(cfg)
         mems = [{"kind": "fact", "importance": 7, "content": "数据库是 MariaDB",
                  "tags": "db", "machine": "host-a"}]
         turns = [{"ts": datetime(2024, 1, 2, 3, 4, 5), "machine": "host-a",
@@ -287,7 +287,7 @@ class StorePureTest(unittest.TestCase):
     def test_compose_budget(self) -> None:
         cfg = dict(DEFAULT_CONFIG)
         cfg["prefetch_max_chars"] = 60
-        store = BrainStore(cfg)
+        store = AtbrainsStore(cfg)
         mems = [{"kind": "fact", "importance": 5, "content": "x" * 500,
                  "tags": "", "machine": ""}]
         text = store._compose(mems, [])
@@ -297,17 +297,17 @@ class StorePureTest(unittest.TestCase):
 
 class ClaimLayerTest(unittest.TestCase):
     def test_slot_key_stable_and_distinct(self) -> None:
-        a = BrainStore.claim_slot_key("server", "服务器", "时区", "fact")
-        b = BrainStore.claim_slot_key("server", "服务器", "时区", "fact")
-        c = BrainStore.claim_slot_key("server", "服务器", "时区", "preference")
-        d = BrainStore.claim_slot_key("r730", "服务器", "时区", "fact")
+        a = AtbrainsStore.claim_slot_key("server", "服务器", "时区", "fact")
+        b = AtbrainsStore.claim_slot_key("server", "服务器", "时区", "fact")
+        c = AtbrainsStore.claim_slot_key("server", "服务器", "时区", "preference")
+        d = AtbrainsStore.claim_slot_key("r730", "服务器", "时区", "fact")
         self.assertEqual(a, b)
         self.assertNotEqual(a, c)
         self.assertNotEqual(a, d)
         self.assertEqual(len(a), 32)
 
     def test_json_list_shapes(self) -> None:
-        f = BrainStore._json_list
+        f = AtbrainsStore._json_list
         self.assertEqual(json.loads(f(None)), [])
         self.assertEqual(json.loads(f("")), [])
         self.assertEqual(json.loads(f(["a", "b"])), ["a", "b"])

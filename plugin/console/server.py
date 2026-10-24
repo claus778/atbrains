@@ -27,10 +27,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))  # 让 `import probe` / `import service` 命中插件根目录
 import probe  # noqa: E402
 import service  # noqa: E402
-import brain_mcp  # noqa: E402  # pyright: ignore[reportMissingImports]
+import atbrains_mcp  # noqa: E402  # pyright: ignore[reportMissingImports]
 
-SERVICE = service.MemoryService()   # /v1 Memory Service(每 machine 一个 BrainStore,内部加锁)
-MCP = brain_mcp.BrainMCP(SERVICE)   # /mcp MCP 端点(与 /v1 共用令牌表,给 omp/dsh 等非 Hermes agent)
+SERVICE = service.MemoryService()   # /v1 Memory Service(每 machine 一个 AtbrainsStore,内部加锁)
+MCP = atbrains_mcp.AtbrainsMCP(SERVICE)   # /mcp MCP 端点(与 /v1 共用令牌表,给任意支持 MCP 的 agent)
 TOKEN_PATH = HERE / ".token"
 # 访问日志(每请求一行)。用 root 可写的固定路径，systemd 单元的 append 日志另存一份启动信息。
 ACCESS_LOG = Path("/var/log/atbrains-access.log")
@@ -121,7 +121,7 @@ class Handler(BaseHTTPRequestHandler):
         return self._send(code, jdump(payload))
 
     def _mcp(self):
-        """/mcp 交给 BrainMCP:JSON-RPC 2.0(单条或批量),Bearer 令牌决定 agent 身份。"""
+        """/mcp 交给 AtbrainsMCP:JSON-RPC 2.0(单条或批量),Bearer 令牌决定 agent 身份。"""
         headers = dict(self.headers.items())
         machine = service.MemoryService.authorize(headers)
         if machine is None:

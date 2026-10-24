@@ -31,7 +31,7 @@ from pathlib import Path
 
 DEFAULT_STATE_DB = "/root/.hermes/state.db"
 DEFAULT_HERMES_HOME = "/root/.hermes"
-DEFAULT_PLUGIN_DIR = "/root/.hermes/plugins/brain"
+DEFAULT_PLUGIN_DIR = "/root/.hermes/plugins/atbrains-memory"
 DEFAULT_MACHINE = "server"
 
 IN_FLIGHT_SECONDS = 1800  # 末轮 30 分钟内视为进行中

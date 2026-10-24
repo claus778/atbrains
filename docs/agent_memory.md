@@ -32,13 +32,13 @@
 
 规则：每 agent 独立库 + 同名用户（`GRANT ALL` 仅限本库）；Redis 同密码下按"库号 + 前缀"约定隔离，db0-db4 预留给 hermes 系（一台一库，新实例取空位），非 hermes agent 从 db5 起顺延；新 agent 顺延 `<name>_agent_memory` / 用户 `<name>` / dbN / 前缀 `<name>:`；命名一律小写 ASCII，弃用名不复用（`agent_memory` 为墓碑名）。
 
-## 3. 记忆实现（brain 插件）
+## 3. 记忆实现（atbrains-memory 插件）
 
-- 插件目录：`/root/.hermes/plugins/brain/`
+- 插件目录：`/root/.hermes/plugins/atbrains-memory/`
   - `__init__.py` 记忆提供者（Hermes 钩子接入）；`core.py` 存储引擎；`cli.py` 命令入口
   - `vendor/` 内置纯 Python 的 redis-py + PyMySQL（**勿**改成 pip/PM 管理，见插件 README）
   - `skills/brain/SKILL.md` → 会话内技能 `brain:memory`
-- 激活方式：`memory.provider: brain`（`hermes config set memory.provider brain`）
+- 激活方式：`memory.provider: brain`（`hermes config set memory.provider atbrains-memory`）
 - 非密配置 `~/.hermes/brain.json`，当前内容：
   ```json
   {
@@ -57,8 +57,8 @@
 - 结构 v3（2026-10-14 深夜）：新增 `brain_vector_index`（向量索引状态表，Schema v3）。向量层 key 存放 = qdrant 配置文件（`/root/qdrant/qdrant-config/production.yaml`，不进 Hermes 配置）
 - 语义召回（向量层，2026-10-14 深夜上线）：写入后台异步向量化（drainer+wake，跨进程锁）→ Qdrant；检索=关键词+向量 RRF 混合、失败自动回落纯关键词；开关 `vector_enabled`
 - 检索口径：对话检索带时间窗（`search_turns_days`，默认 120 天，可在 brain.json 调整）；归档数据不受影响
-- 工具：`brain_remember` / `brain_recall`（语义+关键词混合） / `brain_forget` / `brain_recent` / `brain_stats`
-- CLI：`hermes brain status|doctor|search|remember|recent|forget|prune|vector-status|vector-drain|vector-test`
+- 工具：`atbrains_remember` / `atbrains_recall`（语义+关键词混合） / `atbrains_forget` / `atbrains_recent` / `atbrains_stats`
+- CLI：`hermes atbrains-memory status|doctor|search|remember|recent|forget|prune|vector-status|vector-drain|vector-test`
 - 浏览（「最新在前」口径，2026-10-13 定稿）：库内视图 `brain_memories_newest` / `brain_turns_newest` / `brain_sessions_newest` —— 直接 SELECT 即是最新在前（实测带 WHERE 过滤也保持）；全库总览与快照 `python3 /root/agent-db/brain-overview.py [--all] [--machine X] [--out FILE]`（快照默认写 brain-overview.txt）；machine 标签修正后用 `/root/agent-db/refresh-hot-machine.py` 校正 Redis 热点镜像。注意：召回注入保持「重要度优先、同重要度最新在前」——浏览与召回是两套口径
 
 ## 4. 容器与数据安全
@@ -76,15 +76,15 @@
 
 ```bash
 hermes memory status          # 记忆提供者状态
-hermes brain doctor           # 依赖/凭据/连接/表结构自检
-hermes brain status           # 连通性 + 计数
-hermes brain search <关键词>   # 检索（记忆 + 历史对话）
-hermes brain remember "内容" --kind note --tags xx --importance 6
-hermes brain recent --n 10    # Redis 最近对话流
-hermes brain prune --dry-run  # 清理预演（turns 默认 0=不清理；sessions/archive/inactive 365 天）
-hermes brain vector-status    # 向量层状态：开关/模型/key 来源/已向量化统计
-hermes brain vector-drain     # 手动补向量（--force 全量重嵌；改模型后需要）
-hermes brain vector-test "查询" # 关键词/向量/融合 三方对比
+hermes atbrains-memory doctor           # 依赖/凭据/连接/表结构自检
+hermes atbrains-memory status           # 连通性 + 计数
+hermes atbrains-memory search <关键词>   # 检索（记忆 + 历史对话）
+hermes atbrains-memory remember "内容" --kind note --tags xx --importance 6
+hermes atbrains-memory recent --n 10    # Redis 最近对话流
+hermes atbrains-memory prune --dry-run  # 清理预演（turns 默认 0=不清理；sessions/archive/inactive 365 天）
+hermes atbrains-memory vector-status    # 向量层状态：开关/模型/key 来源/已向量化统计
+hermes atbrains-memory vector-drain     # 手动补向量（--force 全量重嵌；改模型后需要）
+hermes atbrains-memory vector-test "查询" # 关键词/向量/融合 三方对比
 journalctl -u brain-vector-drain.service -n 30   # 兜底定时器日志（每3分钟自动回填）
 systemctl list-timers brain-prune.timer   # 每周自动 prune；日志 journalctl -u brain-prune.service
 python3 /root/agent-db/audit-turns.py         # 完整性审计：state.db ↔ brain_turns 对账
@@ -101,9 +101,9 @@ python3 /root/agent-db/brain-overview.py      # 全库总览（记忆/对话/会
 三台 Hermes（服务器 / linux 笔记本 / windows 笔记本）共享 `agent_memory` 长期库：
 
 - 长期记忆互通；Redis 短期层各用各库号（db0=服务器、db1=x260-debian、db2=windows-laptop、db3=新实例（10-13 交付）；db4 留给后续新实例；非 hermes agent 在 db5 起）；召回片段自动标注来源机
-- 纪律：新事实用 `brain_remember`（三机共享）；内置 MEMORY.md 以服务器为"主"维护（各机文件不自动同步）
+- 纪律：新事实用 `atbrains_remember`（三机共享）；内置 MEMORY.md 以服务器为"主"维护（各机文件不自动同步）
 - 网络（2026-10-13 定稿）：笔记本直连公网 111.230.71.79（安全组已放行 57306/9079，外部多点实测可达）；EasyTier 路线作废（组网里只有服务器与路由器两个节点，开发机不在网内）
-- 笔记本接入 5 步：① 复制 `/root/.hermes/plugins/brain/` 整目录（含 vendor） ② `brain.json` 改服务器地址（公网 111.230.71.79）、`redis_db` 填分配库号（x260-debian=1、windows-laptop=2；新实例取空位——db3 已交付，下一空位 db4）、`machine` 设标签 ③ `.env` 写两个密码变量 ④ `hermes config set memory.provider brain` ⑤ `hermes brain doctor` + 聊天验证 🧠
+- 笔记本接入 5 步：① 复制 `/root/.hermes/plugins/atbrains-memory/` 整目录（含 vendor） ② `brain.json` 改服务器地址（公网 111.230.71.79）、`redis_db` 填分配库号（x260-debian=1、windows-laptop=2；新实例取空位——db3 已交付，下一空位 db4）、`machine` 设标签 ③ `.env` 写两个密码变量 ④ `hermes config set memory.provider atbrains-memory` ⑤ `hermes atbrains-memory doctor` + 聊天验证 🧠
 
 ## 7. 变更大事记（2026-10-12 ~ 10-13）
 
@@ -116,13 +116,13 @@ python3 /root/agent-db/brain-overview.py      # 全库总览（记忆/对话/会
 7. Redis 库号重排：db0-db4 预留给 hermes 系（x260 自 db4 迁至 db1，存量 10 键无损随迁）；omp/dsh/artex 顺延至 db5/6/7
 8. （2026-10-13）网络定稿：多设备统一公网直连 111.230.71.79；腾讯云安全组 57306/9079 放行经外部多点实测确认；EasyTier 路线作废
 9. （2026-10-13）存量空 machine 标签回填为 server（记忆 30 / 对话 12 / 会话 5 行，updated_at 保持原值未扰动）；「最新在前」浏览就位：`brain_*_newest` 三视图 + `/root/agent-db/brain-overview.py`（快照 brain-overview.txt）；Redis 热点镜像 19 条 machine 校正、旧检索缓存清理
-10. （2026-10-13）结构 v2 升级（防重唯一键 / 召回索引 / deactivated_at / 截断标记 / 存档来源列 / CHECK；brain_meta 版本化自动迁移）+ 时区调整：曾切至 +08:00，同日按用户要求回退为 UTC（数据往返平移已还原；audit 回填口径=UTC）+ `brain-prune.timer` 每周自动清理 + 升级前全量备份；插件分发包更新为 `brain-plugin-20261013`（.tar.gz/.zip，位于 dist/）
+10. （2026-10-13）结构 v2 升级（防重唯一键 / 召回索引 / deactivated_at / 截断标记 / 存档来源列 / CHECK；brain_meta 版本化自动迁移）+ 时区调整：曾切至 +08:00，同日按用户要求回退为 UTC（数据往返平移已还原；audit 回填口径=UTC）+ `brain-prune.timer` 每周自动清理 + 升级前全量备份；插件分发包更新为 `atbrains-memory-20261013`（.tar.gz/.zip，位于 dist/）
 11. （2026-10-13）机器标签更名：x260 → x260-debian（库内四表 machine 全量更名 memories 7 / turns 82 / sessions 33 行，旧标签清零；Redis db1 热点镜像同批校正；x260 本机 brain.json 更名后新写入才带新标签）
 12. （2026-10-14）时间核验 + brain_turns 整理：全库 542 轮逐行对账（server↔state.db、各机↔Redis 流 epoch）确认无任何 ±8h 错误（口径=UTC）；`brain_turns` 按 ts 全表重排、连续重编号 1..N（旧编号仅存于 `backup-brain_turns-20261014-pre-rebuild.sql`，已做恢复校验；库内备份表 `brain_turns_bak_20261014` 已于当日验证后删除；再整理脚本 `/root/agent-db/reorder-turns.sh`）；`brain_sessions`/视图已同步；`brain_archive` 现有 1 行为正常（仅上下文压缩时写入；来自 10-13 晚 x260-debian 长会话，machine/platform 已补正）
 13. （2026-10-14 晚）brain_turns 复核与二次重排：按用户要求全表逐行复核——原表本就是严格时间序（0 处倒挂）；重排前后逐行校验零差异（新旧 CRC32 一致、550 行全覆盖）；重排脚本升级 v2（时间戳 dump、无库内 bak 残留、old_tmp 回滚、orig_id 漂移追踪、dump 恢复自检）；本次备份 `backup-brain_turns-20261014-205158-pre-resort.sql`
 14. （2026-10-14 深夜）brain_turns id 跳变修复：v2 重排的批量 `INSERT...SELECT` 触发 InnoDB auto_increment 按 2 的幂预留（550 行 → 计数器停在 1024，用户报「id 突然跳到1024」）；沙箱复现后重排脚本升级 v3（显式 `ROW_NUMBER` 行号插入 + `next_id==MAX(id)+1` 阻断校验），全表重排归位：id 1..551 连续、next=552、内容零变化（CRC32 一致）；备份 `backup-brain_turns-20261014-223310-pre-resort.sql`
-15. （2026-10-14 深夜）**语义召回（向量层）上线**：Qdrant 容器部署（v1.19.2，数据 `/root/qdrant`，访问口令=qdrant 配置文件 `/root/qdrant/qdrant-config/production.yaml`（service.api_key，只读挂载进容器；按用户硬要求不落 Hermes 配置））；brain 插件 v1.1.0：写入异步向量化（drainer+wake+跨进程 `GET_LOCK`）→ SiliconFlow `Qwen/Qwen3-Embedding-4B`（2560 维）→ Qdrant 集合 `brain_memories`；召回改「关键词+向量 RRF 混合」、失败自动回落关键词；schema v3（`brain_vector_index`）；63 条记忆全量回填 0 失败，跨语言检索/降级回退/端到端（写→补→搜→撤→清）全过；新命令 `vector-status/vector-drain/vector-test`；改动前备份 `backup-brain-plugin-20261014-234745.tar.gz`
-16. （2026-10-15 凌晨）**向量层自动化加固**：用户问「是否正在起作用」→ 实测取证时发现三重效应会让自动向量化漏夜：① SF embed 尾延迟 20~60s 常见；② 短命进程（一次性 CLI/短会话）退出会把跑一半的 drain 线程杀掉；③ 旧版「锁被占就硬跳过」会连锁卡死全部回填。修复：`GET_LOCK` 改尽力而为（幂等继续）+ drainer 启动即首扫 + 新增 systemd `brain-vector-drain.timer`（每 3 分钟跑 `hermes brain vector-drain`，跑完即退，兜底所有无会话窗口）。无人值守实测：写入测试条目零干预，3 分钟内自动向量化（journal 证据 `embedded: 1`）并可从语义检索命中；测试数据已清理（64/64）。
+15. （2026-10-14 深夜）**语义召回（向量层）上线**：Qdrant 容器部署（v1.19.2，数据 `/root/qdrant`，访问口令=qdrant 配置文件 `/root/qdrant/qdrant-config/production.yaml`（service.api_key，只读挂载进容器；按用户硬要求不落 Hermes 配置））；atbrains-memory 插件 v1.1.0：写入异步向量化（drainer+wake+跨进程 `GET_LOCK`）→ SiliconFlow `Qwen/Qwen3-Embedding-4B`（2560 维）→ Qdrant 集合 `brain_memories`；召回改「关键词+向量 RRF 混合」、失败自动回落关键词；schema v3（`brain_vector_index`）；63 条记忆全量回填 0 失败，跨语言检索/降级回退/端到端（写→补→搜→撤→清）全过；新命令 `vector-status/vector-drain/vector-test`；改动前备份 `backup-atbrains-memory-20261014-234745.tar.gz`
+16. （2026-10-15 凌晨）**向量层自动化加固**：用户问「是否正在起作用」→ 实测取证时发现三重效应会让自动向量化漏夜：① SF embed 尾延迟 20~60s 常见；② 短命进程（一次性 CLI/短会话）退出会把跑一半的 drain 线程杀掉；③ 旧版「锁被占就硬跳过」会连锁卡死全部回填。修复：`GET_LOCK` 改尽力而为（幂等继续）+ drainer 启动即首扫 + 新增 systemd `brain-vector-drain.timer`（每 3 分钟跑 `hermes atbrains-memory vector-drain`，跑完即退，兜底所有无会话窗口）。无人值守实测：写入测试条目零干预，3 分钟内自动向量化（journal 证据 `embedded: 1`）并可从语义检索命中；测试数据已清理（64/64）。
 
 ---
 

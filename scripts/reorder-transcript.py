@@ -17,7 +17,7 @@ import argparse
 import datetime
 import sys
 
-sys.path.insert(0, "/root/.hermes/plugins/brain")
+sys.path.insert(0, "/root/.hermes/plugins/atbrains-memory")
 from core import BrainStore, resolve_config  # noqa: E402
 
 TURN_COLS = ["id", "session_id", "platform", "author", "machine", "truncated",

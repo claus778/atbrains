@@ -1,4 +1,4 @@
-# brain 共享库约束（2026-10-24 定稿，所有 Hermes 实例共同遵守）
+# atbrains 共享库约束（2026-10-24 定稿，所有 Hermes 实例共同遵守）
 
 适用：所有写入 `agent_memory`（MariaDB 127.0.0.1:57306 / 111.230.71.79:57306）的 Hermes 实例。
 库内时间一律 UTC（比北京时间慢 8 小时）。
@@ -10,7 +10,7 @@
 - `machine`：来源主机（`server` / `r9000p-Windows` / `x260-debian` …）。MCP 客户端
   没有主机信息，写入点就是跑 MCP 端口的那台机器，记服务端主机名；**不要拿 agent 名冒充主机**。
 - 列默认值 `'hermes'`：未升级的老进程 INSERT 不写 agent 时归属仍然正确。
-- 召回默认跨 agent（不过滤）；`brain_recall(agent=...)` 只看某一方。
+- 召回默认跨 agent（不过滤）；`atbrains_recall(agent=...)` 只看某一方。
 - `brain_claims.agent` = 当前值是谁写的；`brain_claim_versions.agent` = 每一版是谁写的。
 - **禁止再建 `<agent>_agent_memory` 分库**：分库 = 记忆不通用（同一条事实多份副本、
   互相召回不到），已并入共享库；要隔离就用 `agent` 过滤。
@@ -72,7 +72,7 @@
 
 ## 6. 分发版本
 
-`brain-plugin-1.2.2`（`/root/agent-db/dist/brain-plugin-1.2.2.tar.gz|.zip`）已含 `normalize_platform`；
+`atbrains-memory-1.2.2`（`/root/agent-db/dist/atbrains-memory-1.2.2.tar.gz|.zip`）已含 `normalize_platform`；
 更早的包没有。装包后仍受库侧触发器兜底，所以升级不紧急。
 
 ## 7. 一份可执行的自检（在任意可连库的机器上跑）

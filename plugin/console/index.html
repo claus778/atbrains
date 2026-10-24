@@ -481,7 +481,7 @@ async function loadMem() {
         <td><code>${esc(m.kind)}</code><br><span class="sub">${esc(m.source || '')}</span></td>
         <td class="clk" onclick="showMem(${m.id})" title="点击查看全文">${esc(cut(m.content, 260))}</td>
         <td>${tags}</td><td>${m.importance}</td>
-        <td class="sub">${esc(m.agent || 'hermes')}</td>
+        <td class="sub">${esc(m.agent || 'unknown')}</td>
         <td class="sub">${esc(m.machine || '—')}</td>
         <td><div class="row"><button onclick="showMem(${m.id})">详情</button>${ops}</div></td>
       </tr>`;

@@ -4,7 +4,7 @@ CLI(`hermes atbrains ...`)、agent 工具(`atbrains_status` / `atbrains_control`
 和网页控制台共用这里的函数,保证三个界面看到的数据永远一致(不漂移)。
 
 数据来源:
-  · brain 插件(兄弟目录 ../brain)的 core.BrainStore —— 读/写 MariaDB + Redis
+  · atbrains-memory 插件(兄弟目录 ../atbrains-memory)的 core.AtbrainsStore —— 读/写 MariaDB + Redis
   · Qdrant HTTP API(取 api_key 自其配置文件)
   · docker / systemctl —— 容器与定时器状态
 """
@@ -36,38 +36,40 @@ def hermes_home() -> str:
     return os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
 
 
-def _brain_candidates() -> list[Path]:
-    """brain 插件的候选位置,按优先级排序。
+def _memory_plugin_candidates() -> list[Path]:
+    """记忆引擎插件的候选位置,按优先级排序。
 
-    正常布局 = 与 atbrains 并排(同在 plugins/ 下);本仓库直接运行时
-    (代码在 atbrains/plugin/,不在 plugins/ 里)兜底查 HERMES_HOME/plugins/brain。
+    正常布局 = 与 atbrains 控制台并排(同在 plugins/ 下,新名 atbrains-memory);
+    兼容旧安装名 brain。也可用 ATBRAINS_MEMORY_PLUGIN 显式指定。
     """
     cands: list[Path] = []
-    env = os.environ.get("ATBRAINS_BRAIN_PLUGIN")
-    if env:
-        cands.append(Path(env))
-    cands.append(HERE.parent / "brain")
-    cands.append(Path(hermes_home()) / "plugins" / "brain")
+    for var in ("ATBRAINS_MEMORY_PLUGIN", "ATBRAINS_BRAIN_PLUGIN"):
+        env = os.environ.get(var)
+        if env:
+            cands.append(Path(env))
+    for name in ("atbrains-memory", "brain"):
+        cands.append(HERE.parent / name)
+        cands.append(Path(hermes_home()) / "plugins" / name)
     return cands
 
 
-def _find_brain_plugin() -> Path:
-    for c in _brain_candidates():
+def _find_memory_plugin() -> Path:
+    for c in _memory_plugin_candidates():
         if (c / "core.py").exists():
             return c
-    tried = "、".join(str(c) for c in _brain_candidates())
-    raise ProbeError(f"brain 插件不存在(找过:{tried})—— 先安装并启用 brain 插件")
+    tried = "、".join(str(c) for c in _memory_plugin_candidates())
+    raise ProbeError(f"atbrains-memory 插件不存在(找过:{tried})—— 先安装并启用记忆插件")
 
 
 def store():
-    """惰性拿到 brain 插件的 BrainStore(复用其凭据解析与读写逻辑)。"""
+    """惰性拿到记忆插件的 AtbrainsStore(复用其凭据解析与读写逻辑)。"""
     global _store
     if _store is None:
-        brain_dir = _find_brain_plugin()
-        if str(brain_dir) not in sys.path:
-            sys.path.insert(0, str(brain_dir))
-        from core import BrainStore, resolve_config  # type: ignore
-        _store = BrainStore(resolve_config(hermes_home()))
+        plugin_dir = _find_memory_plugin()
+        if str(plugin_dir) not in sys.path:
+            sys.path.insert(0, str(plugin_dir))
+        from core import AtbrainsStore, resolve_config  # type: ignore
+        _store = AtbrainsStore(resolve_config(hermes_home()))
     return _store
 
 
@@ -296,7 +298,7 @@ def forget(memory_id: int) -> dict:
 def restore(memory_id: int) -> dict:
     """恢复一条被停用的记忆(active=0 → 1),并补回 Redis 热点镜像。
 
-    与 forget 对偶;热点镜像走 store 的 _hot_put 规则(与 brain 工具侧行为一致)。
+    与 forget 对偶;热点镜像走 store 的 _hot_put 规则(与 atbrains 工具侧行为一致)。
     向量由定时器 ≤3 分钟自动补;同内容已有活跃条目时拒绝(库有唯一键防重)。
     """
     st = store()
@@ -329,7 +331,7 @@ def restore(memory_id: int) -> dict:
 
 
 def drain(force: bool = False) -> dict:
-    cmd = ["hermes", "brain", "vector-drain"] + (["--force"] if force else [])
+    cmd = ["hermes", "atbrains-memory", "vector-drain"] + (["--force"] if force else [])
     r = subprocess.run(cmd, capture_output=True, text=True, timeout=1800,
                        env={**os.environ, "HERMES_HOME": hermes_home()})
     return {"ok": r.returncode == 0, "code": r.returncode,
@@ -337,7 +339,7 @@ def drain(force: bool = False) -> dict:
 
 
 def doctor() -> dict:
-    r = subprocess.run(["hermes", "brain", "doctor"], capture_output=True, text=True, timeout=180,
+    r = subprocess.run(["hermes", "atbrains-memory", "doctor"], capture_output=True, text=True, timeout=180,
                        env={**os.environ, "HERMES_HOME": hermes_home()})
     return {"ok": r.returncode == 0, "out": r.stdout, "err": r.stderr}
 
