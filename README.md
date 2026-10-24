@@ -125,7 +125,7 @@
 |---|---|
 | **命令行** | `hermes atbrains status` —— 一屏总览(最常用) |
 | **Agent 工具** | `atbrains_status` / `atbrains_control` —— 微信里直接问"记忆系统健康吗" |
-| **网页** | `hermes atbrains serve --background` 启动,`open` 打印地址口令,`stop` 停止 |
+| **网页** | systemd 单元 `atbrains-console.service` 常驻(enable + Restart=always) | `systemctl restart atbrains-console` 重启用 |
 
 ```bash
 hermes atbrains status          # 监控
