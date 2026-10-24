@@ -249,12 +249,17 @@ POST /v1/memory/recall     {query, session_id?}
 POST /v1/memory/remember   {content, kind?, tags?, importance?, memory_type?}
 POST /v1/memory/forget     {id}
 POST /v1/memory/recent     {limit?}
-POST /v1/memory/turn       {session_id, user, assistant, platform?}
+POST /v1/memory/turn       {session_id, user, assistant?, platform?, author?, messages?}
 GET  /v1/memory/status
 ```
 
 - 鉴权:`Authorization: Bearer <令牌>`;**服务端用令牌反查 agent 身份,客户端无法伪造**;
   `machine` 记令牌绑定的主机名(/v1)或服务端主机(MCP)。
+- 令牌名可写 **`<主机>|<agent>`**(例 `r9000p-Windows|dsh`):`/v1` 左= machine 右= agent,MCP 只取右边当
+  agent;老名字不含 `|` 时保持历史口径。
+- `/v1/memory/turn` 的 `messages[]` 是「到目前为至的完整会话」,服务端按
+  `brain_sessions.archived_messages` 游标只落增量;`assistant` 可为空(只有工具调用的回合)。
+  这个端点就是 dsh 原生插件自动归档用的入口(见 `/root/dsh-atbrains`)。
 - 令牌:`service-tokens.json`(600);`hermes atbrains token-list|token-add|token-rm`。
 - **客户端接入(远程模式)**:brain.json 开 `remote_enabled=1` + `remote_url`;令牌放
   `~/.hermes/.env` 的 `BRAIN_REMOTE_TOKEN`(不落 brain.json)。任何失败**自动回落本地直连**
