@@ -1,4 +1,4 @@
-# dsh-atbrains 0.3.2 —— dsh 原生记忆插件
+# dsh-atbrains 0.3.3 —— dsh 原生记忆插件
 
 把 atbrains 共享长期记忆挂进 DeepSeek Harness（dsh）。**原生 Cordis 插件，纯 Node**：
 
@@ -92,6 +92,7 @@ node test/live.mjs       # 真机：health/status/recall/turn（需要 ATBRAINS_
 | 召回注入但没内容 | 服务端 `prefetch` 为空：确认库里有活跃记忆，且 `minScore` 没设太高 |
 | 和 dsh-mnemon 同时装 | 两边都挂 `agent/pre-step`，会双注入；二选一 |
 | `brain_turns.user_content` 是一段 `[atbrains 长期记忆] …` | 0.3.1 的 bug：归档把注入的召回块当成了用户提问（dsh 把上下文/skill 清单也塞成 user 消息）。升 0.3.2 |
+| 会话超过 400 条后每轮 `message_count=0`（有 user_content、没转录） | 0.3.2 及更早只传尾部窗口却没带 `total`，服务端「窗口长度==游标」判断成没有增量。升 0.3.3（服务端同时要 ≥2.0.1） |
 
 ## 边界
 

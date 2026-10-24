@@ -361,8 +361,9 @@ class MemoryService:
     def _turn(self, machine: str, body: dict, query: dict) -> dict:
         """写入一轮对话：brain_turns + 会话计数 + 可选的全量转录层。
 
-        `messages` 是可选的完整消息链（dsh/Hermes 都按「到目前为至的完整会话」传），
-        由 core 的游标（brain_sessions.archived_messages）去重，只落增量。
+        `messages` 是可选的消息链（Hermes 传完整会话；dsh 插件因体积上限只传尾部窗口，
+        并附带 `total`=会话消息总数），由 core 的游标（brain_sessions.archived_messages）
+        按绝对条数去重，只落增量。
         `assistant` 可以为空 —— 只有工具调用、没有可见回复的回合也要归档。
         """
         session_id = str(body.get("session_id") or "").strip()
@@ -375,8 +376,17 @@ class MemoryService:
         msgs = body.get("messages")
         if msgs is not None and not isinstance(msgs, list):
             raise BadRequest("messages 必须是数组")
+        total_messages: Optional[int] = None
         if msgs:
-            msgs = [m for m in msgs if isinstance(m, dict)][:4000]
+            msgs = [m for m in msgs if isinstance(m, dict)][-4000:]
+            # total = 会话消息总数。客户端只上传尾部窗口时，靠它把游标换算到窗口坐标。
+            raw_total = body.get("total")
+            if raw_total is not None:
+                try:
+                    total_messages = int(raw_total)
+                except (TypeError, ValueError):
+                    raise BadRequest("total 必须是整数") from None
+                total_messages = max(0, min(total_messages, 100000))
         else:
             msgs = None
         if not assistant and not msgs:
@@ -385,8 +395,16 @@ class MemoryService:
             session_id, user, assistant,
             platform=str(body.get("platform") or ""),
             author=str(body.get("author") or ""),
-            messages=msgs)
-        return {"ok": True, "id": int(turn_id)}
+            messages=msgs, total_messages=total_messages)
+        # archived = 归档后的绝对游标，方便客户端/排障核对（不影响老客户端）。
+        try:
+            row = self.store_who(machine)._exec(
+                "SELECT archived_messages FROM brain_sessions WHERE session_id = %s",
+                (session_id,), fetch=True)
+            archived = int(row[0]["archived_messages"] or 0) if row else 0
+        except Exception:  # noqa: BLE001
+            archived = 0
+        return {"ok": True, "id": int(turn_id), "archived": archived}
 
     def _status(self, machine: str, body: dict, query: dict) -> dict:
         st = self.store_who(machine)

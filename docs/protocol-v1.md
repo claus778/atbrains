@@ -35,7 +35,7 @@
 | POST | `/v1/memory/remember` | `{content, kind?, tags?, importance?, memory_type?}` | `{ok, saved}` |
 | POST | `/v1/memory/forget` | `{id}` | `{ok, result}` |
 | POST | `/v1/memory/recent` | `{limit?}` | `{ok, hot[], turns[]}` |
-| POST | `/v1/memory/turn` | `{session_id, user, assistant?, platform?, author?, messages?}` | `{ok, id}` |
+| POST | `/v1/memory/turn` | `{session_id, user, assistant?, platform?, author?, messages?, total?}` | `{ok, id, archived?}` |
 | POST | `/v1/memory/status` | `{}` | `{ok, machine, agent, ping, stats}` |
 
 ### `recall`
@@ -49,6 +49,12 @@
 
 - `messages[]` 传**到目前为至的完整会话**，不是增量：服务端用
   `brain_sessions.archived_messages` 游标只写尾部新增部分，重复提交不会写重。
+- **`total` = 会话消息总数**。客户端因体积限制只上传尾部窗口时（dsh 插件按
+  `archiveMaxMessages` 截断）必须带它：服务端据 `offset = total - len(messages)`
+  把绝对游标换算到窗口坐标。不带 `total` 时按「窗口即全量」处理，一旦窗口长度
+  追平游标，增量会恒为空（dsh 会话 400 条后每轮 `message_count=0` 就是这个坑）。
+  窗口覆盖不到游标时（离线太久）中间的缺口会丢并打 warning，从窗口起点续写。
+- 响应里的 `archived` 是归档后的绝对游标，仅供排障/客户端核对，可不理。
 - 消息形状：`{role, content, tool_name?, tool_call_id?, tool_calls?, reasoning?, ts?}`，
   `content` 为字符串；`tool_calls` 为 `[{id, type:'function', function:{name, arguments}}]`。
   `system`/`developer` 不入库（客户端负责丢弃）。

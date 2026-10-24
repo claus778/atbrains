@@ -65,6 +65,12 @@
 4. 删除/回填后不重编号；需要 1..N 连续与时间序时跑 `/root/agent-db/reorder-transcript.py --apply`（切换后自动重建触发器）。
 5. 改表结构前先 `mysqldump`（无自动备份，别假设有）。
 
+6. **`brain_sessions.archived_messages` 是绝对条数游标**：客户端上传 `messages[]` 时若只传
+   尾部窗口（dsh 插件按 `archiveMaxMessages` 截断），必须同时传 `total`=会话消息总数，
+   服务端用 `offset = total - len(messages)` 换算。不带 `total` 又截断窗口，会让增量恒为空
+   （会话超过窗口长度后每轮 `message_count=0`）。排障：`message_count=0` 且 `archived_messages`
+   正好等于窗口长度 = 这个坑，不是数据坏了。
+
 ## 5. Qdrant（http://111.230.71.79:6333，集合 brain_memories）
 
 - **一个共享集合**，payload 带 `machine` 与 `agent`；所有机器的记忆都在里面，语义召回是跨机的

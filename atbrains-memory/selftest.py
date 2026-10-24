@@ -26,6 +26,7 @@ from core import (  # noqa: E402
     _clip,
     _cosine,
     _cursor_start,
+    _window_start,
     _db_safe,
     _dotenv_get,
     _dotenv_value,
@@ -237,6 +238,46 @@ class CursorTest(unittest.TestCase):
     def test_bad_values(self) -> None:
         self.assertEqual(_cursor_start(self.MSGS, -5), 0)
         self.assertEqual(_cursor_start(self.MSGS, "bad"), 0)
+
+
+class WindowStartTest(unittest.TestCase):
+    """尾部窗口 + 绝对游标（dsh 插件只传最后 N 条）。"""
+
+    MSGS = [
+        {"role": "user", "content": "u1"},
+        {"role": "assistant", "content": "a1"},
+        {"role": "user", "content": "u2"},
+        {"role": "assistant", "content": "a2"},
+    ]
+
+    def test_full_list(self) -> None:
+        # 窗口即全量（老客户端）：行为与 _cursor_start 一致
+        self.assertEqual(_window_start(self.MSGS, 0, None), (0, 0))
+        self.assertEqual(_window_start(self.MSGS, 2, None), (2, 2))
+        self.assertEqual(_window_start(self.MSGS, 4, 4), (4, 4))
+
+    def test_tail_window(self) -> None:
+        # 10 条会话只传最后 4 条（绝对下标 6..9）
+        self.assertEqual(_window_start(self.MSGS, 6, 10), (0, 6))
+        self.assertEqual(_window_start(self.MSGS, 8, 10), (2, 8))
+        # 游标已到窗口末端：没有增量，但游标不能漂
+        self.assertEqual(_window_start(self.MSGS, 10, 10), (4, 10))
+
+    def test_cursor_behind_window(self) -> None:
+        # 会话 1000 条、只传最后 4 条（窗口起点 996），游标 400 落在窗口之前：
+        # 中间缺口补不回来，从窗口起点续写，游标跟到 996
+        self.assertEqual(_window_start(self.MSGS, 400, 1000), (0, 996))
+
+    def test_compressed_rewind(self) -> None:
+        # 历史被压缩：total 变小、游标比总数还大 → 退回最后一个 user
+        self.assertEqual(_window_start(self.MSGS[:3], 10, 3), (2, 2))
+        self.assertEqual(_window_start([{"role": "assistant"}], 10, 1), (0, 0))
+
+    def test_bad_values(self) -> None:
+        self.assertEqual(_window_start(self.MSGS, "bad", 4), (0, 0))
+        self.assertEqual(_window_start(self.MSGS, -5, 10), (0, 6))
+        # total 小于消息数按 total=len 处理，不产生负偏移
+        self.assertEqual(_window_start(self.MSGS, 2, 1), (2, 2))
 
 
 class DbSafeTest(unittest.TestCase):

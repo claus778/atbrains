@@ -222,7 +222,7 @@ export function createRuntime(ctx, rawConfig, { clientFactory } = {}) {
       maxMessages: config.archiveMaxMessages,
     })
     if (!t.user) return null
-    if ((lastCount.get(key) ?? -1) === t.records.length) return null
+    if ((lastCount.get(key) ?? -1) === t.total) return null
     const sessionId = String(session?.id ?? key)
     const prev = queues.get(key) || Promise.resolve()
     const run = prev.then(async () => {
@@ -234,9 +234,14 @@ export function createRuntime(ctx, rawConfig, { clientFactory } = {}) {
           platform: config.platform,
           author: config.author,
           messages: t.records,
+          // 会话总条数：records 是尾部窗口（archiveMaxMessages），没有 total
+          // 服务端会把「窗口长度 == 游标」误判成没有增量（0.3.2 的真实事故）。
+          total: t.total,
         })
-        lastCount.set(key, t.records.length)
-        logger?.debug?.(`[atbrains] 已归档 turn=${payload?.turn} id=${res?.id} msgs=${t.records.length}`)
+        lastCount.set(key, t.total)
+        logger?.debug?.(
+          `[atbrains] 已归档 turn=${payload?.turn} id=${res?.id} window=${t.records.length}/${t.total}`,
+        )
         return res
       } catch (error) {
         logger?.warn?.(`[atbrains] 归档失败，已跳过：${String(error?.message || error)}`)

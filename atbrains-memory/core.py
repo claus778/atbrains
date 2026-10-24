@@ -852,6 +852,48 @@ def _cursor_start(msgs: list[dict[str, Any]], done: int) -> int:
     return done
 
 
+def _window_start(msgs: list[dict[str, Any]], done: int,
+                 total: Optional[int] = None) -> tuple[int, int]:
+    """尾部窗口的起点：(窗口内下标, 对应的绝对游标)。
+
+    客户端会按条数上限把会话**截断成尾部窗口**（dsh 插件默认 400 条）再上传，而游标
+    `archived_messages` 记的是整个会话的绝对已归档条数。只按 len(msgs) 比较会让
+    「窗口长度 == 游标」永远成立 → 每轮增量都算成空（实测 dsh 会话 400 条后每轮
+    message_count=0）。这里用 `total`（会话消息总数）把游标换算到窗口坐标。
+
+    total 缺省或小于 len(msgs) 时按「窗口即全量」处理，与老客户端行为一致。
+    返回的绝对游标供 UPDATE 使用，保证不因窗口而漂移。
+    """
+    n = len(msgs)
+    try:
+        total_n = int(total) if total is not None else n
+    except (TypeError, ValueError):
+        total_n = n
+    if total_n < n:
+        total_n = n
+    offset = total_n - n
+    try:
+        done = int(done)
+    except (TypeError, ValueError):
+        return 0, offset
+    if done < 0:
+        done = 0
+    if done < offset:
+        # 游标落在窗口之前：中间那段补不回来（离线太久/窗口太小），只能从窗口起点续
+        logger.warning(
+            "atbrains: 转录窗口不足以覆盖游标 %s..%s（会话 %s 条，窗口 %s 条），中间段落丢弃",
+            done, offset, total_n, n)
+        return 0, offset
+    rel = done - offset
+    if rel > n:
+        # 历史变短（压缩/回退）：退回最后一个 user 重新起算
+        for i in range(n - 1, -1, -1):
+            if str(msgs[i].get("role") or "") == "user":
+                return i, offset + i
+        return 0, offset
+    return rel, offset + rel
+
+
 class AtbrainsStore:
     """Redis + MariaDB 双存储引擎。线程安全（连接按线程持有）。"""
 
@@ -1428,7 +1470,8 @@ class AtbrainsStore:
 
     def record_turn(self, session_id: str, user_content: str, assistant_content: str,
                     *, platform: str = "", author: str = "",
-                    messages: Optional[list[dict[str, Any]]] = None) -> int:
+                    messages: Optional[list[dict[str, Any]]] = None,
+                    total_messages: Optional[int] = None) -> int:
         platform = normalize_platform(platform)
         if self._remote_on() and int(self.cfg.get("remote_turn_sync") or 0):
             # 回合归档走远程（默认关）：服务端自己截断/写库，与本地路径口径一致
@@ -1465,7 +1508,8 @@ class AtbrainsStore:
         stored = stored_bytes = 0
         if messages:
             try:
-                stored, stored_bytes = self.store_turn_messages(turn_id, session_id, messages)
+                stored, stored_bytes = self.store_turn_messages(
+                    turn_id, session_id, messages, total_messages)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("atbrains: 转录层写入失败（正文已存）: %s", str(exc)[:200])
             if stored:
@@ -1499,12 +1543,17 @@ class AtbrainsStore:
     # -------------------------------------------------- 全量转录层
 
     def store_turn_messages(self, turn_id: int, session_id: str,
-                            messages: list[dict[str, Any]]) -> tuple[int, int]:
+                            messages: list[dict[str, Any]],
+                            total_messages: Optional[int] = None) -> tuple[int, int]:
         """把本轮的完整消息链（含工具调用/工具输出/推理）压进 brain_turn_messages。
 
-        Hermes 每轮传的是「到目前为至的完整对话」，所以只写增量：已归档条数记在
+        客户端每轮传「到目前为至的对话」，所以只写增量：已归档条数记在
         brain_sessions.archived_messages，这里只取尾部新增部分，避免 N² 重复。
         历史被压缩或回退（条数变少）时，退回最后一个 user 消息重新起算。
+
+        `total_messages` = 会话消息总数。客户端可能只上传尾部窗口（dsh 插件按
+        archiveMaxMessages 截断），此时必须靠它把游标换算到窗口坐标，否则
+        「窗口长度 == 游标」会让增量恒为空（0.3.2 之前的真实事故）。
         返回 (写入条数, 原始字节数)。
         """
         msgs = [m for m in (messages or []) if isinstance(m, dict)]
@@ -1533,8 +1582,9 @@ class AtbrainsStore:
                     "SELECT archived_messages FROM brain_sessions WHERE session_id = %s FOR UPDATE",
                     (sid,))
                 row = cur.fetchone()
-                done = _cursor_start(msgs, int(row["archived_messages"] or 0) if row else 0)
-                delta = msgs[done:]
+                start, cursor = _window_start(
+                    msgs, int(row["archived_messages"] or 0) if row else 0, total_messages)
+                delta = msgs[start:]
                 for seq, m in enumerate(delta):
                     role = _db_safe(str(m.get("role") or ""))[:16]
                     tool_name = _db_safe(str(m.get("tool_name") or m.get("name") or ""))[:64]
@@ -1566,7 +1616,7 @@ class AtbrainsStore:
                         "VALUES (%s, %s, %s, %s, %s, %s, %s)", rows)
                     cur.execute(
                         "UPDATE brain_sessions SET archived_messages = %s WHERE session_id = %s",
-                        (done + len(rows), sid))
+                        (cursor + len(rows), sid))
             if rows:
                 conn.commit()
             else:

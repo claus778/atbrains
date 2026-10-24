@@ -121,5 +121,46 @@ function check(label, cond) {
   check('sk- 密钥被抹掉', !t.records[0].content.includes('sk-abcdefghijklmnopqrstuvwx'))
 }
 
+// 6) 会话超过 archiveMaxMessages：只传尾部窗口，但必须带 total（0.3.3 事故回归）
+{
+  const mk = (i) => ({
+    role: i % 2 ? 'assistant' : 'user',
+    content: [{ type: 'text', text: `m${i}` }],
+  })
+  const long = Array.from({ length: 9 }, (_, i) => ({ seq: i, msg: mk(i) }))
+  const sess = {
+    id: 'zz-window-test',
+    surface: { nodes: long.map((e) => e.seq), deriveEventMessage: (ev) => ev.msg ?? null },
+    eventAt: (seq) => long.find((e) => e.seq === seq) ?? null,
+  }
+  const out = []
+  const rt2 = createRuntime(ctx, { token: 'test-token', archiveMaxMessages: 4 }, {
+    clientFactory: () => ({
+      baseUrl: 'mock',
+      health: async () => ({ ok: true, version: '2.0.0' }),
+      recall: async () => ({}),
+      turn: async (body) => {
+        out.push(body)
+        return { ok: true, id: out.length }
+      },
+    }),
+  })
+  const t = transcriptFromMessages(long.map((e) => e.msg), { maxMessages: 4 })
+  check('窗口截到 4 条', t.records.length === 4)
+  check('total 是截断前条数', t.total === 9)
+
+  await rt2.archive({ agent: { session: sess }, turn: 1 })
+  check('载荷带 total', out[0].total === 9 && out[0].messages.length === 4)
+
+  await rt2.archive({ agent: { session: sess }, turn: 1 })
+  check('total 没变则不重复提交', out.length === 1)
+
+  const grew = [...long, { seq: 9, msg: { role: 'user', content: [{ type: 'text', text: 'm9' }] } }]
+  sess.surface.nodes = grew.map((e) => e.seq)
+  sess.eventAt = (seq) => grew.find((e) => e.seq === seq) ?? null
+  await rt2.archive({ agent: { session: sess }, turn: 2 })
+  check('会话变长后再次提交（窗口长度不变也算增量）', out.length === 2 && out[1].total === 10)
+}
+
 console.log(failures === 0 ? '\n全部通过' : `\n${failures} 项失败`)
 process.exit(failures === 0 ? 0 : 1)

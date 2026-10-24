@@ -1,5 +1,5 @@
 name: atbrains
-version: "2.0.0"
+version: "2.0.1"
 description: >-
   atbrains —— 记忆系统(Redis 短期 + MariaDB 长期 + Qdrant 向量)的监控与控制台。
   提供 `hermes atbrains status|serve|stop|open|drain|doctor|memories|turns|sessions|search|remember|forget|restore`

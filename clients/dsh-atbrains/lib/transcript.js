@@ -129,6 +129,7 @@ export function transcriptFromMessages(messages, { maxChars = 16000, maxMessages
 
   return {
     records: records.slice(-Math.max(1, maxMessages)),
+    total: records.length, // 截断前的总条数：服务端游标是按绝对条数记的
     user: redact(clip(lastUser, maxChars)),
     assistant: redact(clip(lastAssistant, maxChars)),
   }
