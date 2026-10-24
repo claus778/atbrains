@@ -313,13 +313,16 @@ def _mask_secret(value: str) -> str:
 
 # ------------------------------------------------------------------ 入口名（platform）规范化
 
-# 词表：cli / desktop / weixin / telegram / discord / slack / email /
+# 词表：hermes-cli / hermes-desktop / weixin / telegram / discord / slack / email /
 #       cron / oneshot / subagent / unknown（新入口小写透传，别名先归并）
+# Hermes 自己的两个本机入口带 hermes- 前缀，与别的 agent（如 dsh 写 'dsh'）区分。
 _PLATFORM_ALIASES = {
-    "local": "desktop",   # 本机控制套接字的桌面/TUI 会话（Windows 桌面端写 desktop）
-    "tui": "desktop",
-    "gui": "desktop",
-    "tool": "cli",        # 工具触发的会话按命令行入口算（对齐 Hermes session_policy）
+    "cli": "hermes-cli",
+    "tool": "hermes-cli",        # 工具触发的会话按命令行入口算（对齐 Hermes session_policy）
+    "desktop": "hermes-desktop",
+    "local": "hermes-desktop",   # 本机控制套接字的桌面/TUI 会话
+    "tui": "hermes-desktop",
+    "gui": "hermes-desktop",
 }
 
 
@@ -472,6 +475,40 @@ _DDL = (
         KEY idx_turn_seq (turn_id, seq),
         KEY idx_tm_ts (ts)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    # v9：思考链 / 工具调用明细（brain_turn_messages 的投影，便于按工具名·状态·耗时检索）
+    """CREATE TABLE IF NOT EXISTS brain_thoughts (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        turn_id BIGINT UNSIGNED NOT NULL,
+        seq SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+        message_uid VARCHAR(96) NOT NULL DEFAULT '',
+        reasoning MEDIUMTEXT NOT NULL,
+        reasoning_chars INT UNSIGNED NOT NULL DEFAULT 0,
+        finish_reason VARCHAR(32) NOT NULL DEFAULT '',
+        ts DATETIME NULL DEFAULT NULL,
+        PRIMARY KEY (id),
+        UNIQUE KEY uniq_thought (turn_id, seq),
+        KEY idx_thought_ts (ts)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    """CREATE TABLE IF NOT EXISTS brain_tool_calls (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        turn_id BIGINT UNSIGNED NOT NULL,
+        seq SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+        call_index SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+        call_id VARCHAR(128) NOT NULL DEFAULT '',
+        tool_name VARCHAR(64) NOT NULL DEFAULT '',
+        args MEDIUMTEXT NULL,
+        result MEDIUMTEXT NULL,
+        result_chars INT UNSIGNED NOT NULL DEFAULT 0,
+        status VARCHAR(16) NOT NULL DEFAULT 'pending',
+        started_at DATETIME NULL DEFAULT NULL,
+        ended_at DATETIME NULL DEFAULT NULL,
+        duration_ms INT UNSIGNED NULL DEFAULT NULL,
+        PRIMARY KEY (id),
+        UNIQUE KEY uniq_tool_call (turn_id, seq, call_index),
+        KEY idx_tc_tool (tool_name),
+        KEY idx_tc_status (status),
+        KEY idx_tc_turn (turn_id, seq)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
     """CREATE TABLE IF NOT EXISTS brain_sessions (
         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
         session_id VARCHAR(96) NOT NULL,
@@ -582,7 +619,7 @@ _DDL = (
 )
 
 # 模式版本与迁移（幂等；多进程/多机并发用 GET_LOCK 串行化）
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 _MIGRATIONS: dict[int, tuple[str, tuple[str, ...]]] = {
     1: ("machine 列（多设备归属）", (
@@ -701,6 +738,27 @@ _MIGRATIONS: dict[int, tuple[str, tuple[str, ...]]] = {
         "UPDATE brain_claim_versions v JOIN brain_claims c ON c.id = v.claim_id "
         "SET v.agent = c.agent WHERE v.agent = 'hermes' AND c.agent <> 'hermes'",
     )),
+    9: ("思考链与工具调用明细（brain_thoughts / brain_tool_calls）", (
+        # 原文仍以 brain_turn_messages 的 zlib blob 为权威；这两张是它的投影，
+        # 用来按工具名、状态、耗时、时间检索，不参与召回、不进向量。
+        "CREATE TABLE IF NOT EXISTS brain_thoughts ("
+        "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, turn_id BIGINT UNSIGNED NOT NULL, "
+        "seq SMALLINT UNSIGNED NOT NULL DEFAULT 0, message_uid VARCHAR(96) NOT NULL DEFAULT '', "
+        "reasoning MEDIUMTEXT NOT NULL, reasoning_chars INT UNSIGNED NOT NULL DEFAULT 0, "
+        "finish_reason VARCHAR(32) NOT NULL DEFAULT '', ts DATETIME NULL DEFAULT NULL, "
+        "PRIMARY KEY (id), UNIQUE KEY uniq_thought (turn_id, seq), KEY idx_thought_ts (ts)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        "CREATE TABLE IF NOT EXISTS brain_tool_calls ("
+        "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, turn_id BIGINT UNSIGNED NOT NULL, "
+        "seq SMALLINT UNSIGNED NOT NULL DEFAULT 0, call_index SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
+        "call_id VARCHAR(128) NOT NULL DEFAULT '', tool_name VARCHAR(64) NOT NULL DEFAULT '', "
+        "args MEDIUMTEXT NULL, result MEDIUMTEXT NULL, result_chars INT UNSIGNED NOT NULL DEFAULT 0, "
+        "status VARCHAR(16) NOT NULL DEFAULT 'pending', started_at DATETIME NULL DEFAULT NULL, "
+        "ended_at DATETIME NULL DEFAULT NULL, duration_ms INT UNSIGNED NULL DEFAULT NULL, "
+        "PRIMARY KEY (id), UNIQUE KEY uniq_tool_call (turn_id, seq, call_index), "
+        "KEY idx_tc_tool (tool_name), KEY idx_tc_status (status), KEY idx_tc_turn (turn_id, seq)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+    )),
 }
 
 # DDL 幂等重跑时的“已存在”类报错（迁移时容忍）
@@ -714,6 +772,50 @@ def _benign_ddl_error(exc: Exception) -> bool:
 def _is_duplicate_error(exc: Exception) -> bool:
     """唯一键冲突（active 行内容防重）→ errno 1062。"""
     return bool(exc.args) and exc.args[0] == 1062
+
+
+def _as_text(value: Any, limit: int = 1_000_000) -> str:
+    """工具参数/结果统一成字符串（已是字符串就截断，其余 JSON 序列化）。"""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value[:limit]
+    try:
+        return json.dumps(value, ensure_ascii=False, default=str)[:limit]
+    except Exception:  # noqa: BLE001
+        return str(value)[:limit]
+
+
+def _as_tool_calls(value: Any) -> list[dict[str, Any]]:
+    """tool_calls 可能是 list，也可能是历史行里的 JSON 字符串 —— 统一成 list[dict]。
+
+    早期归档/某些 provider 把 tool_calls 存成字符串，直接 enumerate() 会逐字符迭代，
+    一次回填能写出几百万行垃圾（实测踩过）。
+    """
+    if isinstance(value, str):
+        try:
+            value = json.loads(value)
+        except Exception:  # noqa: BLE001
+            return []
+    if not isinstance(value, list):
+        return []
+    return [c for c in value if isinstance(c, dict)]
+
+
+def _epoch_to_dt(value: Any) -> Optional[datetime]:
+    """消息里的 timestamp 统一成 UTC naive：支持 epoch 秒（int/float）与 ISO 串。"""
+    if value is None or value == "":
+        return None
+    try:
+        if isinstance(value, (int, float)):
+            return datetime.fromtimestamp(float(value), timezone.utc).replace(tzinfo=None)
+        s = str(value).strip()
+        if re.fullmatch(r"\d+(\.\d+)?", s):
+            return datetime.fromtimestamp(float(s), timezone.utc).replace(tzinfo=None)
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        return dt.astimezone(timezone.utc).replace(tzinfo=None) if dt.tzinfo else dt
+    except Exception:  # noqa: BLE001
+        return None
 
 
 def _db_safe(value: Any) -> Any:
@@ -1475,7 +1577,96 @@ class AtbrainsStore:
             except Exception:  # noqa: BLE001
                 pass
             raise
+        if rows:
+            try:
+                self._index_turn_details(turn_id, delta)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("atbrains: 思考/工具调用索引失败（原文已存）: %s", str(exc)[:200])
         return len(rows), total
+
+    def _index_turn_details(self, turn_id: int, messages: list[dict[str, Any]]) -> tuple[int, int]:
+        """把一轮里的「思考」与「工具调用」投影成结构化行（schema v9）。
+
+        原文仍以 brain_turn_messages（zlib blob）为权威；这里只是可查询投影：
+          brain_thoughts   一条 assistant 消息一行（reasoning / reasoning_content）
+          brain_tool_calls 一个 tool-call 一行（参数、结果、状态、起止、耗时）
+        幂等键：(turn_id, seq) 与 (turn_id, seq, call_index)，重放/回填不会写重。
+        """
+        thoughts: list[tuple] = []
+        calls: list[dict[str, Any]] = []
+        for seq, m in enumerate(messages or []):
+            if not isinstance(m, dict):
+                continue
+            role = str(m.get("role") or "")
+            ts = _epoch_to_dt(m.get("timestamp"))
+            if role == "assistant":
+                reasoning = m.get("reasoning") or m.get("reasoning_content") or ""
+                if isinstance(reasoning, str) and reasoning.strip():
+                    thoughts.append((
+                        turn_id, seq, _db_safe(str(m.get("message_uid") or "")[:96]),
+                        _db_safe(reasoning[:200_000]), len(reasoning),
+                        _db_safe(str(m.get("finish_reason") or "")[:32]), ts))
+                for idx, c in enumerate(_as_tool_calls(m.get("tool_calls"))):
+                    if not isinstance(c, dict):
+                        continue
+                    fn = c.get("function") if isinstance(c.get("function"), dict) else {}
+                    calls.append({
+                        "seq": seq, "idx": idx,
+                        "call_id": _db_safe(str(c.get("id") or "")[:128]),
+                        "name": _db_safe(str(fn.get("name") or c.get("name") or "")[:64]),
+                        "args": _db_safe(_as_text(fn.get("arguments") if fn else c.get("arguments"))),
+                        "started": ts, "ended": None, "result": None, "status": "pending",
+                    })
+            elif role == "tool":
+                cid = _db_safe(str(m.get("tool_call_id") or m.get("toolCallId") or "")[:128])
+                text = _db_safe(_as_text(m.get("content")))
+                failed = "error" if (m.get("is_error") or m.get("isError")) else "ok"
+                target = next((c for c in reversed(calls) if cid and c["call_id"] == cid), None)
+                if target is None:
+                    # 结果先于调用到达（跨轮续传/回填缺口）：单独记一行，不留空洞
+                    calls.append({"seq": seq, "idx": 0, "call_id": cid,
+                                  "name": _db_safe(str(m.get("tool_name") or m.get("name") or "")[:64]),
+                                  "args": "", "started": None, "ended": ts,
+                                  "result": text, "status": failed})
+                else:
+                    target.update({"result": text, "ended": ts, "status": failed})
+        if not thoughts and not calls:
+            return 0, 0
+        conn = self._conn()
+        try:
+            with conn.cursor() as cur:
+                if thoughts:
+                    cur.executemany(
+                        "INSERT INTO brain_thoughts (turn_id, seq, message_uid, reasoning, "
+                        "reasoning_chars, finish_reason, ts) VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                        "ON DUPLICATE KEY UPDATE reasoning = VALUES(reasoning), "
+                        "reasoning_chars = VALUES(reasoning_chars), "
+                        "finish_reason = VALUES(finish_reason), ts = VALUES(ts)", thoughts)
+                if calls:
+                    rows_c = []
+                    for c in calls:
+                        dur = None
+                        if c["started"] and c["ended"]:
+                            dur = max(0, int((c["ended"] - c["started"]).total_seconds() * 1000))
+                        rows_c.append((turn_id, c["seq"], c["idx"], c["call_id"], c["name"],
+                                       c["args"] or None, c["result"], len(c["result"] or ""),
+                                       c["status"], c["started"], c["ended"], dur))
+                    cur.executemany(
+                        "INSERT INTO brain_tool_calls (turn_id, seq, call_index, call_id, tool_name, "
+                        "args, result, result_chars, status, started_at, ended_at, duration_ms) "
+                        "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                        "ON DUPLICATE KEY UPDATE call_id = VALUES(call_id), tool_name = VALUES(tool_name), "
+                        "args = VALUES(args), result = VALUES(result), result_chars = VALUES(result_chars), "
+                        "status = VALUES(status), started_at = VALUES(started_at), "
+                        "ended_at = VALUES(ended_at), duration_ms = VALUES(duration_ms)", rows_c)
+            conn.commit()
+        except BaseException:
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        return len(thoughts), len(calls)
 
     def turn_detail(self, turn_id: int = 0, *, session_id: str = "",
                     max_chars: int = 1500, latest: bool = False) -> dict[str, Any]:
@@ -2940,6 +3131,10 @@ class AtbrainsStore:
             "(SELECT COUNT(*) FROM brain_claims WHERE state = 'active') AS claims_active, "
             "(SELECT COUNT(*) FROM brain_claim_versions) AS claim_versions, "
             "(SELECT COUNT(*) FROM brain_episodes) AS episodes, "
+            "(SELECT COUNT(*) FROM brain_thoughts) AS thoughts, "
+            "(SELECT COALESCE(SUM(reasoning_chars), 0) FROM brain_thoughts) AS thoughts_chars, "
+            "(SELECT COUNT(*) FROM brain_tool_calls) AS tool_calls, "
+            "(SELECT COUNT(*) FROM brain_tool_calls WHERE status = 'error') AS tool_call_errors, "
             "(SELECT COUNT(*) FROM brain_sessions) AS sessions, "
             "(SELECT COUNT(*) FROM brain_archive) AS archives",
             fetch=True)[0]
@@ -3030,12 +3225,21 @@ class AtbrainsStore:
             ep_cond = "FROM brain_episodes e JOIN brain_turns t ON t.id = e.turn_id WHERE t.ts < (NOW() - INTERVAL %s DAY)"
             ev_cond = ("FROM brain_claim_evidence e JOIN brain_turns t ON t.id = e.turn_id "
                        "WHERE t.ts < (NOW() - INTERVAL %s DAY)")
+            # v9 的两张投影表同样随轮次清理（不要留孤儿行）
+            th_cond = ("FROM brain_thoughts x JOIN brain_turns t ON t.id = x.turn_id "
+                       "WHERE t.ts < (NOW() - INTERVAL %s DAY)")
+            tc_cond = ("FROM brain_tool_calls x JOIN brain_turns t ON t.id = x.turn_id "
+                       "WHERE t.ts < (NOW() - INTERVAL %s DAY)")
             if dry_run:
                 out["episodes"] = int(self._exec("SELECT COUNT(*) AS c " + ep_cond, (t_days,), fetch=True)[0]["c"] or 0)
                 out["claim_evidence"] = int(self._exec("SELECT COUNT(*) AS c " + ev_cond, (t_days,), fetch=True)[0]["c"] or 0)
+                out["thoughts"] = int(self._exec("SELECT COUNT(*) AS c " + th_cond, (t_days,), fetch=True)[0]["c"] or 0)
+                out["tool_calls"] = int(self._exec("SELECT COUNT(*) AS c " + tc_cond, (t_days,), fetch=True)[0]["c"] or 0)
             else:
                 out["claim_evidence"] = int(self._exec("DELETE e " + ev_cond, (t_days,))[0] or 0)
                 out["episodes"] = int(self._exec("DELETE e " + ep_cond, (t_days,))[0] or 0)
+                out["thoughts"] = int(self._exec("DELETE x " + th_cond, (t_days,))[0] or 0)
+                out["tool_calls"] = int(self._exec("DELETE x " + tc_cond, (t_days,))[0] or 0)
                 self._exec(
                     "UPDATE brain_claim_versions v LEFT JOIN brain_turns t ON t.id = v.source_turn_id "
                     "SET v.source_turn_id = NULL WHERE v.source_turn_id IS NOT NULL AND t.id IS NULL")
