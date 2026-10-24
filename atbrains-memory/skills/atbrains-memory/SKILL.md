@@ -1,7 +1,7 @@
 ---
-name: atbrains-memory
+name: atbrains-memory-memory
 description: "Use when saving/recalling durable facts or inspecting the atbrains store (Redis short-term + MariaDB long-term + Qdrant vector layer)."
-version: 2.0.0
+version: 1.4.0
 ---
 
 # atbrains 记忆库使用指南
@@ -55,9 +55,10 @@ hermes atbrains-memory vector-test <查询>    # 同一查询：关键词/向量
 
 ### platform 词表（brain_turns / brain_sessions / brain_archive）
 
-`cli` / `desktop` / `weixin` / `telegram` / `discord` / `slack` / `email` / `cron` / `oneshot` / `subagent` / `unknown`（全小写）。
-别名归并：`local|tui|gui → desktop`、`tool → cli`、空 → `unknown`；新平台小写透传，不加 CHECK/ENUM。
-已由库侧触发器强制，写 `local`/`tool` 会被改写，不是 bug。
+`hermes-cli` / `hermes-desktop` / `weixin` / `telegram` / `discord` / `slack` / `email` / `cron` / `oneshot` / `subagent` / `unknown`（全小写）。
+别名归并：`cli|tool → hermes-cli`、`desktop|local|tui|gui → hermes-desktop`、空 → `unknown`；新平台小写透传，不加 CHECK/ENUM。
+`hermes-*` 前缀表示 Hermes 自己的本机入口，别的 agent 用自家名字（如 dsh 的 `dsh`）。
+已由库侧触发器强制，写 `local`/`tool`/`cli`/`desktop` 会被改写成上面的值，不是 bug。
 
 ### author 词表（仅 brain_turns）
 
