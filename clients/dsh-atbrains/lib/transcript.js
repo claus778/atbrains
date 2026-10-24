@@ -65,6 +65,25 @@ export function splitBlocks(blocks) {
 }
 
 /**
+ * 判断一条 user 消息是不是「宿主/插件注入的假用户消息」。
+ *
+ * dsh 会把运行时上下文、可用 skill 清单、以及我们自己的召回结果都作为 **role='user'**
+ * 的消息塞进模型可见面。它们不是用户说的话，落库会污染 user_content（曾出现过整轮
+ * user_content 只有一段 [atbrains 长期记忆] 的事故），也会让转录里堆满系统噪声。
+ *
+ * 两道判据：source.kind 标记（我们自己注入的，可靠） + 已知注入前缀（宿主的，兜底）。
+ */
+const INJECTED_KIND = 'atbrains'
+const SYNTHETIC_PREFIXES = ['[atbrains 记忆]', '[atbrains 长期记忆', '<system-reminder>', 'Current runtime context']
+
+export function isSyntheticUser(m, text) {
+  if (m?.role !== 'user') return false
+  if (m?.source?.kind === INJECTED_KIND) return true
+  const t = String(typeof text === 'string' ? text : splitBlocks(m?.content).text).trimStart()
+  return SYNTHETIC_PREFIXES.some((p) => t.startsWith(p))
+}
+
+/**
  * dsh Message[] → (atbrains messages[], 本轮 user 文本, 本轮 assistant 文本)。
  *
  * `tool_name` 不在这条 tool 消息上（只有 callId），因此先从历史里的 tool-call 块
@@ -80,6 +99,7 @@ export function transcriptFromMessages(messages, { maxChars = 16000, maxMessages
     const role = String(m?.role || '')
     if (role !== 'user' && role !== 'assistant' && role !== 'tool') continue
     const { text, reasoning, calls } = splitBlocks(m?.content)
+    if (role === 'user' && isSyntheticUser(m, text)) continue // 注入的假 user 消息不入库
     if (role === 'assistant') {
       for (const c of calls) if (c.id) callNames.set(c.id, c.name)
       const rec = { role: 'assistant', content: redact(clip(text, maxChars)) }

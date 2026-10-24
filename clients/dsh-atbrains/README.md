@@ -1,4 +1,4 @@
-# dsh-atbrains 0.3.0 —— dsh 原生记忆插件
+# dsh-atbrains 0.3.2 —— dsh 原生记忆插件
 
 把 atbrains 共享长期记忆挂进 DeepSeek Harness（dsh）。**原生 Cordis 插件，纯 Node**：
 
@@ -91,10 +91,13 @@ node test/live.mjs       # 真机：health/status/recall/turn（需要 ATBRAINS_
 | 库里没有新行 | `SELECT platform,machine,author FROM brain_turns ORDER BY id DESC LIMIT 5;` 看 `platform='dsh'`；再看 `/var/log/atbrains-access.log` 有没有该 IP 的 `POST /v1/memory/turn` |
 | 召回注入但没内容 | 服务端 `prefetch` 为空：确认库里有活跃记忆，且 `minScore` 没设太高 |
 | 和 dsh-mnemon 同时装 | 两边都挂 `agent/pre-step`，会双注入；二选一 |
+| `brain_turns.user_content` 是一段 `[atbrains 长期记忆] …` | 0.3.1 的 bug：归档把注入的召回块当成了用户提问（dsh 把上下文/skill 清单也塞成 user 消息）。升 0.3.2 |
 
 ## 边界
 
-- **不存系统提示**：`system` / `developer` 消息按项目约定丢弃。
+- **不存系统提示**：`system` / `developer` 消息按项目约定丢弃；dsh 用 `user` 角色伪装的
+  运行时上下文、skill 清单（`<system-reminder>`）以及本插件注入的召回块同样丢弃 ——
+  只有真正由人输入的那条才作 `user_content`。
 - **不写知识层**：claims / episodes 仍走 MCP 工具（`atbrains_claim_*`），本插件只管召回与转录。
 - **不跨机同步对话**：归档只写本机会话，服务端按令牌识别主机。
 - 密钥样式（`sk-…` / `Bearer …` / `AKIA…`）在入库前被抹成 `[redacted]`。

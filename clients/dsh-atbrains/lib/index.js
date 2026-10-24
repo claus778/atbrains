@@ -16,7 +16,7 @@
 import { randomUUID } from 'node:crypto'
 import z from '@deepseek-ai/schemastery'
 import { AtbrainsClient } from './client.js'
-import { readSessionMessages, transcriptFromMessages } from './transcript.js'
+import { readSessionMessages, transcriptFromMessages, isSyntheticUser } from './transcript.js'
 
 export const name = 'atbrains-memory'
 
@@ -94,7 +94,7 @@ function lastUserText(messages) {
   for (let i = messages.length - 1; i >= 0; i -= 1) {
     const m = messages[i]
     if (m?.role !== 'user') continue
-    if (m?.source?.kind === SOURCE_KIND) continue // 自己注入的那条不算用户提问
+    if (isSyntheticUser(m)) continue // 自己注入的召回 / 宿主的运行时上下文与 skill 清单都不算用户提问
     const t = textOf(m.content).trim()
     if (t) return t.slice(0, 2000)
   }

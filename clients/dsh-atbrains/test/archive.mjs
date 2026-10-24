@@ -67,6 +67,25 @@ function check(label, cond) {
   check('assistant 文本取最后一条', t.assistant.includes('a.txt'))
 }
 
+// 1b) dsh 的「假 user 消息」不入库，user 取真实提问（0.3.1 事故回归）
+{
+  const msgs = [
+    { role: 'user', content: [{ type: 'text', text: '你好' }] },
+    { role: 'user', content: [{ type: 'text', text: 'Current runtime context. This snapshot supersedes earlier snapshots.' }] },
+    { role: 'user', content: [{ type: 'text', text: '<system-reminder>\nA skill is a reusable set of task-specific instructions…' }] },
+    {
+      role: 'user',
+      source: { kind: 'atbrains', form: 'recall' },
+      content: [{ type: 'text', text: '[atbrains 长期记忆 · MariaDB]\n- [fact] 记忆库叫 agent_memory' }],
+    },
+    { role: 'assistant', content: [{ type: 'text', text: '你好！' }] },
+  ]
+  const t = transcriptFromMessages(msgs)
+  check('假 user 消息被丢弃（上下文/skill/召回块）', t.records.length === 2)
+  check('user 取真实提问而不是召回块', t.user === '你好')
+  check('assistant 不受影响', t.assistant === '你好！')
+}
+
 // 2) 端到端（假 client）：提交载荷形状
 {
   const res = await rt.archive({ agent: { session }, turn: 7 })

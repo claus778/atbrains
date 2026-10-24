@@ -93,5 +93,29 @@ function check(label, cond) {
   check('reject 原样透传', out.kind === 'reject')
 }
 
+// case 7：dsh 把运行时上下文 / skill 清单也当 user 消息 → 召回查询必须仍是真实提问
+{
+  const seen = []
+  const rt = createRuntime(ctx, config, {
+    clientFactory: () => ({
+      baseUrl: 'mock',
+      health: async () => ({ ok: true, version: '2.0.0' }),
+      recall: async (q) => {
+        seen.push(q)
+        return { text: '- [fact] 命中', items: [{ kind: 'fact', vscore: 1 }] }
+      },
+      turn: async () => ({}),
+    }),
+  })
+  const noisy = [
+    userMsg,
+    { role: 'user', content: [{ type: 'text', text: 'Current runtime context. This snapshot supersedes earlier ones.' }] },
+    { role: 'user', content: [{ type: 'text', text: '<system-reminder>\nA skill is a reusable set…' }] },
+  ]
+  const out = await rt.recall({ ...payload, messages: noisy }, { kind: 'enter', messages: noisy })
+  check('召回查询跳过假 user 消息', seen[0] === '我们的记忆库叫什么名字')
+  check('注入追加在末尾', out.messages.at(-1)?.source?.kind === 'atbrains' && out.messages.length === 4)
+}
+
 console.log(failures === 0 ? '\n全部通过' : `\n${failures} 项失败`)
 process.exit(failures === 0 ? 0 : 1)
