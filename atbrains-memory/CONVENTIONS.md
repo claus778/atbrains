@@ -17,6 +17,18 @@
 - **禁止再建 `<agent>_agent_memory` 分库**：分库 = 记忆不通用（同一条事实多份副本、
   互相召回不到），已并入共享库；要隔离就用 `agent` 过滤。
 
+## 0.1 兼容库 hermes_agent_memory（已删，2026-10-25）
+
+改名时留下的兼容桥（旧库名 → 15 个指向 `agent_memory` 的可更新视图、0 张基表）已整体删除：
+`DROP DATABASE hermes_agent_memory` + 收回 `agent@%` 对该库的授权；`mysql.db` 里重复的
+`agent\_memory` 授权行也清了（只剩 `agent_memory`）。
+
+- DDL 备份：`/root/agent-db/backup-hermes-compat-views-20261025-0232.sql`（10KB，含全部 15 个视图）。
+- 若某台老客户端的 `~/.hermes/brain.json` 里 `mariadb_db` 还写着旧库名，会报
+  `Unknown database 'hermes_agent_memory'`；恢复兼容桥只要把该备份用 stdin 喂给 mariadb
+  （重建时 DEFINER 已去掉）。
+- 现有库名只有一个：`agent_memory`。再看到旧名一律是过期文档/历史备份，不是活动对象。
+
 ## 1. platform 词表（brain_turns / brain_sessions / brain_archive）
 
 规范值，全小写：
