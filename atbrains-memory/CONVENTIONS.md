@@ -1,4 +1,6 @@
-# atbrains 共享库约束（2026-10-24 定稿，所有 Hermes 实例共同遵守）
+> 表/列字典与 Redis/触发器细节见 `/root/atbrains/docs/database-schema.md`；`/v1` 契约见 `/root/atbrains/docs/protocol-v1.md`。
+
+# brain 共享库约束（2026-10-24 定稿，所有 Hermes 实例共同遵守）
 
 适用：所有写入 `agent_memory`（MariaDB 127.0.0.1:57306 / 111.230.71.79:57306）的 Hermes 实例。
 库内时间一律 UTC（比北京时间慢 8 小时）。
@@ -10,7 +12,7 @@
 - `machine`：来源主机（`server` / `r9000p-Windows` / `x260-debian` …）。MCP 客户端
   没有主机信息，写入点就是跑 MCP 端口的那台机器，记服务端主机名；**不要拿 agent 名冒充主机**。
 - 列默认值 `'hermes'`：未升级的老进程 INSERT 不写 agent 时归属仍然正确。
-- 召回默认跨 agent（不过滤）；`atbrains_recall(agent=...)` 只看某一方。
+- 召回默认跨 agent（不过滤）；`brain_recall(agent=...)` 只看某一方。
 - `brain_claims.agent` = 当前值是谁写的；`brain_claim_versions.agent` = 每一版是谁写的。
 - **禁止再建 `<agent>_agent_memory` 分库**：分库 = 记忆不通用（同一条事实多份副本、
   互相召回不到），已并入共享库；要隔离就用 `agent` 过滤。
@@ -18,11 +20,12 @@
 ## 1. platform 词表（brain_turns / brain_sessions / brain_archive）
 
 规范值，全小写：
-`cli` / `desktop` / `weixin` / `telegram` / `discord` / `slack` / `email` / `cron` / `oneshot` / `subagent` / `unknown`
+`hermes-cli` / `hermes-desktop` / `weixin` / `telegram` / `discord` / `slack` / `email` / `cron` / `oneshot` / `subagent` / `unknown`
+（`hermes-*` = Hermes 自己的本机入口；别的 agent 用自家名字小写透传，例如 dsh 写 `dsh`）
 
 别名归并（写入期，插件 `core.normalize_platform` 与库侧触发器各做一次）：
-- `local` / `tui` / `gui` → `desktop`（本机控制套接字的桌面/TUI；Windows 桌面端本来就写 desktop）
-- `tool` → `cli`（对齐 Hermes session_policy）
+- `cli` / `tool` → `hermes-cli`（工具触发的会话按命令行入口算）
+- `desktop` / `local` / `tui` / `gui` → `hermes-desktop`（本机控制套接字的桌面/TUI）
 - 空值 → `unknown`
 - 新平台（feishu/telegram…）小写透传，**不要加 CHECK/ENUM**，否则新平台写入直接失败
 
@@ -72,18 +75,49 @@
 
 ## 6. 分发版本
 
-`atbrains-memory-1.2.2`（`/root/agent-db/dist/atbrains-memory-1.2.2.tar.gz|.zip`）已含 `normalize_platform`；
+`brain-plugin-1.2.2`（`/root/agent-db/dist/brain-plugin-1.2.2.tar.gz|.zip`）已含 `normalize_platform`；
 更早的包没有。装包后仍受库侧触发器兜底，所以升级不紧急。
 
 ## 7. 一份可执行的自检（在任意可连库的机器上跑）
 
 ```sql
 -- 都应为 0
-SELECT COUNT(*) FROM brain_turns WHERE platform NOT IN
- ('cli','desktop','weixin','telegram','discord','slack','email','cron','oneshot','subagent','unknown');
+-- 都应为 0（残留旧别名 / 空值 / 非小写；dsh 之类新平台不算错）
+SELECT COUNT(*) FROM brain_turns WHERE platform='' OR platform <> LOWER(platform)
+ OR platform IN ('cli','desktop','local','tui','gui','tool');
 SELECT COUNT(*) FROM brain_turns WHERE author='' OR (author NOT LIKE 'uid:%' AND author NOT LIKE 'win:%'
  AND author NOT LIKE 'wx:%' AND author NOT LIKE 'sys:%' AND author<>'unknown');
 SELECT COUNT(*) FROM (SELECT session_id,ts,user_content FROM brain_turns GROUP BY 1,2,3 HAVING COUNT(*)>1) x;
 SELECT COUNT(*) FROM brain_turn_messages m LEFT JOIN brain_turns t ON t.id=m.turn_id WHERE t.id IS NULL;
 SELECT COUNT(*) FROM brain_turns t WHERE t.message_count <> (SELECT COUNT(*) FROM brain_turn_messages m WHERE m.turn_id=t.id);
+```
+
+## 8. 思考链与工具调用明细（schema v9，2026-10-25）
+
+原文仍在 `brain_turn_messages`（zlib(JSON) blob），下面两张是它的**投影**，用来按工具/状态/耗时检索：
+
+- `brain_thoughts(turn_id, seq, message_uid, reasoning, reasoning_chars, finish_reason, ts)` —— 一条 assistant 消息一行
+- `brain_tool_calls(turn_id, seq, call_index, call_id, tool_name, args, result, result_chars, status, started_at, ended_at, duration_ms)` —— 一次调用一行
+
+口径：
+- 只做索引，不参与召回、不进向量；`atbrains_turn_detail` 仍从原文取（更全，带工具输出原文）。
+- `status` ∈ `ok` / `error` / `pending`（pending = 调用发出但没等到结果，通常是被中断的回合）。
+- 幂等键 `(turn_id, seq)` / `(turn_id, seq, call_index)`，回填可反复跑。
+- 回填：`python3 /root/agent-db/backfill-thoughts-toolcalls.py --apply`（`--only-missing` 只补缺的）。
+- ⚠️ `TRUNCATE` 需要 DROP 权限，agent 账号没有 —— 清表用 `DELETE FROM ...`。
+- ⚠️ tool 消息的 call id **只在 `brain_turn_messages.tool_call_id` 列里**，blob 里没有；回填不读这列会退化成
+  “每条结果一行、call_id 为空”的幽灵行。
+- ⚠️ `tool_calls` 在历史行里**可能是 JSON 字符串**，直接 `len()/enumerate()` 会逐字符迭代（一次能写出几百万行）。
+
+常用查询：
+
+```sql
+-- 某个工具最慢的 10 次
+SELECT turn_id, seq, duration_ms, LEFT(args,60) FROM brain_tool_calls
+ WHERE tool_name='terminal' ORDER BY duration_ms DESC LIMIT 10;
+-- 某轮的思考链
+SELECT seq, LEFT(reasoning,200) FROM brain_thoughts WHERE turn_id=1234 ORDER BY seq;
+-- 失败的工具调用
+SELECT turn_id, seq, tool_name, LEFT(result,120) FROM brain_tool_calls
+ WHERE status='error' ORDER BY id DESC LIMIT 20;
 ```

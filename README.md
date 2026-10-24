@@ -86,6 +86,8 @@
 ├── tools/
 │   └── package.py                   打包/脱敏生成器(刷新 docs/scripts/setup 的拷贝)
 ├── docs/                            ← 原始文档与技能手册
+│   ├── database-schema.md           ★ 记忆准则 + 表/列字典(schema v9,权威)
+│   ├── protocol-v1.md               /v1 跨进程契约(客户端必须遵守)
 │   ├── agent_memory.md              整套记忆系统配置全景(用户维护入口)
 │   ├── plugin-README.md             atbrains-memory 插件自带说明
 │   ├── skill-hermes-brain-memory.md 维护手册(故障/修复/整理流程)
