@@ -8,3 +8,7 @@ plugin/console/.token
 # 日志与临时文件
 *.log
 plugin/service-tokens.json
+
+# dsh 客户端插件的依赖（peer 由 dsh 提供，本地测试时才装）
+clients/*/node_modules/
+*.bak

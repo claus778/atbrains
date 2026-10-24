@@ -1,0 +1,49 @@
+{
+  "name": "dsh-atbrains",
+  "version": "0.3.1",
+  "description": "atbrains shared long-term memory for DeepSeek Harness — native Cordis plugin: auto recall + full transcript archive over the /v1 HTTP API (no MCP bridge, no Python helper).",
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./transcript": "./lib/transcript.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/client.js",
+    "lib/transcript.js",
+    "cordis.patch.yml",
+    "README.md",
+    "test/recall.mjs",
+    "test/archive.mjs",
+    "test/wiring.mjs",
+    "test/protocol.mjs",
+    "test/live.mjs"
+  ],
+  "scripts": {
+    "test": "node test/recall.mjs && node test/archive.mjs && node test/wiring.mjs && node test/protocol.mjs",
+    "test:live": "node test/live.mjs"
+  },
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "memory",
+    "atbrains"
+  ],
+  "engines": {
+    "node": ">=20",
+    "dsh": ">=0.2.0-rc.2 <0.3.0-0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.4",
+    "@deepseek-ai/schemastery": "^3.18.4"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "license": "MIT"
+}

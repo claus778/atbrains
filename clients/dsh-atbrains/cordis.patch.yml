@@ -1,0 +1,15 @@
+# 把 atbrains 记忆挂进 dsh 的 profile（自动召回 + 自动归档，全程 HTTP，无 Python）。
+# 令牌从环境变量读（默认 ATBRAINS_MCP_TOKEN），不写进这个文件。
+- insert:
+    - id: atbrains-memory
+      name: dsh-atbrains
+      config:
+        baseUrl: http://111.230.71.79:8787
+        tokenEnv: ATBRAINS_MCP_TOKEN
+        timeoutMs: 1200
+        writeTimeoutMs: 4000
+        maxChars: 1200
+        limit: 5
+        minScore: 0.25
+        platform: dsh
+        archiveEnabled: true
