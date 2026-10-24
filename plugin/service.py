@@ -63,11 +63,26 @@ def _header(headers: Any, name: str) -> str:
 
 
 def _extract_token(headers: Any) -> str:
-    """从 Authorization: Bearer <令牌> 或 X-Memory-Token: <令牌> 里取令牌。"""
+    """从 Authorization: Bearer *** 或 X-Memory-Token: <令牌> 里取令牌。"""
     auth = _header(headers, "Authorization")
     if auth[:7].lower() == "bearer ":
         return auth[7:].strip()
     return _header(headers, "X-Memory-Token").strip()
+
+
+def split_identity(name: str) -> tuple[str, str]:
+    """令牌名 → (主机, agent)。
+
+    令牌名的规范写法是 `<主机>|<agent>`（例：`r9000p-Windows|dsh`），让同一个
+    dsh/omp 既有正确的主机归属、又有自己的 agent 身份。老名字不含 `|` 时两侧都
+    回落成原名 —— 由调用方决定各自通道的历史口径（/v1: 名字=主机；MCP: 名字=agent）。
+    """
+    n = str(name or "")
+    if "|" in n:
+        left, _, right = n.partition("|")
+        return left.strip(), right.strip()
+    return n, n
+
 
 
 def mask(token: str) -> str:
@@ -216,6 +231,17 @@ class MemoryService:
 
     # ---------------------------------------------------------- store
 
+    def store_who(self, who: str) -> Any:
+        """/v1 通道：令牌名 → store。
+
+        `主机|agent` 形态两侧各取；老形态（只有名字）保持历史口径：
+        名字当主机、agent 固定 hermes。
+        """
+        if "|" in str(who or ""):
+            machine, agent = split_identity(who)
+            return self.store_for(machine, agent)
+        return self.store_for(who, "hermes")
+
     def store_for(self, machine: str, agent: str = "hermes") -> Any:
         """按 (agent, machine) 取 AtbrainsStore(构造很快,锁内建,避免重复实例)。
 
@@ -270,7 +296,7 @@ class MemoryService:
         if not q:
             raise BadRequest("query 不能为空")
         session_id = str(body.get("session_id") or "")
-        st = self.store_for(machine)
+        st = self.store_who(machine)
         text, count = st.prefetch_block(q, session_id=session_id)
         return {"ok": True, "text": text, "count": int(count), "items": self._hits(st, q)}
 
@@ -307,7 +333,7 @@ class MemoryService:
             importance = int(body.get("importance") if body.get("importance") is not None else 5)
         except (TypeError, ValueError):
             raise BadRequest("importance 必须是整数") from None
-        saved = self.store_for(machine).remember(
+        saved = self.store_who(machine).remember(
             content,
             kind=str(body.get("kind") or "note"),
             tags=str(body.get("tags") or ""),
@@ -321,7 +347,7 @@ class MemoryService:
             mem_id = int(body.get("id"))
         except (TypeError, ValueError):
             raise BadRequest("id 必须是整数") from None
-        return {"ok": True, "result": self.store_for(machine).forget(mem_id)}
+        return {"ok": True, "result": self.store_who(machine).forget(mem_id)}
 
     def _recent(self, machine: str, body: dict, query: dict) -> dict:
         try:
@@ -329,20 +355,40 @@ class MemoryService:
         except (TypeError, ValueError):
             raise BadRequest("limit 必须是整数") from None
         limit = max(1, min(limit, 100))
-        st = self.store_for(machine)
+        st = self.store_who(machine)
         return {"ok": True, "hot": st.hot_recent(limit), "turns": st.recent_turns(limit)}
 
     def _turn(self, machine: str, body: dict, query: dict) -> dict:
+        """写入一轮对话：brain_turns + 会话计数 + 可选的全量转录层。
+
+        `messages` 是可选的完整消息链（dsh/Hermes 都按「到目前为至的完整会话」传），
+        由 core 的游标（brain_sessions.archived_messages）去重，只落增量。
+        `assistant` 可以为空 —— 只有工具调用、没有可见回复的回合也要归档。
+        """
         session_id = str(body.get("session_id") or "").strip()
         user = str(body.get("user") or "").strip()
         assistant = str(body.get("assistant") or "").strip()
-        for name, val in (("session_id", session_id), ("user", user), ("assistant", assistant)):
-            if not val:
-                raise BadRequest(f"{name} 不能为空")
-        turn_id = self.store_for(machine).record_turn(
-            session_id, user, assistant, platform=str(body.get("platform") or ""))
+        if not session_id:
+            raise BadRequest("session_id 不能为空")
+        if not user:
+            raise BadRequest("user 不能为空")
+        msgs = body.get("messages")
+        if msgs is not None and not isinstance(msgs, list):
+            raise BadRequest("messages 必须是数组")
+        if msgs:
+            msgs = [m for m in msgs if isinstance(m, dict)][:4000]
+        else:
+            msgs = None
+        if not assistant and not msgs:
+            raise BadRequest("assistant 不能为空")
+        turn_id = self.store_who(machine).record_turn(
+            session_id, user, assistant,
+            platform=str(body.get("platform") or ""),
+            author=str(body.get("author") or ""),
+            messages=msgs)
         return {"ok": True, "id": int(turn_id)}
 
     def _status(self, machine: str, body: dict, query: dict) -> dict:
-        st = self.store_for(machine)
-        return {"ok": True, "machine": machine, "agent": st.agent, "ping": st.ping(), "stats": st.stats()}
+        st = self.store_who(machine)
+        return {"ok": True, "machine": st.machine, "agent": st.agent,
+                "ping": st.ping(), "stats": st.stats()}

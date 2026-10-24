@@ -123,11 +123,13 @@ class Handler(BaseHTTPRequestHandler):
     def _mcp(self):
         """/mcp 交给 AtbrainsMCP:JSON-RPC 2.0(单条或批量),Bearer 令牌决定 agent 身份。"""
         headers = dict(self.headers.items())
-        machine = service.MemoryService.authorize(headers)
-        if machine is None:
+        name = service.MemoryService.authorize(headers)
+        if name is None:
             return self._send(401, jdump({
                 "jsonrpc": "2.0", "id": None,
                 "error": {"code": -32001, "message": "unauthorized"}}))
+        # 令牌名可写 `<主机>|<agent>`：MCP 通道只取 agent 侧，主机沿用服务端配置
+        _, agent = service.split_identity(name)
         try:
             n = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(n).decode("utf-8") if n else ""
@@ -136,7 +138,7 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(400, jdump({
                 "jsonrpc": "2.0", "id": None,
                 "error": {"code": -32700, "message": "parse error"}}))
-        code, obj, extra = MCP.handle(machine, payload)
+        code, obj, extra = MCP.handle(agent, payload)
         body = b"" if obj is None else jdump(obj)
         self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
