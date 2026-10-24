@@ -21,7 +21,7 @@ import sys
 import time
 
 HERMES_HOME = os.environ.get("BRAIN_HERMES_HOME", "/root/.hermes")
-HOST, PORT, USER, DB_NAME = "127.0.0.1", "57306", "agent", "hermes_agent_memory"
+HOST, PORT, USER, DB_NAME = "127.0.0.1", "57306", "agent", "agent_memory"
 
 
 def _password() -> str:
