@@ -142,6 +142,7 @@
   <section id="t-mem">
     <div class="toolbar">
       <input id="mq" placeholder="按内容过滤…" style="width:240px" onkeydown="enterLoad(event,'mem')">
+      <input id="magent" placeholder="来源 agent,如 dsh" style="width:150px" onkeydown="enterLoad(event,'mem')">
       <select id="mactive" onchange="memSearch()">
         <option value="1">仅活跃</option><option value="0">仅已停用</option><option value="all">全部</option>
       </select>
@@ -158,7 +159,7 @@
     <div class="scroll"><table><thead><tr>
       <th style="width:58px">ID</th><th style="width:64px">状态</th><th style="width:108px">类型</th>
       <th>内容</th><th style="width:138px">标签</th><th style="width:44px">权重</th>
-      <th style="width:110px">来源机</th><th style="width:128px">操作</th>
+      <th style="width:76px">Agent</th><th style="width:110px">来源机</th><th style="width:128px">操作</th>
     </tr></thead><tbody id="mtb"></tbody></table></div>
     <div class="pager" id="mpager"></div>
   </section>
@@ -464,7 +465,8 @@ async function loadMem() {
     const q = encodeURIComponent($('#mq').value.trim());
     S.mem.limit = +$('#mlimit').value;
     const d = await api(`/api/memories?limit=${S.mem.limit}&offset=${S.mem.offset}` +
-      `&active=${$('#mactive').value}&kind=${encodeURIComponent($('#mkind').value)}&q=${q}`);
+      `&active=${$('#mactive').value}&kind=${encodeURIComponent($('#mkind').value)}&q=${q}` +
+      `&agent=${encodeURIComponent($('#magent').value.trim())}`);
     S.mem.total = d.total;
     $('#mcnt').textContent = `共 ${d.total} 条`;
     $('#mtb').innerHTML = d.items.map(m => {
@@ -479,10 +481,11 @@ async function loadMem() {
         <td><code>${esc(m.kind)}</code><br><span class="sub">${esc(m.source || '')}</span></td>
         <td class="clk" onclick="showMem(${m.id})" title="点击查看全文">${esc(cut(m.content, 260))}</td>
         <td>${tags}</td><td>${m.importance}</td>
+        <td class="sub">${esc(m.agent || 'hermes')}</td>
         <td class="sub">${esc(m.machine || '—')}</td>
         <td><div class="row"><button onclick="showMem(${m.id})">详情</button>${ops}</div></td>
       </tr>`;
-    }).join('') || '<tr><td colspan="8" class="muted">无数据</td></tr>';
+    }).join('') || '<tr><td colspan="9" class="muted">无数据</td></tr>';
     renderPager('mpager', S.mem, 'memGo', '条');
   } catch (e) { $('#mcnt').textContent = ''; toast('加载记忆失败:' + cut(e.message, 160)); }
 }

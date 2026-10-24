@@ -135,16 +135,20 @@ KEY=$(grep -oP '(?<=api_key: ).*' /root/qdrant/qdrant-config/production.yaml)
 curl -H "api-key: $KEY" http://127.0.0.1:6333/collections/brain_memories
 ```
 
-## 6. 自动化(向量增量回填)
+## 6. 自动化(零 systemd)
 
-```bash
-cp systemd/brain-vector-drain.service systemd/brain-vector-drain.timer /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable --now brain-vector-drain.timer
-systemctl list-timers brain-vector-drain.timer
-```
+**不需要安装任何 systemd 单元** —— 向量补漏与数据库清理都在插件进程内完成:
 
-每 3 分钟跑一次 `hermes brain vector-drain`(增量,只补缺)。
+- **向量补漏**:任何加载了插件的长命进程(网关最典型)每 60 秒扫一次待向量化行;
+  短命进程(一次性 CLI)尽力而为后退出,遗留欠账由下一个长命进程接手。
+- **数据库清理**:`brain-maintenance` 线程每 `maintenance_interval_min`(默认 60 分钟)检查
+  `brain_meta.last_prune`,距上次超过 `prune_every_days`(默认 7 天)才执行,
+  靠 `GET_LOCK('brain_prune')` 多进程互斥。开关 `maintenance_enabled`。
+
+> ⚠️ 2026-10-17 之前这套系统用 systemd 定时器(`brain-vector-drain.timer` +
+> `brain-prune.timer`)。实测证明 drain 定时器**完全冗余**(比内建巡检还慢:上限 3 分钟 vs 100 秒),
+> 已退役,单元文件存档在 `/root/agent-db/dist/systemd-retired/`。
+> **不要再给这套系统加 systemd 单元** —— 用户明确要求不依赖系统级服务。
 
 ## 7. 验证(逐层)
 

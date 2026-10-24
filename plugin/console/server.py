@@ -26,8 +26,10 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))  # 让 `import probe` / `import service` 命中插件根目录
 import probe  # noqa: E402
 import service  # noqa: E402
+import brain_mcp  # noqa: E402  # pyright: ignore[reportMissingImports]
 
 SERVICE = service.MemoryService()   # /v1 Memory Service(每 machine 一个 BrainStore,内部加锁)
+MCP = brain_mcp.BrainMCP(SERVICE)   # /mcp MCP 端点(与 /v1 共用令牌表,给 omp/dsh 等非 Hermes agent)
 TOKEN_PATH = HERE / ".token"
 CONF_PATH = HERE / "config.json"
 DEFAULT_PORT = 8787
@@ -60,10 +62,18 @@ def jdump(obj) -> bytes:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "atbrains-console/1.1"
+    server_version = "atbrains-console/1.2"
+    protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
         pass
+
+    def handle_one_request(self):
+        """客户端提前断开(HTTP/1.1 keep-alive 常见)不要打整段 traceback。"""
+        try:
+            super().handle_one_request()
+        except (ConnectionResetError, BrokenPipeError):
+            self.close_connection = True
 
     def _send(self, code: int, body: bytes, ctype="application/json; charset=utf-8"):
         self.send_response(code)
@@ -94,10 +104,45 @@ class Handler(BaseHTTPRequestHandler):
         code, payload = SERVICE.handle(method, urlparse(self.path).path, flat, body, headers)
         return self._send(code, jdump(payload))
 
+    def _mcp(self):
+        """/mcp 交给 BrainMCP:JSON-RPC 2.0(单条或批量),Bearer 令牌决定 agent 身份。"""
+        headers = dict(self.headers.items())
+        machine = service.MemoryService.authorize(headers)
+        if machine is None:
+            return self._send(401, jdump({
+                "jsonrpc": "2.0", "id": None,
+                "error": {"code": -32001, "message": "unauthorized"}}))
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            raw = self.rfile.read(n).decode("utf-8") if n else ""
+            payload = json.loads(raw) if raw.strip() else None
+        except Exception:
+            return self._send(400, jdump({
+                "jsonrpc": "2.0", "id": None,
+                "error": {"code": -32700, "message": "parse error"}}))
+        code, obj, extra = MCP.handle(machine, payload)
+        body = b"" if obj is None else jdump(obj)
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
+        self.end_headers()
+        if body:
+            try:
+                self.wfile.write(body)
+            except BrokenPipeError:
+                pass
+
     def do_GET(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         path = u.path
+        if path == "/mcp":
+            return self._send(405, jdump({
+                "jsonrpc": "2.0", "id": None,
+                "error": {"code": -32000, "message": "use POST /mcp (streamable HTTP, JSON response)"}}))
         if path.startswith("/v1/"):
             return self._v1("GET", q, {})
         if path in ("/", "/index.html"):
@@ -121,7 +166,8 @@ class Handler(BaseHTTPRequestHandler):
                     active=q.get("active", ["1"])[0],
                     q=q.get("q", [""])[0],
                     kind=q.get("kind", [""])[0],
-                    machine=q.get("machine", [""])[0])))
+                    machine=q.get("machine", [""])[0],
+                    agent=q.get("agent", [""])[0])))
             if path == "/api/memory":
                 return self._send(200, jdump(probe.memory_detail(int(q.get("id", ["0"])[0]))))
             if path == "/api/turns":
@@ -153,6 +199,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
+        if u.path == "/mcp":
+            return self._mcp()
         if u.path.startswith("/v1/"):
             return self._v1("POST", q, self._body())
         if not self._authed(q):
@@ -181,6 +229,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(404, jdump({"error": "unknown endpoint"}))
         except Exception as e:
             return self._send(500, jdump({"error": f"{type(e).__name__}: {e}"}))
+
+    def do_DELETE(self):
+        """/mcp 会话终止:无状态实现,直接 200。"""
+        u = urlparse(self.path)
+        if u.path == "/mcp":
+            return self._send(200, b"", "text/plain")
+        return self._send(404, jdump({"error": "not found"}))
 
 
 def main() -> None:

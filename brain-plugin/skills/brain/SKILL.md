@@ -1,7 +1,7 @@
 ---
 name: brain-memory
 description: "Use when saving/recalling durable facts or inspecting the brain store (Redis short-term + MariaDB long-term + Qdrant vector layer)."
-version: 1.1.0
+version: 1.4.0
 ---
 
 # brain 记忆库使用指南
@@ -48,3 +48,49 @@ hermes brain vector-test <查询>    # 同一查询：关键词/向量/融合 �
 ```
 
 配置：`~/.hermes/brain.json`（非密）+ `~/.hermes/.env`（BRAIN_REDIS_PASSWORD / BRAIN_MARIADB_PASSWORD）。
+
+## 共享库约束（所有实例共同遵守，2026-10-24）
+
+本库是全机共用的：`hermes_agent_memory`（MariaDB）。写入前先读这里的口径，别自己发明取值。
+
+### platform 词表（brain_turns / brain_sessions / brain_archive）
+
+`cli` / `desktop` / `weixin` / `telegram` / `discord` / `slack` / `email` / `cron` / `oneshot` / `subagent` / `unknown`（全小写）。
+别名归并：`local|tui|gui → desktop`、`tool → cli`、空 → `unknown`；新平台小写透传，不加 CHECK/ENUM。
+已由库侧触发器强制，写 `local`/`tool` 会被改写，不是 bug。
+
+### author 词表（仅 brain_turns）
+
+`uid:<n>`（Linux/macOS）/ `uid:?`（POSIX 但没采到 uid）/ `win:local`（Windows；Hermes 在 nt 上拿不到 POSIX uid，是平台特性）/
+`wx:<openid>`（老的裸 `x@im.wechat` 统一成 wx:）/ `sys:cron|oneshot|subagent` / `unknown`。
+每机默认值在 `brain_author_defaults(machine, platform, author)`，四级回落；新机器接入必须加一行
+（Linux `uid:<id -u>`，Windows `win:local`），否则落 `unknown`。触发器 `trg_brain_turns_author_bi/bu` 强制。
+
+### 改数据红线
+
+1. 改 `brain_vector_index` 必须显式带 `updated_at`（否则 `ON UPDATE CURRENT_TIMESTAMP` 把全表顶成 now）。
+2. 回填 `brain_turn_messages.ts` 用源消息时间（state.db `messages.timestamp`，UTC naive），不能用插入时间。
+3. 重复轮判定键 `session_id+ts+user_content`，保留 `message_count` 最大者，连带删转录并重算 `turn_count`。
+4. 删/回填后跑 `reorder-transcript.py` 恢复 1..N 与时间序；`RENAME` 会把触发器留给旧表，
+   脚本已自动重建或在服务器跑 `apply-platform-triggers.py` + `apply-author-rules.py`。
+5. 改表结构前先 mysqldump（没有自动备份）。
+6. `embedded_at` 由触发器取 `UTC_TIMESTAMP()`，不要用进程本地时钟。
+
+### agent / machine（跨 agent 共享，schema v8）
+
+记忆只有一张 `brain_memories` 表，Hermes / omp / DeepSeek Harness(dsh) / artex 共写共读：
+
+- `agent` = 写入方身份（Hermes 固定 `hermes`；MCP 通道 = 令牌名 `omp`/`dsh`/…）。
+- `machine` = 来源主机（`server`/`r9000p-Windows`/…）；MCP 写入记服务端主机。
+- 召回默认**跨 agent**（不过滤）；`brain_recall(agent="dsh")` 只看某一方。
+- 结构化主张：`brain_claims.agent` 是当前值作者，`brain_claim_versions.agent` 是每一版作者。
+- **不要再建 `<agent>_agent_memory` 分库**：分库会让记忆不通用。旧的三个分库已并入共享库。
+
+### Qdrant / 实例边界
+
+Qdrant（`http://111.230.71.79:6333`，集合 `brain_memories`）是**单一共享集合**，payload 带 machine/agent，
+语义召回跨机（默认不按 machine/agent 过滤）。写向量只有服务器实例在做（drainer 扫全库），
+别机只读；别机没有 Qdrant key 时向量层自动降级纯关键词。不要另建同名集合或改集合名。
+omp/dsh/artex 通过 MCP 端点（8787 `/mcp`）读写同一个共享库，不单独建库。
+
+完整版：服务器 `/root/agent-db/CONVENTIONS.md`（随插件包一起分发为 `CONVENTIONS.md`）。

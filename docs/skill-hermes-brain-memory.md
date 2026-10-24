@@ -1,7 +1,7 @@
 ---
 name: hermes-brain-memory
-description: "Use when brain memory breaks, is messy, or after updates."
-version: 1.0.0
+description: "Use when brain memory or atbrains console needs work."
+version: 1.1.0
 author: Hermes Agent
 license: MIT
 metadata:
@@ -19,7 +19,8 @@ brain = 本机自托管双存储记忆提供者（Redis 短期 + MariaDB 长期�
 - brain 工具（brain_remember / brain_recall / brain_recent / brain_stats）在会话中不可用或召回为空；
 - `hermes memory status` 显示 brain 不再 available/active，或它出现在 `plugins.disabled`；
 - Hermes 大版本更新之后需要验证/恢复 brain；
-- 需要修改 brain 插件代码、配置或排查它的存储。
+- 需要修改 brain 插件代码、配置或排查它的存储;
+- 开发/修改 atbrains 监控控制台(插件形态:`hermes atbrains`;代码在 `/root/atbrains` git 仓库,见「交付物」节)。
 
 ## 结构（改代码前先读这里）
 
@@ -227,7 +228,7 @@ prune 按保留期直接 DELETE（turns 默认还全量保留），所以 brain_
   同日按用户要求回退为 UTC，数据已 -8h 还原）。看库/写脚本一律按 UTC（比北京时间慢 8 小时）；
   audit-turns.py 回填口径=UTC（各机旧副本同为 UTC 口径可继续用；新版另含 truncated 列写入）。
 - prune 默认：`turns_keep_days=0`（对话不清理）、`sessions_keep_days=365`（无近轮会话才删）；
-  systemd timer `brain-prune.timer` 每周日 04:40 跑 `/root/agent-db/prune.sh`（日志 `journalctl -u brain-prune.service`）。
+  清理由**插件内维护循环**执行（见「维护与自动化」），手动仍可 `python3 /root/agent-db/prune.sh` 或 `hermes brain prune`。
 - 检索时间窗：`search_turns_days`（默认 120 天）只影响召回/检索，不动归档数据。
 - ⚠️ `rebuild.sh`/`credentials.txt`/`init.sql` 由 `/root/agent-db/generate-artifacts.py` 生成（模板内嵌该脚本）
   ——手改这些文件必须同步改生成器模板，否则下次生成会被覆盖（时区/注释等已进模板）。
@@ -239,9 +240,15 @@ prune 按保留期直接 DELETE（turns 默认还全量保留），所以 brain_
 - 管线：写入 → `_vec_wake`（另有 60s 扫描；线程启动即先扫一遍）→ drainer 线程（`GET_LOCK('brain_vector_drain')` 尽力而为：抢不到锁也继续跑，靠幂等兜底）
   → SiliconFlow `Qwen/Qwen3-Embedding-4B`（2560 维）→ Qdrant 本机容器 `qdrant`（127.0.0.1:6333）集合 `brain_memories`；
   召回 = 关键词 + 向量 topk12 → RRF（k=60）；任何失败自动回落纯关键词（日志特征 `回落纯关键词`）。
-- **无人值守兜底（2026-10-15 加装）**：systemd `brain-vector-drain.timer` 每 3 分钟跑 `hermes brain vector-drain`（跑完即退）。
-  背景：SF embed 尾延迟常见 20-60s，短命进程（一次性 CLI/短会话）会在跑一半时退出把线程杀掉；旧版“锁被占就跳过”还会连锁卡死。
-  现行为：会话内秒级~分钟级尽力补；无会话/被中断的欠账 ≤3 分钟由定时器补齐。看日志：`journalctl -u brain-vector-drain.service -n 30`。
+- **无人值守兜底 = 进程内巡检（2026-10-17 起，零 systemd）**：任何加载了插件的**长命进程**
+  （网关最典型）每 60 秒扫一次待向量化行；短命进程尽力而为后 **0.3 秒内退出**，遗留欠账由下一个长命进程接手。
+  背景：SF embed 尾延迟常见 20-60s，短命进程（一次性 CLI/短会话）会在跑一半时退出把线程杀掉。
+  实测（2026-10-17）：停掉并最终删除 `brain-vector-drain.timer` 后，短命进程写入的记忆
+  **100 秒内**被网关巡检线程自动补上向量；而定时器在职时上限是 3 分钟 —— 内建机制反而更快。
+  ⇒ **不要再给这套系统加 systemd 定时器**（用户明确要求不依赖系统级服务）。
+- **数据库清理**同样进程内：`brain-maintenance` 线程每 `maintenance_interval_min`(60) 检查
+  `brain_meta.last_prune`，距上次超过 `prune_every_days`(7) 天才执行，靠 `GET_LOCK('brain_prune')` 多进程互斥；
+  开关 `maintenance_enabled`。该线程在 `ensure_schema()` 成功后惰性启动、幂等（只有一个实例）。
 - **脚本坑**：直接调插件 `_exec(sql)` 时，SQL 里裸写 `%`（如 `LIKE 'x%'`）会触发 pymysql 的 “%”-格式化错误——改传参（`LIKE %s`）或用 mysql CLI 查。
 - **key 规则（用户硬要求）**：不落 Hermes 配置/记忆；唯一存放点 = qdrant 自己的配置文件
   `/root/qdrant/qdrant-config/production.yaml`（`service.api_key`，只读挂载进容器 /qdrant/config/production.yaml；embed 与 qdrant 同串）。
@@ -261,6 +268,59 @@ prune 按保留期直接 DELETE（turns 默认还全量保留），所以 brain_
 - 其它机器：分发包 dist/ 仍是旧版；跑新代码也没有本地 qdrant 容器 → 读不到 key → 向量层自动停用（不影响关键词）。
   给 x260-debian / r9000p 开语义召回需先解决 Qdrant 可达性（安全组 6333 + key）或本地部署——后续单独决策。
 
+## 检索质量层（2026-10-15 加装，schema v4）
+
+四件东西，全部已上线并验收（`/root/atbrains/scripts/verify-refactor.py` 29/29）：
+
+### 记忆分层 + 时间衰减
+
+- `brain_memories.memory_type` ∈ {`profile`（builtin-memory，永衰减）、`knowledge`（fact/decision，永不衰减）、
+  `episodic`（note/todo 等，半衰期 45 天）}；映射函数 `_memory_type(kind, explicit)`。
+- 衰减在 RRF 打分后、排序前乘 `0.5 ** (age/半衰期)`，**只作用于 `decay_types` 里的层**；
+  年龄取 `updated_at` → 缺失回落 `created_at` → 仍缺失则**不改分**（不丢结果）。
+- 调参：`decay_enabled` / `decay_half_life_days` / `decay_types`（brain.json）。
+- ⚠️ **衰减使 `updated_at` 变成关键信号**——任何批量 UPDATE 必须显式带 `updated_at = updated_at`，
+  否则 `ON UPDATE CURRENT_TIMESTAMP` 会把全表年龄冲成当下。（本层落地时真踩过：迁移回填把 103 行冲平，
+  已按 `GREATEST(created_at, COALESCE(deactivated_at, created_at))` 还原成 62 个不同值。）
+
+### 记忆取代（Supersede）
+
+- `superseded_by` / `superseded_at`（可空，**不是停用**——`active` 仍为 1，取代可无损回滚）。
+- `detect_supersedes(dry_run=True, threshold=0.90)`：同 `memory_type` 内两两比**已存在的 Qdrant 向量**
+  （不重新 embed），相似度 ≥ 阈值的一对里 **`created_at` 更新者胜**，旧条打标记并计一条 marked（保证无环）。
+- 检索侧四处过滤 `superseded_by IS NULL`（关键词 / 向量 / hybrid / 取代扫描本身）——已取代的记忆不再注入。
+- CLI：`hermes brain supersede-detect`（**默认预演**）/ `--apply` / `hermes brain unsupersede <id>`。
+- **踩过的坑**：首版比较方向写反（较新者被判为「被取代」）。现象是 dry-run 输出里
+  `id 大/时间新的那条` 出现在 `id` 字段。验收必须核对方向，不能只看「检出 N 组」。
+- 阈值口味：0.90 只抓近似重复（实测库里 2 组）；0.80 会抓到 8 组（开始出现同主题不同版本的条目）。
+
+### Rerank（默认关闭）
+
+- `rerank_enabled=0` 默认关；开了以后在 RRF 之后调硅基流动 `BAAI/bge-reranker-v2-m3`
+  （实测 216ms，**`bce-reranker-base_v1` 已被上游禁用**——Model disabled，别用）。
+- key 复用向量层 embed key（`_vector_secrets()['embed']`）；失败只 logger.warning + 保持 RRF 顺序，**绝不抛**。
+- 效果实测：同一批候选，RRF 分不开而 rerank 给出 `0.95/0.92` vs `0.03/0.0002` 的悬崖——
+  配 `rerank_min_score`（如 0.3）可真正切掉噪声。
+
+### Memory Service（/v1）与客户端远程模式
+
+- 服务端在 **atbrains 插件**（`service.py`），与监控控制台**共用 8787 端口**；
+  `/v1/*` 走 Bearer 令牌（`service-tokens.json`，600，不入 git），`/api/*` 仍走控制台 token，两者互不通用。
+- **服务端用令牌反查 machine**（客户端在 body 里塞 machine 无效）——这是防伪造的设计要点。
+- 客户端（brain 插件）：`remote_enabled` 等 6 个配置**默认全关**，开了之后 `prefetch_block` / `remember` /
+  `forget` / `record_turn`(需 `remote_turn_sync=1`) 走 HTTP；**任何失败自动回落本地直连**
+  （实测死地址 33ms 回落），令牌放 `.env` 的 `BRAIN_REMOTE_TOKEN`（不进 brain.json）。
+- `hermes brain remote-check` 自检；`hermes atbrains token-list|token-add|token-rm|service` 管令牌。
+- 迁移策略：**客户端先切、服务端自己留本地**（服务端本地直连本来就是最短路径）。
+
+### Redis key 前缀（默认关闭）
+
+- `redis_key_prefix=""` 时 key 与历史**逐字节一致**（硬验收项）；设 `brain:server` 即启用前缀隔离。
+- 一次性迁移：`python3 /root/agent-db/migrate-redis-prefix.py --prefix brain:server`（默认预演，
+  `--apply` 才 RENAME；目标键已存在会拒绝覆盖并计冲突）。实测 db0 88 键、0 冲突。
+- 切前缀前**先给该实例配 `redis_key_prefix`**，否则运行时会找新键名（只有短期缓存受影响，
+  MariaDB 长期层无损，缺的缓存自然回填）。
+
 ## 交付物：`/root/atbrains` 资料库 + `atbrains` 插件(监控控制台)
 
 brain 有一套**可打包/可交付/可归档**的整理件：`/root/atbrains/`。它的 `README.md` 是总文档
@@ -276,8 +336,16 @@ brain 有一套**可打包/可交付/可归档**的整理件：`/root/atbrains/`
 
 - **改动流程:改仓库 → `./install.sh`**(rsync 同步;保留安装副本 `console/.token`,排除 `__pycache__`)。
   `./install.sh check` 只看差异;`--restart-console` 顺带重启控制台。
+- ⚠️ **委托 omp 时 `--cwd` 必须指向仓库 `/root/atbrains`，而不是安装副本** —— 否则
+  改完的就是副本，仓库版还是旧的，得手工拷回去再 commit（2026-10-15 真踩过：
+  `/v1` 服务、令牌体系那批改动全落在了安装副本，事后靠 `diff -rq` 才对齐）。
+  定式：`omp -p --cwd /root/atbrains "<工单>"` → `./install.sh` → 跑验收。
+- ⚠️ **工单里要写明「按 PID 杀进程」** —— omp 会用 `pkill -f <路径模式>` 清理测试进程，
+  而那个模式会命中**宿主在跑的同一个 server.py**（2026-10-15 真把 8787 上的控制台误杀，
+  停机约 1 分钟）。凡涉及起停进程/释放端口的工单，都写明：记录 PID 后精确 `kill`，禁止 `pkill -f`。
 - 改了 `.py` → 重启控制台进程才生效;只改 `console/index.html` → 刷新页面即生效(每次请求都从磁盘读)。
-- `.gitignore` 排除:`__pycache__/`、`console/.token`、`*.log`;git 身份 = claus778。
+- `.gitignore` 排除:`__pycache__/`、`console/.token`、`*.log`;git 身份 = claus778;
+  习惯:动手大改前先提一个基线快照 commit,发布后打 `vX.Y.Z` tag(回看/回退都靠它)。
 - 用户明确要求**不用软链接方案**(「在文件夹内写好代码,然后安装到 hermes 内」)—— 别改回去。
 
 ### 形态:**Hermes 插件,不是系统服务**(用户 2026-10-15 明确要求)
@@ -313,6 +381,8 @@ brain 有一套**可打包/可交付/可归档**的整理件：`/root/atbrains/`
      `systemctl list-timers` 正则解析(`timer.nextRun`),别用 `systemctl show` 那个属性。
   5. **无头 Chromium 缺 emoji 字体**(✅/⚠️ 渲染成方块)—— 关键状态文字别依赖 emoji,用颜色类名;
      截图验收时留意。
+  6. **测「停用/恢复」别拿库里现成条目当靶子** —— 停用行可能是刻意清理的残留(测试垃圾/去重);
+     自建一条测试记忆走完整「建→停→恢复→停」并收尾保持停用;「已是活跃」幂等分支拿任意活跃 ID 测即可(不写库)。
 - **依赖 brain 插件**:通过其 `core.BrainStore` 读写,复用凭据解析与重试;
   brain 缺失时抛 `ProbeError` 明确报错,不静默失败。
 - **启用/排障**:`hermes plugins enable atbrains`(工具集在**新会话**生效;
@@ -333,7 +403,31 @@ brain 有一套**可打包/可交付/可归档**的整理件：`/root/atbrains/`
   `http://127.0.0.1:8787/?token=<.token 里的值>`(免输入直连;token 别进聊天/输出)→ 读 `#conn` 确认「已连接」→
   各面板点一遍(`window.confirm=()=>true` 绕弹窗;可用 `Page.addScriptToEvaluateOnNewDocument` 挂
   `window.__errs` 错误收集器查 JS 错误)→ `capture_screenshot()` 存 `web/preview.png` / `web/preview-recent.png`。
+  截图再过一遍 **vision 质检**(能发现 DOM 检查看不见的:emoji 缺字体成方块、数值被硬截断、时间格式不一),
+  但 vision 报的「排版溢出」先用 DOM 度量复核(`getBoundingClientRect`/`scrollWidth`)再改 ——
+  换行高的表格行会被误判成溢出,未经核实不要动布局。
   agent 工具同理:新会话里**实调一次** `atbrains_status` 才算真验证(`hermes tools list` 只证明配置到位)。
+
+## 多 agent 接入（MCP 端点，2026-10-24 上线）
+
+brain 是 Hermes 专属 provider；omp / dsh / Codex 不能加载它。对外通道 = atbrains 控制台 8787 上的
+`POST /mcp`（标准 MCP JSON-RPC 2.0，`Authorization: Bearer <service-tokens.json 令牌>`，
+令牌反查 agent 名）。
+
+- 代码：`plugin/brain_mcp.py`（`BrainMCP`）+ `plugin/console/server.py` 的 `_mcp()` 路由；
+  令牌沿用 `service.py` 的 `service-tokens.json`（与 `/v1` 共用）。
+- **共享而非隔离**：所有 agent 写 `hermes_agent_memory`，以 `machine` 列标注来源（omp/dsh/Hermes
+  互相可 recall）。`omp_agent_memory` / `dsh_agent_memory` / `artex_agent_memory` 三个空库保留，
+  作将来完全隔离的备选，默认不用。
+- 工具 10 个，与插件同名同参。omp 配置 `~/.omp/agent/mcp.json`；dsh 在
+  `$DSH_HOME/cordis.patch.yml` 加 `@deepseek-ai/dsh-mcp-client` 行。详见 `docs/multi-agent.md`。
+- 自检：`python3 /root/agent-db/mcp_client_test.py --url http://127.0.0.1:8787/mcp --agent omp --write-test`。
+- ⚠️ `install.sh` 的 `rsync --delete` 必须保留 `--exclude='service-tokens.json'`，否则每次安装都会
+  删掉运行时令牌表，所有 agent 的 MCP 令牌失效（本次已修）。
+- ⚠️ omp 是 Bun 包，`cli.js` 22MB，Hermes 生命周期守卫拒绝从网关内执行（引用脚本超 1MiB 即
+  fail-closed）；验收用 SDK 小脚本，不要试图在网关会话里跑 `omp` 二进制。
+- ⚠️ 召回排序：RRF(k=60) 会让关键词第 1 名与向量第 1 名同分，同分按 importance 排，刚写入的
+  低重要度记忆会被挤出 top-k。MCP 的 recall 增加了整句精确包含直查并提前（不改 Hermes 侧排序）。
 
 ## 不要做
 

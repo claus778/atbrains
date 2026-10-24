@@ -151,8 +151,12 @@ def token_rm(machine: str) -> bool:
 
 # ───────────────────────────── 服务 ─────────────────────────────
 
-def _new_store(hermes_home: str, machine: str) -> Any:
-    """构造 brain 的 BrainStore,并把 cfg["machine"] 覆盖成服务端指定的名字。
+def _new_store(hermes_home: str, machine: str, agent: str = "hermes") -> Any:
+    """构造 brain 的 BrainStore,并覆盖来源身份。
+
+    agent = 写入方身份（Hermes 客户端一律 hermes；MCP 通道用令牌名 omp/dsh/…）。
+    machine = 来源主机；传空串表示「沿用配置里的主机名」——MCP 通道没有客户端
+    主机信息，写入点就是跑本服务的这台机器，不能拿 agent 名冒充主机。
 
     brain 插件位置与 sys.path 处理沿用 probe.py 的方式(_find_brain_plugin);
     cfg 含 MariaDB/Redis 口令,只在进程内传递,绝不进日志/响应。
@@ -163,7 +167,9 @@ def _new_store(hermes_home: str, machine: str) -> Any:
     from core import BrainStore, resolve_config  # type: ignore
 
     cfg = resolve_config(hermes_home)
-    cfg["machine"] = machine          # 服务端决定来源机(客户端伪造无效)
+    if machine:
+        cfg["machine"] = machine            # 服务端决定来源机(客户端伪造无效)
+    cfg["agent"] = agent
     return BrainStore(cfg)
 
 
@@ -210,13 +216,18 @@ class MemoryService:
 
     # ---------------------------------------------------------- store
 
-    def store_for(self, machine: str) -> Any:
-        """按 machine 取 BrainStore(每 machine 一份;构造很快,直接在锁内建,避免重复实例)。"""
+    def store_for(self, machine: str, agent: str = "hermes") -> Any:
+        """按 (agent, machine) 取 BrainStore(构造很快,锁内建,避免重复实例)。
+
+        Hermes 客户端:/v1 传入的是令牌名 = 主机名,agent 固定 hermes。
+        MCP 客户端:service 层传 machine="",agent = 令牌名，主机沿用服务端配置。
+        """
+        key = f"{agent}\x00{machine}"
         with self._lock:
-            st = self._stores.get(machine)
+            st = self._stores.get(key)
             if st is None:
-                st = _new_store(self.hermes_home, machine)
-                self._stores[machine] = st
+                st = _new_store(self.hermes_home, machine, agent)
+                self._stores[key] = st
             return st
 
     # ---------------------------------------------------------- 入口
@@ -280,6 +291,7 @@ class MemoryService:
                 "memory_type": m.get("memory_type"),
                 "importance": m.get("importance"),
                 "machine": m.get("machine"),
+                "agent": m.get("agent"),
                 "tags": m.get("tags") or "",
                 "via": m.get("via") or "",
                 "vscore": round(float(vscore), 4) if isinstance(vscore, (int, float)) else None,
@@ -333,4 +345,4 @@ class MemoryService:
 
     def _status(self, machine: str, body: dict, query: dict) -> dict:
         st = self.store_for(machine)
-        return {"ok": True, "machine": machine, "ping": st.ping(), "stats": st.stats()}
+        return {"ok": True, "machine": machine, "agent": st.agent, "ping": st.ping(), "stats": st.stats()}

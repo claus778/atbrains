@@ -78,6 +78,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 "query": {"type": "string", "description": "检索关键词或自然语言问题。"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 20, "description": "返回条数，默认 5。"},
                 "kind": {"type": "string", "description": "只检索某一类别（可选）。"},
+                "agent": {"type": "string", "description": "只检索某个 agent 写入的记忆（hermes/omp/dsh/…，可选；默认全部共享记忆）。"},
                 "include_turns": {"type": "boolean", "description": "是否附带相关历史对话，默认 true。"},
             },
             "required": ["query"],
@@ -499,8 +500,11 @@ class BrainMemoryProvider(MemoryProvider):
         query = str(args.get("query") or "")
         limit = max(1, min(20, int(args.get("limit") or 5)))
         kind = args.get("kind") or None
+        agent = args.get("agent") or None
         include_turns = args.get("include_turns", True)
-        mems = store.search_memories_hybrid(query, limit=limit, kind=str(kind) if kind else None)
+        mems = store.search_memories_hybrid(query, limit=limit,
+                                            kind=str(kind) if kind else None,
+                                            agent=str(agent) if agent else None)
         turns = store.search_turns(query, limit=min(limit, 5)) if include_turns else []
         try:
             claims = store.claim_recall(query=query, limit=min(limit, 5)) if query else []

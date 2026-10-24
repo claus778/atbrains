@@ -182,7 +182,7 @@ def overview() -> dict:
 
 # ───────────────────────────── 查询 ─────────────────────────────
 
-_MEM_COLS = ("id,kind,content,tags,importance,source,machine,active,created_at,updated_at")
+_MEM_COLS = ("id,kind,content,tags,importance,source,machine,agent,active,created_at,updated_at")
 
 
 def _where(conds: list[tuple[str, tuple]]) -> tuple[str, list]:
@@ -196,7 +196,7 @@ def _where(conds: list[tuple[str, tuple]]) -> tuple[str, list]:
 
 
 def memories(limit: int = 100, offset: int = 0, active: str = "1", q: str = "",
-             kind: str = "", machine: str = "") -> dict:
+             kind: str = "", machine: str = "", agent: str = "") -> dict:
     st = store()
     conds: list[tuple[str, tuple]] = []
     if active in ("0", "1"):
@@ -207,6 +207,8 @@ def memories(limit: int = 100, offset: int = 0, active: str = "1", q: str = "",
         conds.append(("kind = %s", (kind.strip(),)))
     if machine.strip():
         conds.append(("machine = %s", (machine.strip(),)))
+    if agent.strip():
+        conds.append(("agent = %s", (agent.strip().lower(),)))
     where, args = _where(conds)
     rows = st._exec(f"SELECT {_MEM_COLS} FROM brain_memories {where} ORDER BY id DESC LIMIT %s OFFSET %s",
                     (*args, limit, offset), fetch=True)
@@ -216,7 +218,7 @@ def memories(limit: int = 100, offset: int = 0, active: str = "1", q: str = "",
 
 def memory_detail(mem_id: int) -> dict:
     rows = store()._exec(
-        "SELECT id,kind,content,tags,importance,source,session_id,machine,active,"
+        "SELECT id,kind,content,tags,importance,source,session_id,machine,agent,active,"
         "created_at,updated_at,deactivated_at FROM brain_memories WHERE id = %s",
         (int(mem_id),), fetch=True)
     return {"item": rows[0] if rows else None}

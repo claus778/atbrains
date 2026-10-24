@@ -574,7 +574,7 @@ _DDL = (
 )
 
 # 模式版本与迁移（幂等；多进程/多机并发用 GET_LOCK 串行化）
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 8
 
 _MIGRATIONS: dict[int, tuple[str, tuple[str, ...]]] = {
     1: ("machine 列（多设备归属）", (
@@ -672,6 +672,27 @@ _MIGRATIONS: dict[int, tuple[str, tuple[str, ...]]] = {
         "KEY idx_episode_status (status, updated_at)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
     )),
+    7: ("agent 列（跨 agent 共享归属，与 machine 主机名解耦）", (
+        # agent = 写入方身份（hermes / omp / dsh / artex / codex …），machine = 主机。
+        # 默认 'hermes' 是老版本代码的兜底：未升级的进程 INSERT 不写 agent 时，
+        # 行仍会带着正确归属入库，不会出现空 agent。
+        "ALTER TABLE brain_memories ADD COLUMN IF NOT EXISTS agent VARCHAR(32) NOT NULL DEFAULT 'hermes' AFTER machine",
+        "ALTER TABLE brain_claims ADD COLUMN IF NOT EXISTS agent VARCHAR(32) NOT NULL DEFAULT 'hermes' AFTER machine",
+        "ALTER TABLE brain_episodes ADD COLUMN IF NOT EXISTS agent VARCHAR(32) NOT NULL DEFAULT 'hermes' AFTER machine",
+        "ALTER TABLE brain_memories ADD INDEX IF NOT EXISTS idx_agent (active, agent, updated_at)",
+        # v6 之前 MCP 通道把 agent 名塞进了 machine（store_for(令牌名) 覆盖 machine）。
+        # 这里迁到正确的列：agent=原 machine，machine 归位为跑 MCP 端点的主机（server）。
+        # updated_at = updated_at 防止 ON UPDATE CURRENT_TIMESTAMP 把记忆年龄冲成当下。
+        "UPDATE brain_memories SET agent = machine, machine = 'server', updated_at = updated_at "
+        "WHERE source = 'mcp' AND machine IN ('omp', 'dsh', 'artex', 'codex')",
+    )),
+    8: ("主张版本级 agent（历史版本各自记录写入方）", (
+        # 只靠 brain_claims.agent 会丢掉「哪一版是谁写的」——同一槽位被别的 agent
+        # 改写后，历史版本会全部显示成最新写入方。版本级 agent 修掉这个歧义。
+        "ALTER TABLE brain_claim_versions ADD COLUMN IF NOT EXISTS agent VARCHAR(32) NOT NULL DEFAULT 'hermes' AFTER revision",
+        "UPDATE brain_claim_versions v JOIN brain_claims c ON c.id = v.claim_id "
+        "SET v.agent = c.agent WHERE v.agent = 'hermes' AND c.agent <> 'hermes'",
+    )),
 }
 
 # DDL 幂等重跑时的“已存在”类报错（迁移时容忍）
@@ -727,6 +748,9 @@ class BrainStore:
     def __init__(self, config: Optional[dict[str, Any]] = None):
         self.cfg: dict[str, Any] = dict(config or resolve_config())
         self.machine: str = str(self.cfg.get("machine") or "").strip() or socket.gethostname()
+        # agent = 写入方身份，与 machine（主机）解耦：Hermes 各实例都是 hermes，
+        # MCP 通道按令牌名填 omp/dsh/…；同一张表、同一套召回，靠这一列区分来源。
+        self.agent: str = (str(self.cfg.get("agent") or "hermes").strip().lower() or "hermes")[:32]
         self._redis = None
         self._redis_lock = threading.Lock()
         self._tls = threading.local()
@@ -952,6 +976,7 @@ class BrainStore:
             "id": mem_id, "kind": kind, "content": _clip(content, 1000),
             "tags": tags, "importance": importance, "source": source,
             "machine": self.machine[:48],
+            "agent": self.agent,
             "ts": int(time.time()),
         }, ensure_ascii=False)
         pipe = r.pipeline()
@@ -1005,9 +1030,9 @@ class BrainStore:
             try:
                 _, mem_id = self._exec(
                     "INSERT INTO brain_memories (kind, memory_type, content, tags, importance, "
-                    "source, session_id, machine) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                    "source, session_id, machine, agent) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (kind, mtype, content, tags, importance, str(source or "")[:64],
-                     str(session_id or "")[:96], self.machine[:48]),
+                     str(session_id or "")[:96], self.machine[:48], self.agent),
                 )
                 break
             except Exception as exc:  # noqa: BLE001
@@ -1153,22 +1178,23 @@ class BrainStore:
             revision = int(row[0]["current_revision"] or 0) + 1
             self._exec(
                 "UPDATE brain_claims SET current_revision = %s, state = 'active', importance = %s, "
-                "updated_at = CURRENT_TIMESTAMP WHERE id = %s", (revision, importance, claim_id))
+                "agent = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                (revision, importance, self.agent, claim_id))
             self._exec(
                 "UPDATE brain_claim_versions SET recorded_to = CURRENT_TIMESTAMP "
                 "WHERE claim_id = %s AND recorded_to IS NULL AND revision < %s", (claim_id, revision))
             created = False
         else:
             _, claim_id = self._exec(
-                "INSERT INTO brain_claims (machine, subject, predicate, kind, slot_key, "
-                "current_revision, state, importance) VALUES (%s, %s, %s, %s, %s, 1, 'active', %s)",
-                (mach, subject, predicate, kind, slot, importance))
+                "INSERT INTO brain_claims (machine, agent, subject, predicate, kind, slot_key, "
+                "current_revision, state, importance) VALUES (%s, %s, %s, %s, %s, %s, 1, 'active', %s)",
+                (mach, self.agent, subject, predicate, kind, slot, importance))
             claim_id, revision, created = int(claim_id), 1, True
         self._exec(
-            "INSERT INTO brain_claim_versions (claim_id, revision, value_text, basis, valid_from, "
+            "INSERT INTO brain_claim_versions (claim_id, revision, agent, value_text, basis, valid_from, "
             "valid_to, replaces_revision, source_turn_id, source_seq, quote, confidence) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (claim_id, revision, value[:16000], basis, valid_from or None, valid_to or None,
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (claim_id, revision, self.agent, value[:16000], basis, valid_from or None, valid_to or None,
              revision - 1 if revision > 1 else None, int(turn_id) if turn_id else None,
              int(seq) if seq is not None else None, str(quote or "")[:2000], confidence))
         if turn_id:
@@ -1185,12 +1211,12 @@ class BrainStore:
         limit = max(1, min(50, int(limit or 10)))
         self.ensure_schema()
         if history:
-            sql = ("SELECT c.id AS claim_id, c.subject, c.predicate, c.kind, c.machine, v.revision, "
+            sql = ("SELECT c.id AS claim_id, c.subject, c.predicate, c.kind, c.machine, v.agent AS agent, v.revision, "
                    "v.value_text, v.basis, v.confidence, v.valid_from, v.valid_to, "
                    "v.recorded_from, v.recorded_to, v.source_turn_id, v.source_seq, v.quote "
                    "FROM brain_claims c JOIN brain_claim_versions v ON v.claim_id = c.id WHERE 1=1 ")
         else:
-            sql = ("SELECT c.id AS claim_id, c.subject, c.predicate, c.kind, c.machine, c.state, "
+            sql = ("SELECT c.id AS claim_id, c.subject, c.predicate, c.kind, c.machine, v.agent AS agent, c.state, "
                    "v.revision, v.value_text, v.basis, v.confidence, v.valid_from, v.valid_to, "
                    "v.recorded_from, v.source_turn_id, v.source_seq, v.quote "
                    "FROM brain_claims c JOIN brain_claim_versions v "
@@ -1247,13 +1273,13 @@ class BrainStore:
             "status": None if status is None else str(status)[:16],
         }
         self._exec(
-            "INSERT INTO brain_episodes (turn_id, session_id, machine, goal, decisions, open_items, "
-            "blockers, next_step, status) VALUES (%s, %s, %s, COALESCE(%s,''), COALESCE(%s,'[]'), "
+            "INSERT INTO brain_episodes (turn_id, session_id, machine, agent, goal, decisions, open_items, "
+            "blockers, next_step, status) VALUES (%s, %s, %s, %s, COALESCE(%s,''), COALESCE(%s,'[]'), "
             "COALESCE(%s,'[]'), COALESCE(%s,'[]'), COALESCE(%s,''), COALESCE(%s,'open')) "
             "ON DUPLICATE KEY UPDATE goal = COALESCE(%s, goal), decisions = COALESCE(%s, decisions), "
             "open_items = COALESCE(%s, open_items), blockers = COALESCE(%s, blockers), "
-            "next_step = COALESCE(%s, next_step), status = COALESCE(%s, status)",
-            (tid, str(session_id or "")[:96], self.machine[:48],
+            "next_step = COALESCE(%s, next_step), status = COALESCE(%s, status), agent = VALUES(agent)",
+            (tid, str(session_id or "")[:96], self.machine[:48], self.agent,
              vals["goal"], vals["decisions"], vals["open_items"], vals["blockers"],
              vals["next_step"], vals["status"],
              vals["goal"], vals["decisions"], vals["open_items"], vals["blockers"],
@@ -1272,7 +1298,7 @@ class BrainStore:
         if not tid:
             return {"found": False, "reason": "需要 turn_id 或可用的 session_id"}
         rows = self._exec(
-            "SELECT turn_id, session_id, machine, goal, decisions, open_items, blockers, next_step, "
+            "SELECT turn_id, session_id, machine, agent, goal, decisions, open_items, blockers, next_step, "
             "status, created_at, updated_at FROM brain_episodes WHERE turn_id = %s", (tid,), fetch=True)
         if not rows:
             return {"found": False, "turn_id": tid}
@@ -1543,19 +1569,23 @@ class BrainStore:
         return " OR ".join(clauses), params
 
     def search_memories(self, query: str, *, limit: int = 5,
-                        kind: Optional[str] = None) -> list[dict[str, Any]]:
+                        kind: Optional[str] = None,
+                        agent: Optional[str] = None) -> list[dict[str, Any]]:
         terms = search_terms(query)
         if not terms:
             return []
         where, params = self._search_where(("content", "tags"), terms)
         sql = (
-            "SELECT id, kind, memory_type, content, tags, importance, source, session_id, machine, "
+            "SELECT id, kind, memory_type, content, tags, importance, source, session_id, machine, agent, "
             "created_at, updated_at "
             f"FROM brain_memories WHERE active = 1 AND superseded_by IS NULL AND ({where}) "
         )
         if kind:
             sql += "AND kind = %s "
             params.append(kind)
+        if agent:
+            sql += "AND agent = %s "
+            params.append(str(agent).strip().lower()[:32])
         sql += "ORDER BY importance DESC, updated_at DESC, id DESC LIMIT %s"
         params.append(int(limit))
         self.ensure_schema()
@@ -1850,7 +1880,7 @@ class BrainStore:
     def _pending_memories(self, limit: int, *, force: bool = False,
                           cursor: int = 0) -> list[dict]:
         self.ensure_schema()
-        base = ("SELECT m.id, m.content, m.kind, m.tags, m.importance, m.machine, m.content_hash "
+        base = ("SELECT m.id, m.content, m.kind, m.tags, m.importance, m.machine, m.agent, m.content_hash "
                 "FROM brain_memories m ")
         if force:
             sql = base + ("WHERE m.active = 1 AND m.id > %s "
@@ -1930,6 +1960,7 @@ class BrainStore:
                         "vector": vec,
                         "payload": {"kind": row["kind"], "importance": int(row["importance"]),
                                     "tags": row["tags"], "machine": row["machine"],
+                                    "agent": row.get("agent", ""),
                                     "preview": str(row["content"])[:200]},
                     } for row, vec in ok_pairs]
                     try:
@@ -1998,7 +2029,8 @@ class BrainStore:
         return vec
 
     def vector_search_memories(self, query: str, *, limit: int = 8,
-                               kind: Optional[str] = None) -> list[dict[str, Any]]:
+                               kind: Optional[str] = None,
+                               agent: Optional[str] = None) -> list[dict[str, Any]]:
         if not int(self.cfg.get("vector_enabled") or 0) or not (query or "").strip():
             return []
         vec = self._query_embedding(query)
@@ -2009,13 +2041,16 @@ class BrainStore:
             return []
         ids = [h["id"] for h in hits]
         marks = ", ".join(["%s"] * len(ids))
-        sql = ("SELECT id, kind, memory_type, content, tags, importance, source, session_id, machine, "
+        sql = ("SELECT id, kind, memory_type, content, tags, importance, source, session_id, machine, agent, "
                "created_at, updated_at "
                f"FROM brain_memories WHERE active = 1 AND superseded_by IS NULL AND id IN ({marks}) ")
         params: list = list(ids)
         if kind:
             sql += "AND kind = %s "
             params.append(kind)
+        if agent:
+            sql += "AND agent = %s "
+            params.append(str(agent).strip().lower()[:32])
         self.ensure_schema()
         rows = {int(r["id"]): r for r in self._exec(sql, tuple(params), fetch=True)}
         out = []
@@ -2029,12 +2064,13 @@ class BrainStore:
         return out[: int(limit)]
 
     def search_memories_hybrid(self, query: str, *, limit: int = 5,
-                               kind: Optional[str] = None) -> list[dict[str, Any]]:
+                               kind: Optional[str] = None,
+                               agent: Optional[str] = None) -> list[dict[str, Any]]:
         """关键词 + 向量 RRF 融合；向量任一环节失败自动回落关键词。"""
-        kw = self.search_memories(query, limit=limit, kind=kind)
+        kw = self.search_memories(query, limit=limit, kind=kind, agent=agent)
         try:
             vec = self.vector_search_memories(
-                query, limit=int(self.cfg.get("vector_topk") or 12), kind=kind)
+                query, limit=int(self.cfg.get("vector_topk") or 12), kind=kind, agent=agent)
         except Exception as exc:  # noqa: BLE001
             logger.warning("brain: 向量检索失败，回落纯关键词: %s", str(exc)[:200])
             vec = []
@@ -2903,6 +2939,16 @@ class BrainStore:
             (self.cfg["mariadb_db"],), fetch=True)[0]
         out["mysql"] = {k: int(v or 0) for k, v in row.items()}
         out["mysql"]["size_bytes"] = int(size["bytes"] or 0)
+        # 按写入方拆分（跨 agent 共享同一张表，统计仍要能分开看）
+        try:
+            agent_rows: Any = self._exec(
+                "SELECT agent, COUNT(*) AS total, SUM(active = 1) AS active "
+                "FROM brain_memories GROUP BY agent ORDER BY total DESC", fetch=True)
+            out["agents"] = [{"agent": r["agent"] or "", "total": int(r["total"] or 0),
+                              "active": int(r["active"] or 0)} for r in agent_rows]
+        except Exception as exc:  # noqa: BLE001
+            out["agents"] = []
+            logger.debug("brain: agent 统计失败: %s", str(exc)[:160])
         try:
             r = self.redis()
             out["redis"] = {

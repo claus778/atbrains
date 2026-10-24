@@ -40,7 +40,7 @@ done
 [ -f "$CONSOLE_SRC/plugin.yaml" ] || { echo "❌ 找不到 $CONSOLE_SRC/plugin.yaml"; exit 1; }
 [ -f "$BRAIN_SRC/plugin.yaml" ]   || { echo "❌ 找不到 $BRAIN_SRC/plugin.yaml"; exit 1; }
 
-RSYNC_ARGS=(-a --delete --exclude='__pycache__/' --exclude='*.pyc' --exclude='.token')
+RSYNC_ARGS=(-a --delete --exclude='__pycache__/' --exclude='*.pyc' --exclude='.token' --exclude='service-tokens.json')
 
 sync_one() {  # $1=name $2=src $3=dst
   local name="$1" src="$2" dst="$3"

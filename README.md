@@ -30,7 +30,7 @@
         └──────────────────┘  └──────────────────┘  └──────────────────┘
                                                         ▲
               嵌入模型: 硅基流动 Qwen/Qwen3-Embedding-4B ┘
-              自动化:  brain-vector-drain.timer 每 3 分钟增量回填
+              自动化:  插件内巡检(零 systemd)· 长命进程每 60 秒补向量
 ```
 
 **分层语义**
@@ -171,7 +171,7 @@ ssh -p 7622 -L 8787:127.0.0.1:8787 root@111.230.71.79
 
 ```
 GET  /api/overview                 三层总览(容器/计数/向量/定时器/版本)
-GET  /api/memories?limit=&offset=&active=1|0|all&q=&kind=&machine=
+GET  /api/memories?limit=&offset=&active=1|0|all&q=&kind=&machine=&agent=
 GET  /api/memory?id=               单条记忆全量(详情弹窗用)
 GET  /api/turns?limit=&offset=&machine=&session_id=&q=
 GET  /api/turn?id=                 单轮对话全量(详情弹窗用)
@@ -187,6 +187,23 @@ POST /api/prune      {dry_run:true}
 ```
 
 > 设计原则:**凭据只在服务端解析,绝不下发浏览器**;所有 `/api/*` 都要 token。
+
+### MCP 端点(非 Hermes agent 接入,v1.2 起)
+
+`POST /mcp` 是标准 MCP(JSON-RPC 2.0)端点,与 `/v1` 共用 8787 端口,但用
+`Authorization: Bearer <service-tokens.json 令牌>` 鉴权,令牌决定 agent 身份。
+
+```bash
+hermes atbrains token-add omp      # 生成/轮换令牌(明文只显示一次)
+hermes atbrains token-list         # 只看掩码
+python3 /root/agent-db/mcp_client_test.py --agent omp --write-test   # 端到端自检
+```
+
+omp 的 `~/.omp/agent/mcp.json`、dsh 的 `cordis.patch.yml` 接法见
+[`docs/multi-agent.md`](docs/multi-agent.md)。要点:**所有 agent 共用
+`hermes_agent_memory` 长期库、同一张 `brain_memories` 表**,`agent` 列标写入方
+(hermes/omp/dsh/…)、`machine` 列标主机;`brain_recall` 默认跨 agent 召回,
+传 `agent=` 可只看某一方。
 
 ---
 
@@ -236,7 +253,8 @@ POST /v1/memory/turn       {session_id, user, assistant, platform?}
 GET  /v1/memory/status
 ```
 
-- 鉴权:`Authorization: Bearer <令牌>`;**服务端用令牌反查 machine,客户端无法伪造**。
+- 鉴权:`Authorization: Bearer <令牌>`;**服务端用令牌反查 agent 身份,客户端无法伪造**;
+  `machine` 记令牌绑定的主机名(/v1)或服务端主机(MCP)。
 - 令牌:`service-tokens.json`(600);`hermes atbrains token-list|token-add|token-rm`。
 - **客户端接入(远程模式)**:brain.json 开 `remote_enabled=1` + `remote_url`;令牌放
   `~/.hermes/.env` 的 `BRAIN_REMOTE_TOKEN`(不落 brain.json)。任何失败**自动回落本地直连**
@@ -271,7 +289,7 @@ python3 scripts/audit-turns.py --apply        # 回填(只写自己 machine)
 python3 scripts/audit-memories.py             # 内置记忆 ↔ brain 镜像对账
 ```
 
-**自动化**:`brain-vector-drain.timer` 每 3 分钟跑一次增量回填,新记忆自动向量化。
+**自动化(零 systemd)**:向量补漏由**插件内巡检**完成 —— 长命进程(网关)每 60 秒扫一次,短命进程尽力而为后 0.3 秒退出,遗留欠账由下一个长命进程接手(实测 100 秒内补齐)。数据库清理由插件内 `brain-maintenance` 线程负责(每 60 分钟检查,距上次超过 7 天才执行)。手动方式:`hermes brain vector-drain` / `hermes brain prune --dry-run`。
 
 ---
 
