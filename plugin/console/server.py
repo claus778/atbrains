@@ -18,6 +18,7 @@ import json
 import os
 import secrets
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -31,6 +32,8 @@ import brain_mcp  # noqa: E402  # pyright: ignore[reportMissingImports]
 SERVICE = service.MemoryService()   # /v1 Memory Service(每 machine 一个 BrainStore,内部加锁)
 MCP = brain_mcp.BrainMCP(SERVICE)   # /mcp MCP 端点(与 /v1 共用令牌表,给 omp/dsh 等非 Hermes agent)
 TOKEN_PATH = HERE / ".token"
+# 访问日志(每请求一行)。用 root 可写的固定路径，systemd 单元的 append 日志另存一份启动信息。
+ACCESS_LOG = Path("/var/log/atbrains-access.log")
 CONF_PATH = HERE / "config.json"
 DEFAULT_PORT = 8787
 
@@ -66,7 +69,20 @@ class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def log_message(self, fmt, *args):
-        pass
+        """访问日志：每请求一行（IP/方法/路径/状态），便于排查外部 agent 接入。
+
+        只写文件，不写 stderr（HTTP/1.1 keep-alive 下 stderr 会被刷屏）。
+        """
+        try:
+            line = "%s %s %s\n" % (
+                time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                self.address_string(),
+                fmt % args,
+            )
+            with open(ACCESS_LOG, "a", encoding="utf-8") as fh:
+                fh.write(line)
+        except Exception:  # noqa: BLE001
+            pass
 
     def handle_one_request(self):
         """客户端提前断开(HTTP/1.1 keep-alive 常见)不要打整段 traceback。"""
