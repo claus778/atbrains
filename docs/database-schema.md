@@ -2,7 +2,10 @@
 
 > 适用库：MariaDB `agent_memory`（127.0.0.1:57306 / 111.230.71.79:57306，账号 `agent`）
 > schema 版本：**v9**（记录在 `brain_meta.schema_version`）
-> 快照行数：2026-10-25（memories 375 / turns 1,108 / turn_messages 19,064 / thoughts 7,195 / tool_calls 9,860 / sessions 319）
+> 快照（2026-10-25 19:2x，数字随时会变，以现场查询为准）：memories 397（活跃 313）· turns 1,138 ·
+> turn_messages 20,293（tool 10,423 / assistant 8,867 / user 992 / session_meta 11）· thoughts 7,784（24.0 MB）·
+> tool_calls 10,636（51 种工具，ok 10,624 / error 2 / pending 10）· sessions 323 · archive 5 ·
+> vector_index 314 · author_defaults 8 · 库体积 144.8 MB
 > 这份文档就是“记忆准则”的权威版本。改表、改口径、改保留策略，先改这里，再改代码。
 
 ---
@@ -68,7 +71,7 @@
 ### 3.1 `brain_memories` —— 长期记忆（唯一一张“记忆本体”表）
 
 **用途**：所有 agent 共享的事实 / 偏好 / 决策 / 笔记 / 内置画像镜像。所有检索都从这里出发。
-**行数**：375（active 294 / 停用 81）；agent 分布 hermes 363 / omp 9 / dsh 3。
+**行数**：397（active 313 / 停用 84）；agent 分布 hermes 385 / omp 9 / dsh 3。
 **写入方**：`atbrains_remember`、内置 MEMORY.md/USER.md 镜像钩子、蒸馏线程、MCP、CLI。
 **保留**：活跃行永久；停用行 365 天后由 `inactive_keep_days` 清理。
 
@@ -100,7 +103,7 @@
 ### 3.2 `brain_turns` —— 一轮对话（索引行，不含全文）
 
 **用途**：每轮一行的“台账”：谁的、哪个入口、说了什么（截断版）、转录了多少条。
-**行数**：1,108。**写入方**：Hermes `sync_turn`、dsh 插件 `/v1/memory/turn`、cron/subagent 自动归档。
+**行数**：1,138。**写入方**：Hermes `sync_turn`、dsh 插件 `/v1/memory/turn`、cron/subagent 自动归档。
 
 | 列 | 类型 | 默认 | 含义 |
 |---|---|---|---|
@@ -123,7 +126,7 @@
 ### 3.3 `brain_turn_messages` —— 全量转录（权威原文）
 
 **用途**：本轮完整消息链的逐条原文，`zlib(JSON)` 压缩存 `body`。工具调用、工具输出、推理、附件占位都在这里。
-**行数**：19,064（tool 9,818 / assistant 8,292 / user 943 / session_meta 11）。**写入方**：`store_turn_messages()`。
+**行数**：20,293（tool 10,423 / assistant 8,867 / user 992 / session_meta 11）。**写入方**：`store_turn_messages()`。
 **保留**：随 turns 永久（`turns_keep_days=0`）；prune 时先删本表再删 turns。
 
 | 列 | 类型 | 默认 | 含义 |
@@ -146,7 +149,7 @@
 ### 3.4 `brain_thoughts` —— 思考链投影（v9）
 
 **用途**：从转录层抽出的 reasoning，一条 assistant 消息一行，可按轮次读“它是怎么想的”。
-**行数**：7,195（约 23.2 MB 文本）。**写入方**：`_index_turn_details()`（`store_turn_messages()` 之后同步）。
+**行数**：7,784（约 24.0 MB 文本）。**写入方**：`_index_turn_details()`（`store_turn_messages()` 之后同步）。
 **幂等键**：`uniq_thought(turn_id, seq)`。**保留**：随 turns。
 
 | 列 | 类型 | 默认 | 含义 |
@@ -167,8 +170,8 @@
 ### 3.5 `brain_tool_calls` —— 工具调用明细投影（v9）
 
 **用途**：一次工具调用一行：完整参数、完整结果、成功/失败、起止与耗时。回答“哪个工具慢/总失败/什么时候调的”。
-**行数**：9,860（49 种工具；terminal 5,354、read_file 1,182、write_file 687、patch 625）。
-**状态**：ok 9,851 / error 2 / pending 7（pending = 调用发出但没等到结果，多为被中断的回合）。
+**行数**：10,636（51 种工具；terminal 5,378、read_file 1,184、pwsh 691、write_file 688、patch 629）。
+**状态**：ok 10,624 / error 2 / pending 10（pending = 调用发出但没等到结果，多为被中断的回合）。
 **写入方**：同 `_index_turn_details()`；幂等键 `uniq_tool_call(turn_id, seq, call_index)`。
 
 | 列 | 类型 | 默认 | 含义 |
@@ -194,7 +197,7 @@
 ### 3.6 `brain_sessions` —— 会话索引
 
 **用途**：一个会话一行的汇总；也是转录游标（`archived_messages`）的存放处。
-**行数**：319。**写入方**：`record_turn()` 首轮 upsert、`touch_session()`（会话结束/切换）、`store_turn_messages()` 补行。
+**行数**：323。**写入方**：`record_turn()` 首轮 upsert、`touch_session()`（会话结束/切换）、`store_turn_messages()` 补行。
 **保留**：365 天，且只删“无近期轮次”的行。
 
 | 列 | 类型 | 默认 | 含义 |
@@ -292,7 +295,7 @@
 
 列：`meta_key`(PK) / `meta_value` / `updated_at`(ON UPDATE)。
 
-**`brain_vector_index`（向量索引标记，295 行，全部 status=ok）**
+**`brain_vector_index`（向量索引标记，314 行，全部 status=ok）**
 
 | 列 | 类型 | 默认 | 含义 |
 |---|---|---|---|
@@ -352,11 +355,13 @@
 finish_reason, reasoning_chars, reasoning, user_chars, user_preview(200 字), assistant_chars, assistant_preview(200 字)`。
 
 - `reasoning` 是全文；问答只给 200 字预览，全文去 `brain_turns` 按 `turn_id` 取（视图里复制全文会撑爆 `SELECT *`）。
-- `LEFT JOIN` 故意保留孤儿：截至 2026-10-25 有 83 行思考属于 turn 1107-1109，那三轮的 `brain_turns` /
-  `brain_turn_messages` 行已被删，所以这些行的 `session_id / platform / turn_ts` 为 NULL、`thought_ts` 也为 NULL ——
-  这是缺父行，不是索引没写。
-- `brain_thoughts.ts` 只在写入方带了消息级 `timestamp` 时才有值（实时轮次有，历史回填/dsh 上传的没有），
-  缺失时已按同一 `(turn_id, seq)` 的 `brain_turn_messages.ts` 补齐；upsert 用 `COALESCE` 防回放擦除。
+- `LEFT JOIN` **故意保留孤儿**：父轮被删（修剪/去重/测试清理）后，思考行不会连锁删除。
+  2026-10-25 晚实测 451 行属已删除的 turn 1107–1173（最多的 turn 1170 有 188 行），它们的
+  `session_id / platform / turn_ts` 为 NULL —— 这是缺父行，不是索引没写。
+  自查：`SELECT COUNT(*) FROM brain_thoughts t LEFT JOIN brain_turns r ON r.id=t.turn_id WHERE r.id IS NULL;`
+  要清就按同一条件 `DELETE`（先确认不是别的机器正在回填）。
+- `brain_thoughts.ts` 只在写入方带了消息级 `timestamp` 时才有值（实时轮次有，早期回填的没有），已按同一 `(turn_id, seq)` 的 `brain_turn_messages.ts` 补齐过；
+  截至 2026-10-25 晚 7,784 行里仍有 275 行为空（多为孤儿行）；upsert 用 `COALESCE` 防回放擦除。
 - 走 `uniq_thought(turn_id, seq)` 索引，按轮次查是 `ref` 而不是全表扫；跨轮按时间检索请用 `thought_ts` 上的 `idx_thought_ts`。
 
 ```sql
