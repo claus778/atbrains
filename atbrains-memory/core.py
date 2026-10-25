@@ -1691,7 +1691,9 @@ class AtbrainsStore:
                         "reasoning_chars, finish_reason, ts) VALUES (%s, %s, %s, %s, %s, %s, %s) "
                         "ON DUPLICATE KEY UPDATE reasoning = VALUES(reasoning), "
                         "reasoning_chars = VALUES(reasoning_chars), "
-                        "finish_reason = VALUES(finish_reason), ts = VALUES(ts)", thoughts)
+                        "finish_reason = VALUES(finish_reason), "
+                        # 回放/回填常常不带消息级 timestamp；用 COALESCE 保住已有时间，别把它擦成 NULL
+                        "ts = COALESCE(VALUES(ts), ts)", thoughts)
                 if calls:
                     rows_c = []
                     for c in calls:
@@ -1707,8 +1709,9 @@ class AtbrainsStore:
                         "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                         "ON DUPLICATE KEY UPDATE call_id = VALUES(call_id), tool_name = VALUES(tool_name), "
                         "args = VALUES(args), result = VALUES(result), result_chars = VALUES(result_chars), "
-                        "status = VALUES(status), started_at = VALUES(started_at), "
-                        "ended_at = VALUES(ended_at), duration_ms = VALUES(duration_ms)", rows_c)
+                        "status = VALUES(status), started_at = COALESCE(VALUES(started_at), started_at), "
+                        "ended_at = COALESCE(VALUES(ended_at), ended_at), "
+                        "duration_ms = COALESCE(VALUES(duration_ms), duration_ms)", rows_c)
             conn.commit()
         except BaseException:
             try:
