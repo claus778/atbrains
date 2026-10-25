@@ -322,7 +322,11 @@
 
 ---
 
-## 4. 视图（3 个，只读、最新在前）
+## 4. 视图（10 个，只读）
+
+分三类，都只是 SELECT 的别名，不存数据：
+
+**① 最新在前**（列表/浏览用，别直接扫裸表）
 
 | 视图 | 基于 | 排序 |
 |---|---|---|
@@ -331,6 +335,41 @@
 | `brain_sessions_newest` | `brain_sessions` | `last_active DESC` |
 
 外层自带 `ORDER BY` 时以外层为准；带 WHERE 过滤也保持“新在前”。
+
+**② 北京时间**（所有 `datetime` 列 +8 小时，显示用，不要拿它做写入/对比）
+
+`brain_memories_bj` · `brain_turns_bj` · `brain_turn_messages_bj` · `brain_sessions_bj` · `brain_archive_bj`
+（库内一律 UTC，见第 2 节；只有给人看的时候才走 `_bj`，明细见 `brain_thoughts_detail_bj`。）
+
+**③ 思考链宽表**（2026-10-25 加）
+
+| 视图 | 基于 | 说明 |
+|---|---|---|
+| `brain_thoughts_detail` | `brain_thoughts LEFT JOIN brain_turns ON turn_id` | 一条思考 = 一行，把轮次上下文并进来 |
+| `brain_thoughts_detail_bj` | 同上 | 同上，两个时间列换成北京时间 |
+
+列：`turn_id, seq, thought_ts, turn_ts, session_id, platform, author, machine, message_count,
+finish_reason, reasoning_chars, reasoning, user_chars, user_preview(200 字), assistant_chars, assistant_preview(200 字)`。
+
+- `reasoning` 是全文；问答只给 200 字预览，全文去 `brain_turns` 按 `turn_id` 取（视图里复制全文会撑爆 `SELECT *`）。
+- `LEFT JOIN` 故意保留孤儿：截至 2026-10-25 有 83 行思考属于 turn 1107-1109，那三轮的 `brain_turns` /
+  `brain_turn_messages` 行已被删，所以这些行的 `session_id / platform / turn_ts` 为 NULL、`thought_ts` 也为 NULL ——
+  这是缺父行，不是索引没写。
+- `brain_thoughts.ts` 只在写入方带了消息级 `timestamp` 时才有值（实时轮次有，历史回填/dsh 上传的没有），
+  缺失时已按同一 `(turn_id, seq)` 的 `brain_turn_messages.ts` 补齐；upsert 用 `COALESCE` 防回放擦除。
+- 走 `uniq_thought(turn_id, seq)` 索引，按轮次查是 `ref` 而不是全表扫；跨轮按时间检索请用 `thought_ts` 上的 `idx_thought_ts`。
+
+```sql
+-- 某一轮的思考链（带提问）
+SELECT seq, thought_ts, reasoning_chars, user_preview, LEFT(reasoning,200)
+FROM brain_thoughts_detail WHERE turn_id = 1150 ORDER BY seq;
+
+-- 最近一周某个平台的思考
+SELECT turn_id, seq, thought_ts, LEFT(reasoning,120)
+FROM brain_thoughts_detail_bj
+WHERE platform = 'weixin' AND thought_ts >= NOW() - INTERVAL 7 DAY
+ORDER BY thought_ts DESC LIMIT 20;
+```
 
 ---
 
