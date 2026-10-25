@@ -1,0 +1,19 @@
+[Unit]
+Description=atbrains memory console (/web + /v1 + /mcp)
+Documentation=file:///root/atbrains/README.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/.hermes/plugins/atbrains/console
+ExecStart=/root/.hermes/plugins/atbrains/console/run.sh
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=10
+StandardOutput=append:/var/log/atbrains-console.log
+StandardError=append:/var/log/atbrains-console.log
+
+[Install]
+WantedBy=multi-user.target

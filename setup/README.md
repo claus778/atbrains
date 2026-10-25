@@ -1,20 +1,52 @@
-# 从零重建 brain 记忆系统
+# 从零搭建 atbrains（完整步骤）
 
-> 按顺序执行。**所有口令用占位符表示,真实值见 `SECRETS.md` 指出的位置。**
-> 重建前先记下两边的计数(记忆/轮次/会话、Redis DBSIZE),便于重建后核对。
+> 目标机器：Debian 13 / Ubuntu 22.04+，2C4G 起。以下命令都在 `/root` 下执行。
+> 全部口令用 `<...>` 占位；真实值只放 `~/.hermes/.env` 与 qdrant 配置文件，**不进 git、不进聊天**。
+> 表/列含义见 [`../docs/database-schema.md`](../docs/database-schema.md)；`/v1` 接口见 [`../docs/protocol-v1.md`](../docs/protocol-v1.md)。
 
 ---
 
-## 0. 前置
+## 0. 这套系统由什么组成
 
-```bash
-# Docker 已装;本机为腾讯云 Debian 13
-docker --version && systemctl is-active docker
+```
+Hermes 会话 ──┐                        ┌─ MariaDB  :57306  agent_memory（14 表，全局权威）
+dsh 会话 ─────┼── /v1 或 /mcp ──▶ 8787 ─┼─ Redis    :9079   db0（短期：流/热点/缓存）
+其它 agent ───┘   （Bearer 令牌）      └─ Qdrant   :6333   brain_memories（向量，可重建）
+                       │
+                       └─ atbrains-memory（Python 引擎，Hermes 插件形态）——
+                          召回 / 记忆 / 归档 / 知识层 / 向量回填 / 清理，全部在它里面
 ```
 
-## 1. 起三个容器
+| 组件 | 形态 | 端口 | 作用 |
+|---|---|---|---|
+| Redis | Docker | 9079 | 短期层：最近对话流、会话状态、热点镜像、检索缓存 |
+| MariaDB | Docker | 57306 | 长期层：记忆 / 对话 / 会话 / 存档 / 知识层 / 思考与工具明细 |
+| Qdrant | Docker | 6333/6334 | 向量层：记忆正文的 2560 维向量 |
+| atbrains 控制台 | systemd | 8787 | 网页面板 + `/v1`（HTTP 契约）+ `/mcp`（MCP 端点） |
+| atbrains-memory | Hermes 插件 | — | 记忆引擎本体；控制台也 import 它 |
 
-**Redis(短期层)** —— `:9079` → 容器内 6379,需 `--requirepass`
+---
+
+## 1. 前置
+
+```bash
+docker --version && systemctl is-active docker
+python3 -V                      # 3.11+ 即可；Hermes 自带解释器也行
+ss -lntp | grep -E ':(9079|57306|6333|8787)\b' || echo "端口空闲"
+```
+
+目录约定（数据必须落在宿主机目录，容器重建不丢）：
+
+```bash
+mkdir -p /root/redis /root/mariadb /root/qdrant/qdrant-config /root/agent-db /root/atbrains
+```
+
+---
+
+## 2. 起三个容器
+
+**Redis（短期层）**
+
 ```bash
 docker run -d --name redis --restart unless-stopped \
   -p 9079:6379 \
@@ -23,12 +55,22 @@ docker run -d --name redis --restart unless-stopped \
   redis-server --appendonly yes --requirepass '<REDIS_PASSWORD>'
 ```
 
-**MariaDB(长期层)** —— `:57306` → 容器内 3306
+**MariaDB（长期层）**
+
 ```bash
+# 时区口径：容器内固定 UTC（全库时间都按 UTC 存）
+mkdir -p /root/agent-db/mysql-conf.d
+cat > /root/agent-db/mysql-conf.d/99-timezone.cnf <<'EOF'
+[mysqld]
+default-time-zone = '+00:00'
+EOF
+
 docker run -d --name mariadb --restart unless-stopped \
   -p 57306:3306 \
   -v /root/mariadb:/var/lib/mysql \
-  -e MARIADB_ROOT_PASSWORD='<MARIADB_ROOT_PASSWORD>' \
+  -v /root/agent-db/mysql-conf.d/99-timezone.cnf:/etc/mysql/conf.d/99-timezone.cnf:ro \
+  -v /root/agent-db/init.sql:/docker-entrypoint-initdb.d/10-agents.sql:ro \
+  -e MARIADB_ROOT_PASSWORD='<ROOT_PASSWORD>' \
   -e MARIADB_DATABASE=agent_memory \
   -e MARIADB_USER=agent \
   -e MARIADB_PASSWORD='<MARIADB_PASSWORD>' \
@@ -36,10 +78,16 @@ docker run -d --name mariadb --restart unless-stopped \
   --character-set-server=utf8mb4 --collation-server=utf8mb4_unicode_ci
 ```
 
-**Qdrant(向量层)** —— `:6333`(HTTP)/ `:6334`(gRPC)
+> `10-agents.sql` 只在**空数据目录首次启动**时执行；已有 `/root/mariadb` 时不会跑，属正常。
+
+**Qdrant（向量层）**
+
 ```bash
-mkdir -p /root/qdrant/qdrant-config
-# 先写好 /root/qdrant/qdrant-config/production.yaml(见第 5 步,内含 service.api_key)
+# 先把 key 写进配置文件（容器 env 里不放 key）
+cat > /root/qdrant/qdrant-config/production.yaml <<'EOF'
+service:
+  api_key: "<QDRANT_AND_EMBED_KEY>"
+EOF
 
 docker run -d --name qdrant --restart unless-stopped \
   -p 6333:6333 -p 6334:6334 \
@@ -49,138 +97,196 @@ docker run -d --name qdrant --restart unless-stopped \
   qdrant/qdrant
 ```
 
-> ⚠️ 数据都在宿主机目录里:`/root/mariadb`(MariaDB)、`/root/redis`(Redis)、`/root/qdrant`(Qdrant)。
-> 重建容器**必须挂回这些目录**(2026-10-15 起为绑定挂载; 旧命名卷 `mariadb_data` / `redis_data` 已弃用、保留未删),否则数据全丢。
+> ⚠️ 这把 `api_key` **当前实现里同时用作两处**：qdrant 鉴权 + 硅基流动 embed key（用户指定同串）。
+> 轮换 = 改这个文件 + `docker restart qdrant`；插件有 5 分钟缓存，401 会自动失效重读。
 
-## 2. 初始化数据库
+---
 
-```bash
-# 空卷初始化(全新部署)
-docker exec -i mariadb sh -c 'exec mariadb -u root -p"$MARIADB_ROOT_PASSWORD"' < init.sql
+## 3. 建库 + 表结构
 
-# 或:从旧库迁移 + 拆出多 agent 独立库
-docker exec -i mariadb sh -c 'exec mariadb -u root -p"$MARIADB_ROOT_PASSWORD"' < migration-20261012.sql
-```
+两种方式，二选一：
 
-`init.sql` 建表:`brain_memories` / `brain_turns` / `brain_sessions` / `brain_archive`。
+**A. 让插件自动建（推荐）** —— 装好插件后第一次 `doctor` / `status` 就会幂等建出 14 表 / 10 视图 / 10 触发器。
 
-**多 agent 分库**(omp / dsh / artex 各自独立库 + 用户 + Redis db5-7):
-见 `migration-20261012.sql` 后半段;账号自检用 `verify-accounts.py`。
-Redis 库号规划:**db0-4 留给 hermes 系**(server=db0、x260=db1…),非 hermes 从 db5 起。
-
-## 3. 部署 atbrains-memory 插件
+**B. 手工导入（审计 / 离线重建用）**
 
 ```bash
-# 插件目录(Windows 是 %USERPROFILE%\.hermes\plugins\brain)
-ls ~/.hermes/plugins/atbrains-memory/{__init__.py,core.py,cli.py,plugin.yaml,vendor,skills}
+docker exec -i mariadb sh -c 'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" -e "
+  CREATE DATABASE IF NOT EXISTS agent_memory CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"'
+
+docker exec -i mariadb sh -c 'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" agent_memory' \
+  < setup/schema-v9.sql
+
+# 核对：14 表 / 10 视图 / 10 触发器
+docker exec -i mariadb sh -c 'mariadb -uroot -p"$MARIADB_ROOT_PASSWORD" -N -B -e "
+  SELECT TABLE_TYPE, COUNT(*) FROM information_schema.tables WHERE TABLE_SCHEMA=\"agent_memory\" GROUP BY 1;
+  SELECT COUNT(*) FROM information_schema.triggers WHERE TRIGGER_SCHEMA=\"agent_memory\";"'
 ```
 
-**关键约束(踩过的坑)**
+`setup/schema-v9.sql` 由 `tools/export-schema.py` 从活库生成（已剥离 DEFINER、不含 AUTO_INCREMENT 计数），
+改完结构重新生成即可。旧文件 `init.sql.old-20261025` 是 v8 之前的分库方案，仅作考古。
 
-- `plugin.yaml` **绝不能**声明 `pip_dependencies` —— 一旦声明,PM 会把插件并入 uv
-  workspace 重解析,而腾讯 pip 镜像缺 PEP 700 元数据(uv 的 `exclude-newer` 需要),
-  解析必失败 → 插件被自动驱逐。
-- 依赖必须保持 **vendor 方式**:`vendor/` 里内置纯 Python 的 `redis` + `pymysql`。
-- 插件目录损坏时,可用分发包 `dist/atbrains-memory-<日期>.zip` 恢复。
+---
 
-## 4. 配置
+## 4. 装 Hermes 记忆插件
 
 ```bash
-# 非密配置
-cat ~/.hermes/brain.json
+cd /root/atbrains
+./install.sh            # rsync: atbrains-memory/ → ~/.hermes/plugins/atbrains-memory
+                        #        plugin/         → ~/.hermes/plugins/atbrains
+                        # 保留运行时文件：service-tokens.json / console/.token
+
+# 备选：install.sh 想顺手重启网关被 lifecycle guard 拒绝时，手动两条
+rsync -a --delete --exclude '__pycache__' atbrains-memory/ ~/.hermes/plugins/atbrains-memory/
+rsync -a --delete --exclude '__pycache__' --exclude 'service-tokens.json' --exclude '.token' \
+      plugin/ ~/.hermes/plugins/atbrains/
 ```
+
+**两条硬约束（踩过的坑）**
+
+1. `plugin.yaml` **绝不要声明 `pip_dependencies`** —— 会被并进 uv workspace 重解析，
+   国内镜像缺 PEP 700 元数据 → 解析失败 → 插件被自动禁用。依赖用 `vendor/` 内置的 redis + pymysql。
+2. 别改安装副本再指望生效：改 `/root/atbrains/` 里的源码，再 rsync 过去。
+
+---
+
+## 5. 配置 + 激活
+
+**非密配置** `~/.hermes/atbrains.json`（插件与 `hermes atbrains-memory` 共用）：
 
 ```json
 {
+  "machine": "server",
   "redis_host": "127.0.0.1", "redis_port": 9079, "redis_db": 0,
   "mariadb_host": "127.0.0.1", "mariadb_port": 57306,
   "mariadb_user": "agent", "mariadb_db": "agent_memory",
-  "machine": "server",
   "vector_enabled": 1,
-  "embed_model": "Qwen/Qwen3-Embedding-4B",
-  "embed_dim": 2560,
-  "qdrant_url": "http://127.0.0.1:6333",
-  "qdrant_collection": "brain_memories",
-  "vector_topk": 12,
-  "vector_min_score": 0.25
+  "embed_model": "Qwen/Qwen3-Embedding-4B", "embed_dim": 2560,
+  "qdrant_url": "http://127.0.0.1:6333", "qdrant_collection": "brain_memories",
+  "qdrant_config_file": "/root/qdrant/qdrant-config/production.yaml",
+  "vector_topk": 12, "vector_min_score": 0.25,
+  "rerank_enabled": 0, "distill_enabled": 0
 }
 ```
 
-```bash
-# 密钥只进 .env(用 save_env_value 写,别手写引号 —— 引号会让某些读取方式变形)
-#   BRAIN_REDIS_PASSWORD / BRAIN_MARIADB_PASSWORD / (嵌入服务的 KEY)
+**口令只进** `~/.hermes/.env`（用 Hermes 的 `save_env_value` 写，别手写引号）：
+
 ```
+BRAIN_REDIS_PASSWORD=<REDIS_PASSWORD>
+BRAIN_MARIADB_PASSWORD=<MARIADB_PASSWORD>
+```
+（`ATBRAINS_REDIS_PASSWORD` / `ATBRAINS_MARIADB_PASSWORD` 是等价别名，二选一。）
 
 **激活 provider**
+
 ```bash
 hermes config set memory.provider atbrains-memory
-hermes memory status      # 应显示 brain available
+hermes memory status                 # 应显示 atbrains-memory, available ✓
+hermes atbrains-memory doctor        # 依赖 ✓ 凭据 ✓ 连接 ✓ 表结构 v9
 ```
 
-## 5. 向量层
+---
 
-**Qdrant 访问口令**:写在 `/root/qdrant/qdrant-config/production.yaml`(只读挂进容器)
-```yaml
-service:
-  api_key: "<QDRANT_API_KEY>"
-```
-> 容器 env 里**不放**任何 key;仅通过该配置文件。验证:无 key → 401,带 key → 200。
-
-**嵌入模型**:硅基流动 `Qwen/Qwen3-Embedding-4B`(2560 维,支持降维 64~2560)。
-key 位置见 `SECRETS.md`。
-
-**建集合**(插件会在首次回填时自动建,也可手动):
-```bash
-KEY=$(grep -oP '(?<=api_key: ).*' /root/qdrant/qdrant-config/production.yaml)
-curl -H "api-key: $KEY" http://127.0.0.1:6333/collections/brain_memories
-```
-
-## 6. 自动化(零 systemd)
-
-**不需要安装任何 systemd 单元** —— 向量补漏与数据库清理都在插件进程内完成:
-
-- **向量补漏**:任何加载了插件的长命进程(网关最典型)每 60 秒扫一次待向量化行;
-  短命进程(一次性 CLI)尽力而为后退出,遗留欠账由下一个长命进程接手。
-- **数据库清理**:`brain-maintenance` 线程每 `maintenance_interval_min`(默认 60 分钟)检查
-  `brain_meta.last_prune`,距上次超过 `prune_every_days`(默认 7 天)才执行,
-  靠 `GET_LOCK('brain_prune')` 多进程互斥。开关 `maintenance_enabled`。
-
-> ⚠️ 2026-10-17 之前这套系统用 systemd 定时器(`brain-vector-drain.timer` +
-> `brain-prune.timer`)。实测证明 drain 定时器**完全冗余**(比内建巡检还慢:上限 3 分钟 vs 100 秒),
-> 已退役,单元文件存档在 `/root/agent-db/dist/systemd-retired/`。
-> **不要再给这套系统加 systemd 单元** —— 用户明确要求不依赖系统级服务。
-
-## 7. 验证(逐层)
+## 6. 控制台 / `/v1` / `/mcp`（8787）
 
 ```bash
-hermes atbrains-memory doctor                       # 依赖/凭据/连接/表结构
-hermes atbrains-memory status                       # 计数总览
-hermes atbrains-memory vector-status                # 向量层开关/模型/key 来源
-hermes atbrains-memory vector-test                  # 关键词 vs 向量 vs 融合
-# 端到端:新会话里"只凭记忆回答 <只有库里知道的事实>",应在 0 工具调用下答对
+# 1) 令牌表（每个客户端一条；名字格式 <主机>|<agent>，左=machine 右=agent）
+hermes atbrains token-add server
+hermes atbrains token-add 'r9000p-Windows|dsh'
+hermes atbrains token-list
 
-# 完整性(可选,发现缺口时)
-python3 audit-turns.py                    # 对话归档对账
-python3 audit-memories.py                 # 内置记忆 ↔ brain 镜像对账
+# 2) 常驻（必须 systemd：插件自带 serve --background 是网关子进程，回合结束就被清掉）
+cp setup/systemd/atbrains-console.service /etc/systemd/system/
+systemctl daemon-reload && systemctl enable --now atbrains-console
+systemctl is-active atbrains-console
+tail -5 /var/log/atbrains-console.log
+
+# 3) 自检
+curl -s http://127.0.0.1:8787/v1/health                  # {"ok":true,"version":"2.0.0",...}
+python3 scripts/contract-v1.py                            # 21 项契约测试（含写库 + 游标幂等）
+python3 /root/agent-db/mcp_client_test.py --url http://127.0.0.1:8787/mcp --agent omp   # tools=10
 ```
 
-## 8. 监控控制台(Hermes 插件)
+> `atbrains-console.service` 的 `ExecStart` 指向 `console/run.sh`，里面用 glob 取最新的
+> `/root/.hermes/tools/python-3.*/bin/python3` —— **别把版本号写死**，Hermes 一升级路径就变
+> （症状：`status=203/EXEC`、端口静默不监听）。
+
+---
+
+## 7. dsh 客户端（可选）
 
 ```bash
-# 插件必须装在 Hermes 的插件目录(只有那里会被加载)
-cp -r atbrains-plugin ~/.hermes/plugins/atbrains
-hermes plugins enable atbrains
-hermes plugins info atbrains        # Status: enabled
-
-# 三个使用面(共用 probe.py 数据层)
-hermes atbrains status              # 命令行总览
-hermes atbrains serve --background  # 按需起网页控制台(不是系统服务)
-hermes atbrains open                # 地址 + 口令
-hermes atbrains stop                # 停
+# 包在 dist/，源码在 clients/dsh-atbrains/
+# 目标机（Windows）：解包到 %USERPROFILE%\.dsh\plugins\dsh-atbrains
+#   setx ATBRAINS_MCP_TOKEN "<该机令牌>"
+#   cordis.patch.yml 里 baseUrl 指向 http://<服务器>:8787
+# 重启 dsh → 日志出现 [atbrains] 已启用 → …（召回 + 自动归档）
 ```
 
-Agent 工具 `atbrains_status` / `atbrains_control` 在新会话中可用
-(`hermes plugins enable` 后需重开会话让工具集生效)。
+细节见 `dist/dsh-onboarding.md`。它每轮自动召回，并把完整消息链（含工具调用/推理）归档进
+`brain_turns` / `brain_turn_messages`，不经过 Python。
 
-> ⚠️ **不要**给控制台写 systemd 单元 —— 用户明确要的是插件形态:
-> 由 `hermes atbrains serve|stop` 管生命周期,不常驻、不注册服务。
+---
+
+## 8. 验收清单（逐层，全过才算搭好）
+
+```bash
+hermes atbrains-memory doctor          # 依赖 / 凭据 / Redis / MariaDB / 表结构 v9
+hermes atbrains-memory status          # 计数总览（记忆 / 对话 / 会话 / 转录 / 占用）
+hermes atbrains-memory vector-status   # 开关 / 模型 / key 来源 / 缺失·失败·过期应全 0
+python3 scripts/contract-v1.py         # /v1 契约（HTTP + 库断言 + 自动清理）
+curl -s http://127.0.0.1:8787/v1/health
+
+# 端到端：新会话只凭记忆回答一个只有库里知道的事实，应 0 次工具调用就答对
+hermes chat -q "只凭记忆回答：<只存在于库里的那个事实>"
+```
+
+浏览器验收（可选）：`ssh -p 7622 -L 8787:127.0.0.1:8787 root@<服务器>`，
+再开 `http://127.0.0.1:8787/?token=<console/.token 里的值>`。
+
+---
+
+## 9. 日常维护
+
+| 事 | 命令 |
+|---|---|
+| 备份 | `mariadb-dump ... agent_memory \| gzip > backup-$(date +%F).sql.gz`，再 `gzip -t` 验一遍 |
+| 恢复 | `zcat backup.sql.gz \| mariadb ... agent_memory` |
+| 清理 | `python3 /root/agent-db/prune.sh`（插件内也有维护线程，每 7 天一次） |
+| 向量补漏 | 长命进程每 60 秒自动扫；手动 `hermes atbrains-memory vector-drain` |
+| 升级插件 | 仓库 `git pull` → `./install.sh` → `systemctl restart atbrains-console` → 重开 Hermes 会话 |
+| 重建触发器 | `python3 /root/agent-db/apply-platform-triggers.py && python3 /root/agent-db/apply-author-rules.py` |
+| 结构导出 | `python3 tools/export-schema.py > setup/schema-v9.sql` |
+
+> **不要**给向量/清理再加 systemd 定时器：它们都在插件进程内（用户明确要求不依赖系统服务）。
+> 唯一的 systemd 单元是控制台（8787），因为它是长命进程。
+
+---
+
+## 10. 故障速查
+
+| 现象 | 先查 |
+|---|---|
+| `memory.provider` 变空 / 插件被 disabled | `plugin.yaml` 是否混进了 `pip_dependencies`；`hermes config set memory.provider atbrains-memory` |
+| `doctor` 报连接失败 | 容器是否在跑；`.env` 口令是否被引号污染（用 Python 解析，别 `source .env`） |
+| 召回为空、但工具在 | provider 是否 active；`brain_memories.active` 是否有行；向量层是否回落关键词 |
+| `brain_turns` 没有新行 | 配置变更后是否重启过进程；`grep "sync_turn 写入失败" ~/.hermes/logs/agent.log` |
+| 8787 不监听 | `systemctl status atbrains-console`；`run.sh` 里 python 路径是否失效（203/EXEC） |
+| `/v1` 401 | 令牌是否在 `service-tokens.json` 里；`hermes atbrains token-list` 对照 |
+| dsh 有工具但从不调用 | MCP 只提供工具；自动召回要装 `clients/dsh-atbrains` 原生插件 |
+| 表结构版本不对 | `SELECT meta_value FROM brain_meta WHERE meta_key='schema_version';`（不是列名） |
+
+---
+
+## 附：目录对照
+
+```
+atbrains-memory/        Hermes 记忆插件（引擎本体：core.py / cli.py / vendor / 自带 skill / CONVENTIONS）
+plugin/                 控制台 + /v1 + /mcp（server.py、service.py、atbrains_mcp.py、probe.py、console/）
+clients/dsh-atbrains/   dsh 原生插件（纯 Node）
+docs/                   database-schema.md（表/列字典）、protocol-v1.md（契约）、architecture*、skill 副本
+scripts/                contract-v1.py（契约测试）等
+setup/                  本文件、schema-v9.sql、init.sql、SECRETS.md、systemd/、verify-accounts.py
+tools/                  export-schema.py、package.py（打包/脱敏）
+web/                    前端静态资源与控制台截图
+```
