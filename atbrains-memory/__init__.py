@@ -25,7 +25,15 @@ import time
 from datetime import datetime
 from typing import Any, Optional
 
-from agent.memory_provider import MemoryProvider, RecallStatus, spawn_context_thread
+from agent.memory_provider import MemoryProvider, RecallStatus
+
+try:  # Hermes ≥0.22 才有该助手；Windows 桌面 CN 旧构建（如 0.21.0-cn.18）没有，缺了就整体导入失败
+    from agent.memory_provider import spawn_context_thread
+except ImportError:  # 退化为普通守护线程：不传播 contextvars，仅用于 best-effort 预热
+
+    def spawn_context_thread(target, *, name, daemon=True, args=(), kwargs=None):  # type: ignore[no-redef]
+        return threading.Thread(target=target, args=args, kwargs=kwargs or {}, name=name, daemon=daemon)
+
 
 from .core import BrainError, AtbrainsStore, hermes_home_path, resolve_config
 
