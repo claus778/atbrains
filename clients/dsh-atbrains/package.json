@@ -1,6 +1,6 @@
 {
   "name": "dsh-atbrains",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "atbrains shared long-term memory for DeepSeek Harness — native Cordis plugin: auto recall + full transcript archive over the /v1 HTTP API (no MCP bridge, no Python helper).",
   "type": "module",
   "main": "lib/index.js",
@@ -18,6 +18,7 @@
     "README.md",
     "test/recall.mjs",
     "test/archive.mjs",
+    "test/timestamp.mjs",
     "test/wiring.mjs",
     "test/protocol.mjs",
     "test/live.mjs"

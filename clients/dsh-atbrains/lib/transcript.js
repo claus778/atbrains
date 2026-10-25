@@ -28,6 +28,29 @@ function clip(text, limit) {
   return s.length <= limit ? s : `${s.slice(0, limit)}…`
 }
 
+/**
+ * 取一条 dsh Message 的时间（epoch 秒/毫秒 或 ISO 串），取不到返回 undefined。
+ *
+ * 为什么要带上：服务端把转录投影成 brain_thoughts / brain_tool_calls 时，
+ * 每行的时间取自消息里的 `timestamp`；dsh 早期版本不带这个字段，结果整段
+ * 转录回填出来的 ts 全是 NULL（2026-10-25 在 turn 1150 上实测 177 行）。
+ * dsh 的 event / message 上时间字段命名不统一，这里按常见名字逐个试。
+ */
+const TIME_FIELDS = ['timestamp', 'ts', 'at', 'time', 'createdAt', 'created_at']
+
+export function msgTimestamp(m) {
+  for (const src of [m, m?.source, m?.meta]) {
+    if (!src || typeof src !== 'object') continue
+    for (const k of TIME_FIELDS) {
+      const v = src[k]
+      if (typeof v === 'number' && Number.isFinite(v) && v > 0) return v
+      if (typeof v === 'string' && v.trim()) return v.trim()
+      if (v instanceof Date && !Number.isNaN(v.getTime())) return v.toISOString()
+    }
+  }
+  return undefined
+}
+
 /** 把 ContentBlock[] 拆成文本 / 推理 / 工具调用 / 附件占位。 */
 export function splitBlocks(blocks) {
   const texts = []
@@ -98,11 +121,13 @@ export function transcriptFromMessages(messages, { maxChars = 16000, maxMessages
   for (const m of Array.isArray(messages) ? messages : []) {
     const role = String(m?.role || '')
     if (role !== 'user' && role !== 'assistant' && role !== 'tool') continue
+    const ts = msgTimestamp(m)
     const { text, reasoning, calls } = splitBlocks(m?.content)
     if (role === 'user' && isSyntheticUser(m, text)) continue // 注入的假 user 消息不入库
     if (role === 'assistant') {
       for (const c of calls) if (c.id) callNames.set(c.id, c.name)
       const rec = { role: 'assistant', content: redact(clip(text, maxChars)) }
+      if (ts !== undefined) rec.timestamp = ts
       if (reasoning) rec.reasoning = redact(clip(reasoning, maxChars))
       if (calls.length) {
         rec.tool_calls = calls.map((c) => ({
@@ -114,16 +139,20 @@ export function transcriptFromMessages(messages, { maxChars = 16000, maxMessages
       records.push(rec)
       if (text) lastAssistant = text
     } else if (role === 'user') {
-      records.push({ role: 'user', content: redact(clip(text, maxChars)) })
+      const rec = { role: 'user', content: redact(clip(text, maxChars)) }
+      if (ts !== undefined) rec.timestamp = ts
+      records.push(rec)
       if (text) lastUser = text
     } else {
       const callId = String(m?.toolCallId ?? m?.tool_call_id ?? m?.source?.callId ?? '')
-      records.push({
+      const rec = {
         role: 'tool',
         tool_name: callNames.get(callId) || '',
         tool_call_id: callId,
         content: redact(clip(text, maxChars)),
-      })
+      }
+      if (ts !== undefined) rec.timestamp = ts
+      records.push(rec)
     }
   }
 
@@ -163,7 +192,14 @@ export function readSessionMessages(session) {
       msg = null
     }
     if (!msg) continue
-    if (msg.role === 'user' || msg.role === 'assistant' || msg.role === 'tool') out.push(msg)
+    if (msg.role === 'user' || msg.role === 'assistant' || msg.role === 'tool') {
+      // 消息本身没带时间就用事件上的（dsh 的 event 通常有 at/ts），别让它落到库里变 NULL
+      if (msgTimestamp(msg) === undefined) {
+        const ts = msgTimestamp(event)
+        if (ts !== undefined) msg = { ...msg, timestamp: ts }
+      }
+      out.push(msg)
+    }
   }
   return out
 }

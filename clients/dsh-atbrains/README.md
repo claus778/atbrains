@@ -1,4 +1,4 @@
-# dsh-atbrains 0.3.3 —— dsh 原生记忆插件
+# dsh-atbrains 0.3.4 —— dsh 原生记忆插件
 
 把 atbrains 共享长期记忆挂进 DeepSeek Harness（dsh）。**原生 Cordis 插件，纯 Node**：
 
@@ -77,7 +77,7 @@ node test/live.mjs       # 真机：health/status/recall/turn（需要 ATBRAINS_
 - 契约文档：`/root/atbrains/docs/protocol-v1.md`（`/v1` 字段、错误码、版本策略）。
 - 插件启动后**第一次**召回/归档前会 `GET /v1/health`，主版本不一致就停用并打 error ——
   避免服务端字段变了、客户端还照旧写。探活失败不判死（交给真实请求降级）。
-- 源码在 `/root/atbrains/clients/dsh-atbrains`（git 管理，tag `dsh-atbrains-v0.3.1`），
+- 源码在 `/root/atbrains/clients/dsh-atbrains`（git 管理，tag `dsh-atbrains-v0.3.4`），
   分发包在 `/root/agent-db/dist/`。
 
 ## 排障
@@ -93,6 +93,7 @@ node test/live.mjs       # 真机：health/status/recall/turn（需要 ATBRAINS_
 | 和 dsh-mnemon 同时装 | 两边都挂 `agent/pre-step`，会双注入；二选一 |
 | `brain_turns.user_content` 是一段 `[atbrains 长期记忆] …` | 0.3.1 的 bug：归档把注入的召回块当成了用户提问（dsh 把上下文/skill 清单也塞成 user 消息）。升 0.3.2 |
 | 会话超过 400 条后每轮 `message_count=0`（有 user_content、没转录） | 0.3.2 及更早只传尾部窗口却没带 `total`，服务端「窗口长度==游标」判断成没有增量。升 0.3.3（服务端同时要 ≥2.0.1） |
+| `brain_thoughts.ts` / `brain_tool_calls.started_at` 全是 NULL（`brain_turns.ts` 正常） | 0.3.3 及更早的转录没带消息级时间，服务端投影只能留空。升 0.3.4：每条记录带 `timestamp`（依次取 `timestamp/ts/at/time/createdAt`，消息上没有就用事件的 `at`） |
 
 ## 边界
 
