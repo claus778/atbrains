@@ -261,7 +261,7 @@ GET  /v1/memory/status
   agent;老名字不含 `|` 时保持历史口径。
 - `/v1/memory/turn` 的 `messages[]` 是「到目前为至的完整会话」,服务端按
   `brain_sessions.archived_messages` 游标只落增量;`assistant` 可为空(只有工具调用的回合)。
-  这个端点就是 dsh 原生插件自动归档用的入口(见 `/root/dsh-atbrains`)。
+  这个端点就是 dsh 原生插件自动归档用的入口(见 `clients/dsh-atbrains`)。
 - 令牌:`service-tokens.json`(600);`hermes atbrains token-list|token-add|token-rm`。
 - **客户端接入(远程模式)**:brain.json 开 `remote_enabled=1` + `remote_url`;令牌放
   `~/.hermes/.env` 的 `BRAIN_REMOTE_TOKEN`(不落 brain.json)。任何失败**自动回落本地直连**

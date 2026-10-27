@@ -6,7 +6,13 @@
  *
  * 跑：node test/prestep.mjs
  */
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createRuntime } from '../lib/index.js'
+
+// 身份状态不能写进真实 ~/.dsh
+process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-atbrains-recall-'))
 
 const logs = []
 const ctx = { logger: { info: (m) => logs.push(['info', m]), warn: (m) => logs.push(['warn', m]), error: (m) => logs.push(['error', m]), debug: () => {} } }
@@ -115,6 +121,22 @@ function check(label, cond) {
   const out = await rt.recall({ ...payload, messages: noisy }, { kind: 'enter', messages: noisy })
   check('召回查询跳过假 user 消息', seen[0] === '我们的记忆库叫什么名字')
   check('注入追加在末尾', out.messages.at(-1)?.source?.kind === 'atbrains' && out.messages.length === 4)
+}
+
+// case 8：身份待设置 + 召回同轮共存；setup 不挡召回，也不重复注入
+{
+  const rt = createRuntime(
+    ctx,
+    { ...config, identityFile: join(process.env.DSH_HOME, 'recall-identity.json') },
+    { clientFactory: fakeClient({ text: '- [fact] 命中', items: [{ kind: 'fact', vscore: 1 }] }) },
+  )
+  const onlySetup = rt.setup(payload, enter)
+  check('setup 先注入一条', onlySetup.messages.length === 2 && onlySetup.messages[1].source.form === 'setup')
+  const recalled = await rt.recall(payload, onlySetup)
+  check('已有 setup 仍会召回', recalled.messages.length === 3 && recalled.messages[2].source.form === 'recall')
+  const deduped = rt.setup(payload, recalled)
+  check('setup 不重复注入', deduped.messages.filter((m) => m?.source?.form === 'setup').length === 1)
+  check('已召回后不再重复召回', (await rt.recall(payload, deduped)).messages.length === 3)
 }
 
 console.log(failures === 0 ? '\n全部通过' : `\n${failures} 项失败`)

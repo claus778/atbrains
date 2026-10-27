@@ -1,7 +1,7 @@
 {
   "name": "dsh-atbrains",
-  "version": "0.3.4",
-  "description": "atbrains shared long-term memory for DeepSeek Harness — native Cordis plugin: auto recall + full transcript archive over the /v1 HTTP API (no MCP bridge, no Python helper).",
+  "version": "0.4.0",
+  "description": "atbrains shared long-term memory for DeepSeek Harness — native Cordis plugin: first-run identity onboarding (/atbrains), auto recall + full transcript archive over the /v1 HTTP API (no MCP bridge, no Python helper).",
   "type": "module",
   "main": "lib/index.js",
   "exports": {
@@ -13,18 +13,20 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
+    "lib/identity.js",
     "lib/transcript.js",
     "cordis.patch.yml",
     "README.md",
     "test/recall.mjs",
     "test/archive.mjs",
+    "test/identity.mjs",
     "test/timestamp.mjs",
     "test/wiring.mjs",
     "test/protocol.mjs",
     "test/live.mjs"
   ],
   "scripts": {
-    "test": "node test/recall.mjs && node test/archive.mjs && node test/wiring.mjs && node test/protocol.mjs",
+    "test": "node test/recall.mjs && node test/archive.mjs && node test/identity.mjs && node test/wiring.mjs && node test/protocol.mjs",
     "test:live": "node test/live.mjs"
   },
   "keywords": [

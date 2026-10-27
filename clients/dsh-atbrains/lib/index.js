@@ -10,18 +10,38 @@
  *   'agent/turn-stopping'(payload) serial —— 回合收尾时把整段会话（含工具调用/
  *       工具输出/推理）POST 到 /v1/memory/turn，落 brain_turns + brain_turn_messages。
  *
- * 召回与归档共用一个令牌；身份由服务端按令牌反查（`<主机>|<agent>`），
- * 客户端无法伪造 machine。
+ * 召回与归档共用一个令牌；服务端按令牌反查 machine/agent（`<主机>|<agent>`），
+ * 客户端不能伪造 machine。插件另存一份本机身份（machine/os/author）：
+ *   · 第一次安装或升级后发现缺值 → 下一轮 pre-step 注入 source.form='setup' 提示；
+ *   · 模型可用 atbrains_identity 工具保存，用户可用 /atbrains 命令重设；
+ *   · 状态写在 $DSH_HOME/atbrains/identity.json，升级覆盖 lib/ 不会丢。
  */
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import z from '@deepseek-ai/schemastery'
 import { AtbrainsClient } from './client.js'
 import { readSessionMessages, transcriptFromMessages, isSyntheticUser } from './transcript.js'
+import {
+  createIdentityController,
+  parseIdentityInput,
+  renderIdentity,
+  setupNotice,
+  IDENTITY_USAGE,
+} from './identity.js'
 
 export const name = 'atbrains-memory'
 
-/** 只用事件与 logger，不依赖其它 Cordis 服务。 */
+/** 只用事件与 logger，不依赖其它 Cordis 服务；commands/tools 走可选注入。 */
 export const inject = []
+
+/** 当前插件版本（用来识别「第一次安装 / 刚刚升级」）。 */
+const PLUGIN_VERSION = (() => {
+  try {
+    return String(JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version || '0.0.0')
+  } catch {
+    return '0.0.0'
+  }
+})()
 
 export const Config = z.object({
   /** 服务地址（可写 http://host:8787 或 http://host:8787/mcp，都会归一化）。 */
@@ -44,6 +64,14 @@ export const Config = z.object({
   platform: z.string().default('dsh'),
   /** 写入 brain_turns.author；留空 = 由库侧按 (machine, platform) 规则回填。 */
   author: z.string().default(''),
+  /** 本机机器名（首次安装/升级时作为身份初始值；空 = 用 hostname 自动检测）。 */
+  machine: z.string().default(''),
+  /** 本机操作系统（空 = 自动检测；Windows 会按 build 号区分 10/11）。 */
+  os: z.string().default(''),
+  /** 身份状态文件；空 = $DSH_HOME/atbrains/identity.json（默认 ~/.dsh/...）。 */
+  identityFile: z.string().default(''),
+  /** 首次对话是否注入身份初始化提示（关掉只保留 /atbrains 命令与工具）。 */
+  onboarding: z.boolean().default(true),
   /** 自动归档开关（关掉就只剩召回）。 */
   archiveEnabled: z.boolean().default(true),
   /** 单条消息在转录层保留的字符上限（超长工具输出会被截断）。 */
@@ -72,6 +100,10 @@ const DEFAULTS = {
   minScore: 0.25,
   platform: 'dsh',
   author: '',
+  machine: '',
+  os: '',
+  identityFile: '',
+  onboarding: true,
   archiveEnabled: true,
   archiveMaxChars: 16000,
   archiveMaxMessages: 400,
@@ -108,6 +140,16 @@ export function memoryMessage(text) {
     role: 'user',
     content: [{ type: 'text', text }],
     source: { kind: SOURCE_KIND, form: 'recall' },
+  })
+}
+
+/** 身份初始化提示：同一 source.kind，但 form='setup'，不参与召回去重也不入库。 */
+export function setupMessage(text) {
+  return structuredClone({
+    id: randomUUID(),
+    role: 'user',
+    content: [{ type: 'text', text }],
+    source: { kind: SOURCE_KIND, form: 'setup' },
   })
 }
 
@@ -154,6 +196,22 @@ export function createRuntime(ctx, rawConfig, { clientFactory } = {}) {
   if (!token && !clientFactory) {
     logger?.error?.(`[atbrains] 未找到令牌：环境变量 ${config?.tokenEnv} 为空，插件不工作`)
     return { enabled: false }
+  }
+  const identity = createIdentityController({
+    config,
+    pluginVersion: PLUGIN_VERSION,
+    logger,
+    file: config.identityFile,
+  })
+  const identityState = identity.get()
+  if (identityState.pending) {
+    logger?.warn?.(
+      `[atbrains] 身份待设置：缺少 ${identityState.missing.join('、') || '确认'}；首次对话会提示，或运行 /atbrains set machine=… os=… author=…`,
+    )
+  } else {
+    logger?.debug?.(
+      `[atbrains] 身份 machine=${identityState.machine} os=${identityState.os} author=${identityState.author}`,
+    )
   }
   const client = clientFactory
     ? clientFactory(config)
@@ -232,7 +290,7 @@ export function createRuntime(ctx, rawConfig, { clientFactory } = {}) {
           user: t.user,
           assistant: t.assistant,
           platform: config.platform,
-          author: config.author,
+          author: identity.get().author,
           messages: t.records,
           // 会话总条数：records 是尾部窗口（archiveMaxMessages），没有 total
           // 服务端会把「窗口长度 == 游标」误判成没有增量（0.3.2 的真实事故）。
@@ -258,7 +316,7 @@ export function createRuntime(ctx, rawConfig, { clientFactory } = {}) {
     if (payload?.step !== 1) return decision
     const messages = Array.isArray(decision.messages) ? decision.messages : []
     if (!messages.length) return decision
-    if (messages.some((m) => m?.source?.kind === SOURCE_KIND)) return decision
+    if (messages.some((m) => m?.source?.kind === SOURCE_KIND && m?.source?.form !== 'setup')) return decision
     const query = lastUserText(messages)
     if (!query) return decision
     if (!(await protocolOk())) return decision
@@ -278,6 +336,22 @@ export function createRuntime(ctx, rawConfig, { clientFactory } = {}) {
       logger?.warn?.(`[atbrains] 召回失败，已跳过：${String(error?.message || error)}`)
       return decision
     }
+  }
+
+  /**
+   * 首次安装/升级后的第一轮：身份缺值或未确认 → 注入一条 setup 提示。
+   * 只注入一次（同一会话历史里已有 form='setup' 就跳过），保存后自然消失。
+   */
+  function setup(payload, decision) {
+    if (!config.onboarding) return decision
+    if (decision.kind !== 'enter') return decision
+    if (payload?.step !== 1) return decision
+    const messages = Array.isArray(decision.messages) ? decision.messages : []
+    if (!messages.length) return decision
+    if (!identity.get().pending) return decision
+    if (messages.some((m) => m?.source?.kind === SOURCE_KIND && m?.source?.form === 'setup')) return decision
+    if (!lastUserText(messages)) return decision
+    return { kind: 'enter', messages: [...messages, setupMessage(identity.notice())] }
   }
 
   /** session/event 兜底：只在拿不到 surface 时才用得上。 */
@@ -306,11 +380,184 @@ export function createRuntime(ctx, rawConfig, { clientFactory } = {}) {
   return {
     enabled: true,
     client,
+    identity,
     recall: (payload, decision) => recall(payload, decision),
+    setup: (payload, decision) => setup(payload, decision),
     archive,
     observeEvent,
     _buffers: buffers,
     _lastCount: lastCount,
+  }
+}
+
+// ---------------------------------------------------------------- 人机接口
+
+/** `/atbrains` 命令体：直接返回 UI 文本，不进模型历史。 */
+export function identityCommandResult(runtime, rawInput) {
+  const parsed = parseIdentityInput(rawInput)
+  const identity = runtime.identity
+  if (parsed.action === 'help') {
+    return { kind: 'success', text: `${IDENTITY_USAGE}\n\n${renderIdentity(identity.get())}` }
+  }
+  if (parsed.action === 'show') {
+    return { kind: 'success', text: renderIdentity(identity.get()) }
+  }
+  if (parsed.action === 'reset') {
+    const res = identity.reset()
+    return { kind: 'success', text: `${res.message}\n\n${renderIdentity(res.identity)}` }
+  }
+  if (parsed.action === 'invalid') {
+    return { kind: 'error', text: `${parsed.error}\n${IDENTITY_USAGE}` }
+  }
+  try {
+    const res = identity.set(parsed.patch)
+    return { kind: 'success', text: `${res.message}\n\n${renderIdentity(res.identity)}` }
+  } catch (error) {
+    return { kind: 'error', text: `设置失败：${String(error?.message || error)}\n${IDENTITY_USAGE}` }
+  }
+}
+
+/** 模型工具：首轮对话确认后保存，也允许用户以后用自然语言改。 */
+export function identityToolResult(runtime, args = {}) {
+  const identity = runtime.identity
+  const action = String(args?.action || 'show').toLowerCase()
+  if (action === 'show' || action === 'status') {
+    return { ok: true, action: 'show', message: '当前本机身份。', identity: identity.get() }
+  }
+  if (action === 'reset') {
+    const res = identity.reset()
+    return { ok: true, action: 'reset', message: res.message, identity: res.identity }
+  }
+  if (action !== 'set') {
+    return { ok: false, action, message: `未知 action：${action}（只支持 show / set / reset）`, identity: identity.get() }
+  }
+  const patch = {}
+  for (const field of ['machine', 'os', 'author']) {
+    if (args?.[field] !== undefined && args?.[field] !== null) patch[field] = args[field]
+  }
+  if (!Object.keys(patch).length) {
+    return { ok: false, action, message: 'set 至少需要 machine / os / author 中的一个字段。', identity: identity.get() }
+  }
+  try {
+    const res = identity.set(patch)
+    return { ok: true, action: 'set', message: res.message, identity: res.identity }
+  } catch (error) {
+    return { ok: false, action, message: `设置失败：${String(error?.message || error)}`, identity: identity.get() }
+  }
+}
+
+function registerIdentityCommand(ctx, runtime) {
+  if (!ctx?.commands?.register) return undefined
+  return ctx.commands.register({
+    name: 'atbrains',
+    description: '查看或重新设置本机 atbrains 身份（machine / os / author）',
+    input: { hint: '[show|set machine=<机器名> os=<系统> author=<标识>|reset]' },
+    handler: (invocation) => identityCommandResult(runtime, invocation?.rawInput),
+  })
+}
+
+function registerIdentityTool(ctx, runtime) {
+  if (!ctx?.tools?.register) return undefined
+  return ctx.tools.register({
+    name: 'atbrains_identity',
+    description:
+      'Show or update this machine\'s atbrains identity (machine, os, author). During first-run onboarding, ask the user to confirm the three values, then call action="set" with machine/os/author. action="reset" re-detects defaults and asks for confirmation again.',
+    parameters: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        action: {
+          type: 'string',
+          enum: ['show', 'set', 'reset'],
+          description: 'show (default) to inspect, set to save fields, reset to re-detect defaults.',
+        },
+        machine: { type: 'string', description: 'Machine name, at most 48 characters.' },
+        os: { type: 'string', description: 'Operating system label, at most 64 characters.' },
+        author: {
+          type: 'string',
+          description: 'Author / human source tag, at most 64 characters (e.g. win:local, uid:1000, wx:<openid>).',
+        },
+      },
+    },
+    output: {
+      schema: {
+        type: 'object',
+        properties: {
+          ok: { type: 'boolean' },
+          action: { type: 'string' },
+          message: { type: 'string' },
+          identity: {
+            type: 'object',
+            properties: {
+              machine: { type: 'string' },
+              os: { type: 'string' },
+              author: { type: 'string' },
+              confirmed: { type: 'boolean' },
+              pending: { type: 'boolean' },
+              missing: { type: 'array', items: { type: 'string' } },
+              pluginVersion: { type: 'string' },
+              firstInstall: { type: 'boolean' },
+              versionChanged: { type: 'boolean' },
+              file: { type: 'string' },
+              origins: {
+                type: 'object',
+                properties: {
+                  machine: { type: 'string' },
+                  os: { type: 'string' },
+                  author: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+      },
+      render: (_args, value) => [
+        { type: 'text', text: `${value?.message || ''}\n\n${renderIdentity(value?.identity || {})}` },
+      ],
+    },
+    async execute(args) {
+      return identityToolResult(runtime, args)
+    },
+  })
+}
+
+/**
+ * 可选挂载 commands / tools：宿主没装这两个能力时插件照常召回/归档。
+ * 返回清理函数（直接注册的测试路径需要它；Cordis 的 inject 子 fiber 自己回收）。
+ */
+export function registerIdentitySurfaces(ctx, runtime) {
+  const disposers = []
+  const install = (service, register) => {
+    if (typeof ctx?.inject === 'function') {
+      try {
+        ctx.inject([service], (child) => {
+          const off = register(child, runtime)
+          if (typeof off === 'function') disposers.push(off)
+        })
+      } catch (error) {
+        ctx?.logger?.warn?.(`[atbrains] 挂载 ${service} 失败，已跳过：${String(error?.message || error)}`)
+      }
+      return
+    }
+    if (ctx?.[service]) {
+      try {
+        const off = register(ctx, runtime)
+        if (typeof off === 'function') disposers.push(off)
+      } catch (error) {
+        ctx?.logger?.warn?.(`[atbrains] 挂载 ${service} 失败，已跳过：${String(error?.message || error)}`)
+      }
+    }
+  }
+  install('commands', registerIdentityCommand)
+  install('tools', registerIdentityTool)
+  return () => {
+    for (const off of disposers.splice(0)) {
+      try {
+        off()
+      } catch {
+        /* 卸载失败不影响其它监听器 */
+      }
+    }
   }
 }
 
@@ -320,20 +567,24 @@ export function apply(ctx, rawConfig) {
   const runtime = createRuntime(ctx, rawConfig)
   if (!runtime.enabled) return
   const config = { ...DEFAULTS, ...(rawConfig || {}) }
+  const identityState = runtime.identity.get()
   ctx.logger?.info?.(
-    `[atbrains] 已启用 → ${runtime.client.baseUrl}（召回 + ${config.archiveEnabled ? '自动归档' : '不归档'}）`,
+    `[atbrains] 已启用 → ${runtime.client.baseUrl}（召回 + ${config.archiveEnabled ? '自动归档' : '不归档'}；` +
+      `${identityState.pending ? '身份待设置' : `身份 ${identityState.machine}/${identityState.author || '-'}`}）`,
   )
 
   ctx.effect(() => {
+    const offSurfaces = registerIdentitySurfaces(ctx, runtime)
     const offPre = ctx.on('agent/pre-step', async (payload, next) => {
       const decision = await next()
-      return runtime.recall(payload, decision)
+      return runtime.setup(payload, await runtime.recall(payload, decision))
     })
     const offEvent = ctx.on('session/event', (session, event) => runtime.observeEvent(session, event))
     const offStop = ctx.on('agent/turn-stopping', async (payload) => {
       await runtime.archive(payload)
     })
     return () => {
+      offSurfaces?.()
       offPre?.()
       offEvent?.()
       offStop?.()

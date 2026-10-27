@@ -97,7 +97,13 @@ export function splitBlocks(blocks) {
  * 两道判据：source.kind 标记（我们自己注入的，可靠） + 已知注入前缀（宿主的，兜底）。
  */
 const INJECTED_KIND = 'atbrains'
-const SYNTHETIC_PREFIXES = ['[atbrains 记忆]', '[atbrains 长期记忆', '<system-reminder>', 'Current runtime context']
+const SYNTHETIC_PREFIXES = [
+  '[atbrains 记忆]',
+  '[atbrains 长期记忆',
+  '[atbrains 初始化]',
+  '<system-reminder>',
+  'Current runtime context',
+]
 
 export function isSyntheticUser(m, text) {
   if (m?.role !== 'user') return false

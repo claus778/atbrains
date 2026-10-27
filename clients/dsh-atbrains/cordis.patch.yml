@@ -1,5 +1,9 @@
 # 把 atbrains 记忆挂进 dsh 的 profile（自动召回 + 自动归档，全程 HTTP，无 Python）。
 # 令牌从环境变量读（默认 ATBRAINS_MCP_TOKEN），不写进这个文件。
+#
+# 首次安装 / 升级后，插件会检查本机身份（machine/os/author）并在第一次对话提示设置；
+# 确认结果写到 $DSH_HOME/atbrains/identity.json，不覆盖这个文件。
+# 如果想跳过提示，在这里把三项写全（写全即视为已确认），或设 onboarding: false。
 - insert:
     - id: atbrains-memory
       name: dsh-atbrains
@@ -13,3 +17,6 @@
         minScore: 0.25
         platform: dsh
         archiveEnabled: true
+        # machine: r9000p
+        # os: "Windows 11"
+        # author: win:local

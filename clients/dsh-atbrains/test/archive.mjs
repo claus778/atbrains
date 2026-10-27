@@ -4,8 +4,14 @@
  *
  * 跑：node test/archive.mjs
  */
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createRuntime } from '../lib/index.js'
 import { transcriptFromMessages } from '../lib/transcript.js'
+
+// 身份状态不能写进真实 ~/.dsh
+process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-atbrains-archive-'))
 
 const events = [
   { seq: 0, msg: { role: 'system', content: [{ type: 'text', text: '系统提示不入库' }] } },
@@ -160,6 +166,22 @@ function check(label, cond) {
   sess.eventAt = (seq) => grew.find((e) => e.seq === seq) ?? null
   await rt2.archive({ agent: { session: sess }, turn: 2 })
   check('会话变长后再次提交（窗口长度不变也算增量）', out.length === 2 && out[1].total === 10)
+}
+
+// 7) 身份确认后，归档使用 identity 里的 author（不再留空让库侧回填）
+{
+  rt.identity.set({ author: 'win:local' })
+  const pairs = [
+    { seq: 0, msg: { role: 'user', content: [{ type: 'text', text: '身份测试' }] } },
+    { seq: 1, msg: { role: 'assistant', content: [{ type: 'text', text: '收到' }] } },
+  ]
+  const s = {
+    id: 'zz-dsh-identity-test',
+    surface: { nodes: pairs.map((e) => e.seq), deriveEventMessage: (ev) => ev.msg ?? null },
+    eventAt: (seq) => pairs.find((e) => e.seq === seq) ?? null,
+  }
+  await rt.archive({ agent: { session: s }, turn: 9 })
+  check('归档 author 来自已确认身份', sent.at(-1)?.author === 'win:local')
 }
 
 console.log(failures === 0 ? '\n全部通过' : `\n${failures} 项失败`)

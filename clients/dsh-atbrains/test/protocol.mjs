@@ -6,7 +6,13 @@
  *
  * 跑：node test/protocol.mjs
  */
+import { mkdtempSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { createRuntime } from '../lib/index.js'
+
+// 身份状态不能写进真实 ~/.dsh
+process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-atbrains-protocol-'))
 
 const logs = []
 const ctx = { logger: { info() {}, warn: (m) => logs.push(['warn', m]), error: (m) => logs.push(['error', m]), debug() {} } }
