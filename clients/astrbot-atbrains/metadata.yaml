@@ -1,0 +1,8 @@
+name: atbrains-memory
+display_name: atbrains 长期记忆
+short_desc: atbrains 记忆接入（自动召回 + 记忆工具 + 对话归档）
+desc: 把 AstrBot 接入 atbrains 长期记忆库（服务器 MariaDB + Redis，与 Hermes/dsh 等 agent 共享同一套记忆）：每轮对话自动召回相关记忆注入系统提示、提供 memory_save/memory_search 函数工具、每轮问答自动归档到 brain_turns/brain_sessions/Redis 对话流。
+author: claus778
+version: 1.0.0
+repo: https://github.com/claus778/atbrains
+astrbot_version: ">=4.0.0"
