@@ -106,6 +106,9 @@
 │   ├── brain-overview.py            库内容导出
 │   ├── prune.sh                     保留期清理
 │   └── refresh-hot-machine.py       刷新机器标记
+├── clients/                         ← 非 Hermes agent 的接入客户端(源码在这里)
+│   ├── dsh-atbrains/                dsh 原生插件(纯 Node,走 /v1 + /mcp)
+│   └── astrbot-atbrains/            AstrBot 原生插件(Python,自带 pymysql/redis 直连库)
 └── web/                             ← 控制台预览图与说明
     ├── preview.png                  控制台首页(记忆页)
     └── preview-recent.png           动态页(Redis 短期层实时视图)
@@ -206,6 +209,15 @@ omp 的 `~/.omp/agent/mcp.json`、dsh 的 `cordis.patch.yml` 接法见
 `agent_memory` 长期库、同一张 `brain_memories` 表**,`agent` 列标写入方
 (hermes/omp/dsh/…)、`machine` 列标主机;`atbrains_recall` 默认跨 agent 召回,
 传 `agent=` 可只看某一方。
+
+**客户端清单**(形态不同,记忆同一个库):
+
+- **Hermes** —— `atbrains-memory/` 进程内插件,直连库(本机)。
+- **omp / dsh / 其它 MCP agent** —— `POST /mcp`(Bearer 令牌);dsh 另有原生插件
+  `clients/dsh-atbrains` 走 `/v1` 做自动召回与归档。
+- **AstrBot** —— `clients/astrbot-atbrains/`:**Python 原生插件 + 自带 `vendor/` 的
+  pymysql/redis 直连 MariaDB:57306 与 Redis:9079**(不走 `/v1`、不走 `/mcp`),
+  装 AstrBot 的那台机器因此要能网络可达这两个端口;每轮自动召回 + 回合归档。
 
 ---
 

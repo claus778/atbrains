@@ -12,3 +12,6 @@ plugin/service-tokens.json
 # dsh 客户端插件的依赖（peer 由 dsh 提供，本地测试时才装）
 clients/*/node_modules/
 *.bak
+
+# 打包产物（tools/package-astrbot-client.py 生成）
+dist/

@@ -27,6 +27,18 @@ brain 工具（记忆、检索、主张、情节）开放给任何支持 MCP 的
 这与 scope-recall 的 "shared store, each memory says which agent it came in through"
 是同一模型，但底层换成 atbrains 已有的 Redis + MariaDB + Qdrant 管线。
 
+## 客户端矩阵
+
+| 客户端 | 位置 / 接法 | 通道 | 自动召回 + 归档 | 前置条件 |
+|---|---|---|---|---|
+| Hermes | `atbrains-memory/`（memory provider） | 进程内直连 MariaDB + Redis | ✅ 原生钩子 | 与库同机 |
+| omp | `~/.omp/agent/mcp.json` | `/mcp`（Bearer 令牌） | ❌ 只有显式工具调用 | 8787 可达 |
+| dsh | `cordis.patch.yml` + `clients/dsh-atbrains` | `/mcp` + `/v1` | ✅ 原生插件经 `/v1` 归档 | 8787 可达 |
+| astrbot | `clients/astrbot-atbrains`（装到 AstrBot `data/plugins/`） | **直连 MariaDB:57306 + Redis:9079**（不走 `/v1`、不走 `/mcp`） | ✅ 每轮召回 + 回合归档 | **57306 + 9079 网络可达** |
+
+astrbot 是唯一的「自带驱动直连库」客户端：跨公网部署时每轮成本 ≈ 往返次数 × RTT，
+客户端侧已把召回压到 1 次往返、归档压到 2 次（见该目录 README 的配置表）。
+
 ## 端点与鉴权
 
 ```
@@ -122,8 +134,9 @@ python3 /root/agent-db/mcp_client_test.py --url http://127.0.0.1:8787/mcp --agen
 
 ## 边界与注意
 
-- **不会自动归档非 Hermes agent 的对话**：`brain_turns` 的写入依赖 Hermes 的
-  `sync_turn` 钩子。omp/dsh 只有显式调用 `atbrains_remember` 的内容会进库。
+- **MCP 本身不会自动归档对话**：`brain_turns` 的写入来自各客户端的钩子/插件。
+  omp 这类只用 `/mcp` 的 agent 只有显式调用 `atbrains_remember` 的内容会进库；
+  dsh 与 astrbot 有原生插件（`/v1` / 直连库），每轮问答会自动归档。
   需要「每轮全量转录」的话，得给对应 agent 写 hook/plugin，不是 MCP 能解决的。
 - **`atbrains_forget` 是全局的**：共享库里任何 agent 都能停用任何 id 的记忆（与 Hermes 同等权限）。
 - **向量召回在服务端做**：Qdrant/embedding 都在服务器上，客户端不需要装向量依赖；

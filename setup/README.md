@@ -228,7 +228,63 @@ python3 /root/agent-db/mcp_client_test.py --url http://127.0.0.1:8787/mcp --agen
 
 ---
 
-## 8. 验收清单（逐层，全过才算搭好）
+## 8. astrbot 客户端（可选）
+
+AstrBot（QQ 机器人框架，Python，`astrbot_version >= 4.0.0`）装的是**原生插件**：
+`clients/astrbot-atbrains/`，自带 `vendor/` 的 pymysql + redis，**直连** MariaDB:57306
+与 Redis:9079 —— **不走 `/v1`、不走 `/mcp`**。所以跑 AstrBot 的那台机器要能网络可达
+这两个端口（跨公网时把配置指到公网地址，安全组/家宽都要放行）。
+
+```bash
+# 方式 A：打包分发（推荐，产物在 dist/）
+python3 tools/package-astrbot-client.py          # → dist/astrbot-atbrains-1.0.0.zip
+unzip -o dist/astrbot-atbrains-1.0.0.zip -d /opt/astrbot/data/plugins/
+# 解包出来的目录名就是插件 id（atbrains-memory），无需再改名
+
+# 方式 B：直接从仓库拷贝源码（服务器或 rsync 到目标机）
+cp -r clients/astrbot-atbrains /opt/astrbot/data/plugins/atbrains-memory
+chown -R root:root /opt/astrbot/data/plugins/atbrains-memory
+systemctl restart astrbot                        # 或用 WebUI 的插件热重载
+```
+
+配置复用 Hermes 侧那一份（插件自己不另存密钥）：
+
+- `~/.hermes/atbrains.json` —— host/port/db/machine；**AstrBot 不在服务器上时，
+  把 `mariadb_host` / `redis_host` 改成服务器的公网地址**（端口仍是 57306 / 9079）
+- `~/.hermes/.env` —— `ATBRAINS_MARIADB_PASSWORD` / `ATBRAINS_REDIS_PASSWORD`
+  （兼容旧名 `BRAIN_MARIADB_PASSWORD` / `BRAIN_REDIS_PASSWORD`）；
+  `ATBRAINS_HERMES_HOME` 可覆盖配置目录（默认 `~/.hermes`）
+
+自检（只读，不改数据）。分两种情况：
+
+```bash
+# AstrBot 机器上（用 AstrBot 自带 venv 的解释器；路径按该机实际改）
+cd /opt/astrbot/data/plugins/atbrains-memory
+/opt/astrbot/venv/bin/python main.py --selftest     # deps / 连接 / 开关 / search / prefetch
+journalctl -u astrbot -f | grep atbrains
+#   [atbrains] 已就绪：machine=… mariadb=…:57306 redis=…:9079/db0 agent=astrbot   ← 启动
+#   [atbrains] 已注入召回 N 条（…）                                                ← 每轮
+#   [atbrains] 已归档回合 #id（qq · …）                                            ← 每轮
+
+# 没有 AstrBot 的机器（装前预检 / 排障）—— 系统 python3 也能跑：
+python3 main.py --selftest
+#   [atbrains] 未检测到 AstrBot 运行环境，使用占位实现（仅 --selftest 可用）
+#   ↑ 软导入兜底：astrbot 包缺失时退化为占位实现，自检照跑（只读）。
+#     在 AstrBot 进程内不会出现这行，钩子注册仍走真 filter/Star。
+```
+
+> 注意：**别用系统 `python3` 跑 AstrBot 机器上的插件**（除非该机系统 python 恰好装了 astrbot）——
+> astrbot 包只在 AstrBot 自带 venv 里，用错解释器会走到占位实现、钩子不会注册。
+> 反过来，没有 AstrBot 的机器上现在两条都能跑：venv 那条报错就用 `python3`。
+
+跨公网时每轮成本 ≈ 往返次数 × RTT（服务器↔国内家宽 40~65 ms 量级）：插件默认把轮首召回
+合到 **1 次**往返、轮尾归档合到 **2 次**（MariaDB 1 + Redis 1，且在后台跑不挡收尾），
+轮首召回有 **900 ms 硬预算**（超时跳过注入并记 warn）。开关与默认值见
+`clients/astrbot-atbrains/README.md` 的配置表。
+
+---
+
+## 9. 验收清单（逐层，全过才算搭好）
 
 ```bash
 hermes atbrains-memory doctor          # 依赖 / 凭据 / Redis / MariaDB / 表结构 v9
@@ -246,7 +302,7 @@ hermes chat -q "只凭记忆回答：<只存在于库里的那个事实>"
 
 ---
 
-## 9. 日常维护
+## 10. 日常维护
 
 | 事 | 命令 |
 |---|---|
@@ -263,7 +319,7 @@ hermes chat -q "只凭记忆回答：<只存在于库里的那个事实>"
 
 ---
 
-## 10. 故障速查
+## 11. 故障速查
 
 | 现象 | 先查 |
 |---|---|
@@ -283,10 +339,11 @@ hermes chat -q "只凭记忆回答：<只存在于库里的那个事实>"
 ```
 atbrains-memory/        Hermes 记忆插件（引擎本体：core.py / cli.py / vendor / 自带 skill / CONVENTIONS）
 plugin/                 控制台 + /v1 + /mcp（server.py、service.py、atbrains_mcp.py、probe.py、console/）
-clients/dsh-atbrains/   dsh 原生插件（纯 Node）
+clients/dsh-atbrains/   dsh 原生插件（纯 Node，走 /v1 + /mcp）
+clients/astrbot-atbrains/  AstrBot 原生插件（Python，自带 pymysql/redis 直连 MariaDB:57306 + Redis:9079）
 docs/                   database-schema.md（表/列字典）、protocol-v1.md（契约）、architecture*、skill 副本
 scripts/                contract-v1.py（契约测试）等
 setup/                  本文件、schema-v9.sql、init.sql、SECRETS.md、systemd/、verify-accounts.py
-tools/                  export-schema.py、package.py（打包/脱敏）
+tools/                  export-schema.py、package.py（打包/脱敏）、package-astrbot-client.py（出 astrbot 客户端 zip）
 web/                    前端静态资源与控制台截图
 ```
