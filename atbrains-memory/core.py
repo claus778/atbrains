@@ -70,6 +70,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "mariadb_user": "agent",
     "mariadb_db": "agent_memory",
     "machine": "",
+    # 写入方身份（brain_memories/brain_claims/brain_episodes.agent）：空 = 'hermes'。
+    # 同一台机器上跑多个 agent（omp / dsh / astrbot…）时可在这里显式设置；
+    # 服务端 /v1 通道仍用令牌名 `<machine>|<agent>` 覆盖本机配置，客户端不能伪造。
+    "agent": "",
     # 行为参数（可在 atbrains.json 覆盖，不进入 setup 向导）
     "short_term_ttl_days": 14,   # Redis 流/会话 TTL
     "hot_ttl_days": 30,          # 热点镜像 TTL
@@ -79,6 +83,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "prefetch_turns": 3,         # 召回历史对话条数
     "search_cache_ttl": 600,     # Redis 检索缓存秒数
     "search_turns_days": 120,    # 召回检索的对话时间窗（天；0=不限。更老的对话仍可用 SQL/审计访问）
+    # 关键词检索走单次 REGEXP 扫描（替代 terms×columns 个 OR-LIKE）：最坏（全不命中）
+    # 从 ~230ms 降到 ~10ms；大小写口径与 LIKE 一致（列排序规则 utf8mb4_unicode_ci）。
+    # 0 = 逐字节回到旧 SQL。
+    "search_regexp_enabled": 1,
     "turns_keep_days": 0,        # prune：对话保留天数（0=不清理，保留全量）
     # 全量转录层（brain_turn_messages）：除正文外，把本轮的工具调用/工具输出/推理也存下来（zlib 压缩）
     "turn_messages_enabled": 1,        # 1 存 / 0 只存正文（退回旧行为）
@@ -98,6 +106,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "embed_dim": 2560,
     "embed_timeout": 60,             # 回填/后台向量化单次请求超时（秒）
     "vector_query_timeout": 20,      # 查询路径 embed 超时上限（超时降级关键词）
+    # 公网 HTTP 连接复用（keep-alive）：省掉每次请求的 TCP+TLS 握手（本机实测 embed 每次
+    # 约省一半耗时）。只对「公网目标 + 该主机没有配置代理」生效；本地/私网（_is_private_host）
+    # 仍走原 no_proxy opener。0 = 逐字节回到旧行为。
+    "http_keepalive_enabled": 1,
+    "http_keepalive_idle_s": 60,     # 连接空闲超过该秒数即丢弃重连（服务端也可能先关）
     "qdrant_url": "http://127.0.0.1:6333",
     "qdrant_collection": "brain_memories",
     "qdrant_config_file": "/root/qdrant/qdrant-config/production.yaml",  # key 来源：qdrant 配置文件（service.api_key）
@@ -193,12 +206,79 @@ def _dotenv_value(raw: str) -> str:
     return value
 
 
-def _dotenv_get(env_path: Path, key: str) -> Optional[str]:
-    """解析 Hermes 写法 .env 子集的单键取值（bare / 'single' / "double"）。"""
+# 本地/私网地址不走 HTTP(S)_PROXY：Qdrant、内网 Memory Service 都是直连，
+# 而 Hermes 常带着代理环境变量启动（本机实测：代理把 127.0.0.1:6333 变成 502、每次 3 秒）。
+_NO_PROXY_OPENER = None
+
+
+def _is_private_host(host: str) -> bool:
+    host = str(host or "").strip().strip("[]").lower()
+    if host in ("127.0.0.1", "localhost", "::1", "0.0.0.0"):
+        return True
+    parts = host.split(".")
+    if len(parts) == 4 and all(p.isdigit() for p in parts):
+        a, b = int(parts[0]), int(parts[1])
+        if a == 10 or (a == 192 and b == 168) or (a == 172 and 16 <= b <= 31):
+            return True
+    return False
+
+
+# ---------------------------------------------------------------- HTTP keep-alive
+#
+# 公网目标（embed / rerank / 蒸馏 / 远程 Memory Service）每次请求都新建 TCP+TLS：
+# 本机实测握手约占总耗时的一半。这里按线程缓存连接复用（线程本地而非共享池：网关是
+# 多线程的，socket 不能并发共享，共享池要么加锁串行化、要么一条坏连接带塌整池；
+# 线程本地零争用、坏连接只影响自己那一次，代价是每线程每主机最多 1 条空闲连接）。
+# 只对「公网目标 + 进程环境没有给该主机配代理」生效，其余路径一个字节都不变。
+_HTTP_TLS = threading.local()
+_HTTP_KEEPALIVE_MAX_HOSTS = 4
+
+
+class _KeepAliveBypass(Exception):
+    """keep-alive 快路径处理不了的响应（3xx）：关连接，回落原 opener 逻辑。"""
+
+
+def _close_quietly(conn: Any) -> None:
+    try:
+        conn.close()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def _proxy_configured_for(host: str) -> bool:
+    """进程环境是否会给该主机走代理（有代理变量且未被 no_proxy 排除）。
+
+    走代理时必须回落 urllib：http.client 是直连，会绕过代理，语义就变了。
+    """
+    import urllib.request
+    try:
+        if not urllib.request.getproxies():
+            return False
+        return not urllib.request.proxy_bypass(host)
+    except Exception:  # noqa: BLE001
+        return True   # 判定不出来就当有代理：退回原路径，绝不自作主张直连
+
+
+# .env 解析缓存：(路径, mtime_ns) → {变量名: 值}。resolve_config 每个密钥查一次，
+# store 又多（provider/service/CLI 各自构造），不缓存就是每次 5-6 遍整文件读+解析。
+_DOTENV_CACHE: dict[tuple[str, int], dict[str, str]] = {}
+
+
+def _dotenv_all(env_path: Path) -> dict[str, str]:
+    """解析 Hermes 写法 .env 子集（bare / 'single' / "double"），按 mtime 缓存。"""
+    try:
+        st = env_path.stat()
+    except OSError:
+        return {}
+    cache_key = (str(env_path), st.st_mtime_ns)
+    cached = _DOTENV_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
     try:
         text = env_path.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
-        return None
+        return {}
+    parsed: dict[str, str] = {}
     for line in text.splitlines():
         line = line.strip()
         if not line or line.startswith("#"):
@@ -206,11 +286,18 @@ def _dotenv_get(env_path: Path, key: str) -> Optional[str]:
         if line.startswith("export "):
             line = line[7:].lstrip()
         name, sep, value = line.partition("=")
-        if not sep or name.strip() != key:
+        if not sep:
             continue
         # 引号、行内注释、空值统一由 _dotenv_value 处理
-        return _dotenv_value(value)
-    return None
+        parsed.setdefault(name.strip(), _dotenv_value(value))
+    _DOTENV_CACHE.clear()          # 只保留最新文件的一份，避免无限增长
+    _DOTENV_CACHE[cache_key] = parsed
+    return parsed
+
+
+def _dotenv_get(env_path: Path, key: str) -> Optional[str]:
+    """解析 Hermes 写法 .env 子集的单键取值（bare / 'single' / "double"）。"""
+    return _dotenv_all(env_path).get(key)
 
 
 def resolve_config(hermes_home: Optional[str] = None) -> dict[str, Any]:
@@ -296,6 +383,46 @@ def search_terms(query: str, max_terms: int = 10) -> list[str]:
 
 def _esc_like(term: str) -> str:
     return term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+# 关键词检索改成单次 REGEXP 扫描（替代 terms×columns 个 OR-LIKE）：MariaDB 的 REGEXP 走
+# PCRE，查询词里的元字符必须逐个转义，否则 `.` `*` 之类会退化成通配符（与 LIKE 不再等价）。
+_REGEXP_META_RE = re.compile(r"([\\^$.\[\]|()?*+{}])")
+
+
+def _esc_regexp(term: str) -> str:
+    """转义 PCRE 元字符（\\ ^ $ . [ ] | ( ) ? * + { }）；中文与普通字符原样保留。"""
+    return _REGEXP_META_RE.sub(r"\\\1", str(term or ""))
+
+
+def _regexp_pattern(terms: list[str]) -> str:
+    """把检索词拼成单次 REGEXP 的 OR 模式；空词丢弃，无有效词返回 ""（调用方回退旧 SQL）。"""
+    pats = []
+    for t in terms or []:
+        pat = _esc_regexp(str(t or "").strip())
+        if pat:
+            pats.append(pat)
+    return "|".join(pats)
+
+
+def _regexp_target(columns: tuple[str, ...]) -> str:
+    """单列直接用列名；多列先 CONCAT_WS 成一串再整体匹配（NULL 由 COALESCE 兜住）。
+
+    与「逐列 LIKE」同一语义：任一词出现在任一列即命中。词里不含空格，而 CONCAT_WS 用
+    空格做分隔，因此不会出现跨列拼接产生的假命中。
+    """
+    cols = tuple(str(c) for c in columns)
+    if len(cols) == 1:
+        return cols[0]
+    return "CONCAT_WS(' ', " + ", ".join(f"COALESCE({c}, '')" for c in cols) + ")"
+
+
+def _cfg_flag(cfg: dict[str, Any], key: str, default: int = 1) -> bool:
+    """int 型开关：缺省 / None / 非法值一律回落到 default。"""
+    try:
+        return int(cfg.get(key, default)) != 0
+    except (TypeError, ValueError):
+        return bool(default)
 
 
 def _clip(text: str, limit: int) -> str:
@@ -826,6 +953,8 @@ def _db_safe(value: Any) -> Any:
     字符串做一次替换，正常值原样返回。
     """
     if isinstance(value, str):
+        if value.isascii():          # 绝大多数值：一次 C 级扫描，省掉 encode 分配
+            return value
         try:
             value.encode("utf-8")
         except UnicodeEncodeError:
@@ -894,6 +1023,12 @@ def _window_start(msgs: list[dict[str, Any]], done: int,
     return rel, offset + rel
 
 
+# 进程级 schema 就绪标记：同 (host,port,db,schema 版本) 只需一个 store 跑 DDL/迁移检查。
+# provider/service/CLI 各自构造 store（service 还按 machine|agent 各一个），
+# 每个实例都跑 ~10 条 CREATE TABLE IF NOT EXISTS 是纯浪费。
+_SCHEMA_READY: set[tuple[str, int, str, int]] = set()
+
+
 class AtbrainsStore:
     """Redis + MariaDB 双存储引擎。线程安全（连接按线程持有）。"""
 
@@ -915,6 +1050,16 @@ class AtbrainsStore:
         self._distill_lock = threading.Lock()
         self._vsec: Optional[dict] = None    # 向量层 key 缓存（来源：qdrant 容器配置）
         self._vsec_ts = 0.0
+        # 控制台/状态轮询的 TTL 缓存：stats()/vector_status() 是全表聚合，5 秒一次轮询
+        # 不值得重算；写路径（remember/forget/prune/drain）会主动失效。
+        self._stats_cache: Optional[tuple[float, dict[str, Any]]] = None
+        self._vector_cache: Optional[tuple[float, dict[str, Any]]] = None
+        self._cache_ttl = 10.0
+        self._vec_dirty = True                # 有未向量化写入；没有就不必扫全表找 pending
+        self._drain_ticks = 0                 # 空闲 drain 计数（每 10 次仍全量复查一轮）
+        self._drain_last_remaining = 0
+        self._drain_remaining_ts = 0.0
+        self._qdrant_ready = False            # qdrant_ensure_collection 每个 store 只做一次
 
     # -------------------------------------------------- 连接
 
@@ -935,13 +1080,22 @@ class AtbrainsStore:
                 )
             return self._redis
 
+    # 存活探测节流：每条语句都 ping 会让所有路径的 DB 往返翻倍；30 秒内复用连接
+    # 不再探测，空闲超过该窗口才 ping（reconnect=True）。连接真断时由 _exec 重试兜底。
+    _PING_INTERVAL = 30.0
+    _RETRY_CODES = (2006, 2013, 2014)   # server gone away / lost / 连接被关
+
     def _conn(self):
         import pymysql
 
         conn = getattr(self._tls, "conn", None)
         if conn is not None:
+            now = time.monotonic()
+            if now - float(getattr(self._tls, "pinged_at", 0.0) or 0.0) < self._PING_INTERVAL:
+                return conn
             try:
                 conn.ping(reconnect=True)
+                self._tls.pinged_at = now
                 return conn
             except Exception:  # noqa: BLE001
                 try:
@@ -963,20 +1117,54 @@ class AtbrainsStore:
             write_timeout=10,
         )
         self._tls.conn = conn
+        self._tls.pinged_at = time.monotonic()
         return conn
 
     def _exec(self, sql: str, params: tuple = (), *, fetch: bool = False):
-        conn = self._conn()
+        import pymysql
+
         safe = tuple(_db_safe(p) for p in params) if params else params
-        with conn.cursor() as cur:
-            cur.execute(sql, safe)
-            if fetch:
-                return cur.fetchall()
-            return cur.rowcount, cur.lastrowid
+        last_exc: Optional[BaseException] = None
+        for attempt in (0, 1):
+            conn = self._conn()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql, safe)
+                    if fetch:
+                        return cur.fetchall()
+                    return cur.rowcount, cur.lastrowid
+            except pymysql.err.OperationalError as exc:
+                code = exc.args[0] if exc.args else 0
+                if attempt == 0 and code in self._RETRY_CODES:
+                    last_exc = exc
+                    try:
+                        conn.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    self._tls.conn = None
+                    self._tls.pinged_at = 0.0
+                    continue
+                raise
+        assert last_exc is not None
+        raise last_exc
+
+    def _invalidate_caches(self, *, vec_dirty: bool = False) -> None:
+        """写路径后让 stats/vector_status 的 TTL 缓存立即失效。
+
+        vec_dirty=True 同时告诉 drainer「有新的待向量化写入」，它就不必在每个
+        60 秒定时唤醒里全表扫 pending。
+        """
+        self._stats_cache = None
+        self._vector_cache = None
+        if vec_dirty:
+            self._vec_dirty = True
 
     def ensure_schema(self) -> None:
+        ready_key = (str(self.cfg.get("mariadb_host") or ""), int(self.cfg.get("mariadb_port") or 0),
+                     str(self.cfg.get("mariadb_db") or ""), SCHEMA_VERSION)
         with self._schema_lock:
-            if self._schema_ready:
+            if self._schema_ready or ready_key in _SCHEMA_READY:
+                self._schema_ready = True
                 return
             conn = self._conn()
             with conn.cursor() as cur:
@@ -1013,6 +1201,7 @@ class AtbrainsStore:
                         if got:
                             cur.execute("SELECT RELEASE_LOCK('brain_schema_migrate')")
             self._schema_ready = True
+            _SCHEMA_READY.add(ready_key)
         # schema 就绪即惰性启动维护线程（与向量 drainer 同属进程内后台线程）
         self.start_maintenance()
         self.start_distill()
@@ -1217,6 +1406,7 @@ class AtbrainsStore:
                                    str(source or ""))
         except Exception as exc:  # noqa: BLE001
             logger.debug("atbrains: Redis 热点镜像失败: %s", exc)
+        self._invalidate_caches(vec_dirty=True)
         try:
             self._vec_wake.set()   # 通知本进程 drainer 尽快向量化（不阻塞保存）
         except Exception:  # noqa: BLE001
@@ -1247,6 +1437,11 @@ class AtbrainsStore:
             pipe.execute()
         except Exception:  # noqa: BLE001
             pass
+        self._invalidate_caches(vec_dirty=True)
+        try:
+            self._vec_wake.set()   # 让失活向量的清理尽快跑
+        except Exception:  # noqa: BLE001
+            pass
         return rowcount
 
     def forget(self, mem_id: int) -> dict[str, Any]:
@@ -1269,6 +1464,11 @@ class AtbrainsStore:
             r = self.redis()
             r.delete(self._rk("hot", mem_id))
             r.zrem(self._rk("hot", "index"), str(mem_id))
+        except Exception:  # noqa: BLE001
+            pass
+        self._invalidate_caches(vec_dirty=True)
+        try:
+            self._vec_wake.set()
         except Exception:  # noqa: BLE001
             pass
         return {"id": int(mem_id), "deactivated": rowcount}
@@ -1385,12 +1585,18 @@ class AtbrainsStore:
             params.append(f"%{predicate}%")
         if query:
             terms = search_terms(query, max_terms=4) or [str(query)]
-            conds = []
-            for term in terms:
-                conds.append("(c.subject LIKE %s OR c.predicate LIKE %s OR v.value_text LIKE %s)")
-                like = f"%{term}%"
-                params += [like, like, like]
-            sql += "AND (" + " OR ".join(conds) + ") "
+            pattern = _regexp_pattern(terms) if _cfg_flag(self.cfg, "search_regexp_enabled", 1) else ""
+            if pattern:
+                cols = ("c.subject", "c.predicate", "v.value_text")
+                sql += f"AND ({_regexp_target(cols)} REGEXP %s) "
+                params.append(pattern)
+            else:
+                conds = []
+                for term in terms:
+                    conds.append("(c.subject LIKE %s OR c.predicate LIKE %s OR v.value_text LIKE %s)")
+                    like = f"%{term}%"
+                    params += [like, like, like]
+                sql += "AND (" + " OR ".join(conds) + ") "
         sql += "ORDER BY v.recorded_from DESC, c.id DESC LIMIT %s"
         params.append(limit)
         rows = [dict(r) for r in self._exec(sql, tuple(params), fetch=True)]
@@ -1563,6 +1769,14 @@ class AtbrainsStore:
         max_msg = int(self.cfg.get("turn_msg_max_bytes") or 1048576)
         max_total = int(self.cfg.get("turn_total_max_bytes") or 16777216)
         conn = self._conn()
+        # 这里自己开事务、不走 _exec 的重试：显式探活一次，避免节流期内的死连接
+        # 让整轮转录静默丢失（每轮多一个 DB 往返，可接受）。
+        try:
+            conn.ping(reconnect=True)
+            self._tls.pinged_at = time.monotonic()
+        except Exception:  # noqa: BLE001
+            self._tls.conn = None
+            conn = self._conn()
         rows: list[tuple] = []
         total = 0
         try:
@@ -1607,8 +1821,10 @@ class AtbrainsStore:
                                        max_total, len(delta) - seq)
                         break
                     total += len(raw)
+                    # level 1：转录是写一次、读很少的归档；级别 6 在这个路径上是
+                    # 纯 CPU 消耗（每轮工具输出可达 MB 级），省下的体积有限。
                     rows.append((turn_id, seq, role, tool_name, tool_call_id, len(raw),
-                                 zlib.compress(raw, 6)))
+                                 zlib.compress(raw, 1)))
                 if rows:
                     cur.executemany(
                         "INSERT INTO brain_turn_messages (turn_id, seq, role, tool_name, "
@@ -1815,6 +2031,11 @@ class AtbrainsStore:
     # -------------------------------------------------- 读路径
 
     def _search_where(self, columns: tuple[str, ...], terms: list[str]) -> tuple[str, list]:
+        if _cfg_flag(self.cfg, "search_regexp_enabled", 1):
+            pattern = _regexp_pattern(terms)
+            # 一次 REGEXP 扫完整列集合；无有效词时回退下面的旧 SQL（行为完全不变）。
+            if pattern:
+                return f"{_regexp_target(columns)} REGEXP %s", [pattern]
         clauses, params = [], []
         for t in terms:
             sub = " OR ".join(f"{c} LIKE %s" for c in columns)
@@ -1898,63 +2119,120 @@ class AtbrainsStore:
         try:
             r = self.redis()
             ids = r.zrevrange(self._rk("hot", "index"), 0, max(0, int(limit) - 1))
+            if not ids:
+                return []
+            # 一次 MGET 取代 N 次 GET（控制台「动态」页每 5 秒轮询，N 可达 100）
+            vals = r.mget([self._rk("hot", mid) for mid in ids])
             out = []
-            for mid in ids:
-                raw = r.get(self._rk("hot", mid))
-                if raw:
-                    try:
-                        out.append(json.loads(raw))
-                    except ValueError:
-                        continue
+            for raw in vals or []:
+                if not raw:
+                    continue
+                try:
+                    out.append(json.loads(raw))
+                except ValueError:
+                    continue
             return out
         except Exception:  # noqa: BLE001
             return []
 
     # -------------------------------------------------- 召回组装
 
+    @staticmethod
+    def format_hits(mems: list[dict[str, Any]], limit: int = 20) -> list[dict[str, Any]]:
+        """把 search_memories_hybrid 的原始命中裁成 /v1 items 形状（可随查询缓存）。"""
+        out: list[dict[str, Any]] = []
+        for m in list(mems or [])[: max(1, int(limit))]:
+            if not isinstance(m, dict):
+                continue
+            vscore = m.get("vscore")
+            preview = m.get("preview")
+            if preview is None:
+                preview = m.get("content")
+            out.append({
+                "id": m.get("id"),
+                "kind": m.get("kind"),
+                "memory_type": m.get("memory_type"),
+                "importance": m.get("importance"),
+                "machine": m.get("machine"),
+                "agent": m.get("agent"),
+                "tags": m.get("tags") or "",
+                "via": m.get("via") or "",
+                "vscore": round(float(vscore), 4) if isinstance(vscore, (int, float)) else None,
+                "preview": str(preview or "")[:240],
+            })
+        return out
+
     def prefetch_block(self, query: str, *, session_id: str = "",
-                       use_cache: bool = True) -> tuple[str, int]:
-        """组装本轮注入文本；结果按查询哈希缓存进 Redis。"""
+                       use_cache: bool = True,
+                       with_hits: bool = False):
+        """组装本轮注入文本；结果按查询哈希缓存进 Redis。
+
+        `with_hits=True` 返回 (text, count, hits)，hits 与注入文本来自同一次检索
+        （/v1/memory/recall 不需要为 items 再跑一遍向量+关键词）。
+        无命中也写缓存（短 TTL）：那是全表扫最贵的情况，不能每轮重复跑。
+        """
         query = (query or "").strip()
         if not query:
-            return "", 0
-        if self._remote_on():
-            # 远程召回：直接返回服务端注入文本，不再查本地 Redis 查询缓存
-            try:
-                payload: dict[str, Any] = {"query": query}
-                if session_id:
-                    payload["session_id"] = str(session_id)
-                data = self._remote_call("/v1/memory/recall", payload,
-                                         timeout_ms=int(self.cfg.get("remote_timeout_ms") or 800))
-                return str(data.get("text") or ""), int(data.get("count") or 0)
-            except Exception as exc:  # noqa: BLE001
-                if not int(self.cfg.get("remote_fallback") or 0):
-                    logger.warning("atbrains: 远程召回失败，未启用回落（返回空）: %s", str(exc)[:200])
-                    return "", 0
-                logger.warning("atbrains: 远程召回失败，回落本地: %s", str(exc)[:200])
+            return ("", 0, []) if with_hits else ("", 0)
         cache_key = self._rk("qcache", hashlib.sha1(query.encode("utf-8")).hexdigest())
         if use_cache:
             try:
                 raw = self.redis().get(cache_key)
                 if raw:
                     data = json.loads(raw)
-                    return str(data.get("text", "")), int(data.get("count", 0))
+                    text, count = str(data.get("text", "")), int(data.get("count", 0))
+                    if with_hits:
+                        return text, count, list(data.get("hits") or [])
+                    return text, count
             except Exception:  # noqa: BLE001
                 pass
-        mems = self.search_memories_hybrid(query, limit=int(self.cfg["prefetch_memories"]))
+        if self._remote_on():
+            # 远程召回：结果也写本地查询缓存——Hermes 同一轮会先 prefetch 再
+            # queue_prefetch（同一个 query），没有缓存就是两次完全相同的远程检索。
+            try:
+                payload: dict[str, Any] = {"query": query}
+                if session_id:
+                    payload["session_id"] = str(session_id)
+                data = self._remote_call("/v1/memory/recall", payload,
+                                         timeout_ms=int(self.cfg.get("remote_timeout_ms") or 800))
+                text, count = str(data.get("text") or ""), int(data.get("count") or 0)
+                hits = list(data.get("items") or [])
+                self._write_qcache(cache_key, text, count, hits)
+                if with_hits:
+                    return text, count, hits
+                return text, count
+            except Exception as exc:  # noqa: BLE001
+                if not int(self.cfg.get("remote_fallback") or 0):
+                    logger.warning("atbrains: 远程召回失败，未启用回落（返回空）: %s", str(exc)[:200])
+                    return ("", 0, []) if with_hits else ("", 0)
+                logger.warning("atbrains: 远程召回失败，回落本地: %s", str(exc)[:200])
+        limit = max(1, min(int(self.cfg["prefetch_memories"]), 20))
+        mems = self.search_memories_hybrid(query, limit=limit)
         turns = self.search_turns(query, limit=int(self.cfg["prefetch_turns"]))
         text = self._compose(mems, turns)
         count = len(mems) + len(turns)
-        if text:
-            try:
-                self.redis().set(
-                    cache_key,
-                    json.dumps({"text": text, "count": count}, ensure_ascii=False),
-                    ex=int(self.cfg["search_cache_ttl"]),
-                )
-            except Exception:  # noqa: BLE001
-                pass
+        hits = self.format_hits(mems, limit)
+        self._write_qcache(cache_key, text, count, hits)
+        if with_hits:
+            return text, count, hits
         return text, count
+
+    def _write_qcache(self, cache_key: str, text: str, count: int, hits: list,
+                      ttl: Optional[int] = None) -> None:
+        """写查询缓存；空结果也写（短 TTL），远程结果压到 ≤5 分钟。"""
+        ex = int(ttl if ttl is not None else self.cfg["search_cache_ttl"])
+        if not count:
+            ex = min(ex, 120)
+        if self._remote_on():
+            ex = min(ex, 300)
+        try:
+            self.redis().set(
+                cache_key,
+                json.dumps({"text": text, "count": count, "hits": hits}, ensure_ascii=False),
+                ex=ex,
+            )
+        except Exception:  # noqa: BLE001
+            pass
 
     def _compose(self, mems: list[dict[str, Any]], turns: list[dict[str, Any]]) -> str:
         budget = int(self.cfg["prefetch_max_chars"])
@@ -2025,10 +2303,124 @@ class AtbrainsStore:
         self._vsec, self._vsec_ts = out, now
         return out
 
-    def _http_json(self, method: str, url: str, *, headers: Optional[dict] = None,
-                   payload: Optional[dict] = None, timeout: float = 15) -> tuple[int, dict]:
+    def _http_keepalive(self, method: str, url: str, parts, hdrs: dict,
+                        data: Optional[bytes], timeout: float) -> tuple[int, str]:
+        """公网直连的 keep-alive 快路径：复用 TCP+TLS，连接失效时重连后再试一次（只一次）。
+
+        返回 (status, body)。快路径不该处理的响应（3xx 重定向）抛 _KeepAliveBypass，
+        由 _http_json 回落原来的 urllib 路径；非 2xx 与原实现一样抛 BrainHTTPError
+        （401 同时失效 key 缓存）；网络层异常包成 URLError（与 urlopen 同一异常面）。
+        """
+        import http.client
+        import ssl as ssl_mod
         import urllib.error
+
+        scheme = (parts.scheme or "").lower()
+        if scheme not in ("http", "https"):
+            raise _KeepAliveBypass(f"scheme {scheme!r}")
+        host = parts.hostname or ""
+        key = (scheme, host, parts.port)
+        path = parts.path or "/"
+        if parts.query:
+            path += "?" + parts.query
+        try:
+            timeout = float(timeout)
+        except (TypeError, ValueError):
+            timeout = 15.0
+        try:
+            idle_s = float(self.cfg.get("http_keepalive_idle_s") or 60)
+        except (TypeError, ValueError):
+            idle_s = 60.0
+        # 「对端已关/半关」类错误：换一条新连接重试一次即可自愈
+        retry_errors = (http.client.RemoteDisconnected, http.client.BadStatusLine,
+                        http.client.CannotSendRequest, http.client.IncompleteRead,
+                        BrokenPipeError, ConnectionResetError, ssl_mod.SSLError)
+        pool = getattr(_HTTP_TLS, "pool", None)
+        if pool is None:
+            pool = {}
+            _HTTP_TLS.pool = pool
+        conn = None
+        from_pool = False
+        last_exc: Optional[BaseException] = None
+        for attempt in (0, 1):
+            if conn is None:
+                entry = pool.pop(key, None)
+                if entry is not None:
+                    cand, last_used, cand_timeout = entry
+                    if (float(cand_timeout) == timeout and cand.sock is not None
+                            and time.monotonic() - float(last_used) <= idle_s):
+                        conn, from_pool = cand, True
+                    else:
+                        _close_quietly(cand)
+            if conn is None:
+                cls = http.client.HTTPSConnection if scheme == "https" else http.client.HTTPConnection
+                conn = cls(host, parts.port, timeout=timeout)
+                from_pool = False
+            elif from_pool:
+                # 复用连接：读超时按本次调用重设，绝不让上一次的超时留在 socket 上
+                conn.timeout = timeout
+                if conn.sock is not None:
+                    try:
+                        conn.sock.settimeout(timeout)
+                    except OSError:
+                        pass
+            try:
+                conn.request(method, path, body=data, headers=hdrs)
+                resp = conn.getresponse()
+                status = int(resp.status)
+                body = resp.read().decode("utf-8", "replace")
+            except Exception as exc:  # noqa: BLE001 —— 一律先关连接：复用过的连接不可信
+                _close_quietly(conn)
+                pool.pop(key, None)
+                conn, last_exc = None, exc
+                # 复用来的连接上任何 OSError（含本端 socket 已关的 EBADF、半关连接上的
+                # 读超时）都当作「这条连接已废」，换新连接重试一次；本次新建连接上的
+                # 普通 OSError 不重试（避免把已经发出去的请求再打一遍）。
+                retry = isinstance(exc, retry_errors) or (from_pool and isinstance(exc, OSError))
+                from_pool = False
+                if attempt == 0 and retry:
+                    continue
+                break
+            if 200 <= status < 300:
+                if resp.will_close:
+                    _close_quietly(conn)
+                else:
+                    if key not in pool and len(pool) >= _HTTP_KEEPALIVE_MAX_HOSTS:
+                        _close_quietly(pool.pop(next(iter(pool)))[0])
+                    pool[key] = (conn, time.monotonic(), timeout)
+                return status, body
+            _close_quietly(conn)
+            if status in (301, 302, 303, 307, 308):
+                raise _KeepAliveBypass(f"HTTP {status} 交给 urllib 跟随重定向")
+            if status == 401:      # key 可能刚被轮换：让缓存失效，下次重读
+                self._vsec, self._vsec_ts = None, 0.0
+            raise BrainHTTPError(status, url, body[:300])
+        raise urllib.error.URLError(last_exc if last_exc is not None else "keep-alive 请求失败")
+
+    def _http_json(self, method: str, url: str, *, headers: Optional[dict] = None,
+                   payload: Optional[dict] = None, timeout: float = 15,
+                   no_proxy: Optional[bool] = None) -> tuple[int, dict]:
+        import urllib.error
+        import urllib.parse
         import urllib.request
+        global _NO_PROXY_OPENER
+        host = ""
+        if no_proxy is None:
+            # 本地/私网目标自动绕过代理；公网 embed/rerank 仍按环境变量走
+            host = urllib.parse.urlsplit(url).hostname or ""
+            no_proxy = _is_private_host(host)
+        # keep-alive 只用于「公网 + 进程环境没给该主机配代理」；开关关掉时这里不产生任何副作用
+        parts = None
+        keepalive = _cfg_flag(self.cfg, "http_keepalive_enabled", 1) and not no_proxy
+        if keepalive:
+            parts = urllib.parse.urlsplit(url)
+            host = parts.hostname or host
+            keepalive = not _proxy_configured_for(host)
+        opener = None
+        if no_proxy:
+            if _NO_PROXY_OPENER is None:
+                _NO_PROXY_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+            opener = _NO_PROXY_OPENER
         hdrs = {"Accept": "application/json", "User-Agent": "hermes-brain/1.1"}
         data = None
         if payload is not None:
@@ -2036,9 +2428,17 @@ class AtbrainsStore:
             hdrs["Content-Type"] = "application/json"
         if headers:
             hdrs.update(headers)
+        if keepalive and parts is not None:
+            try:
+                status, body = self._http_keepalive(method, url, parts, hdrs, data, timeout)
+            except _KeepAliveBypass:
+                pass    # 例：3xx 需要跟随重定向 —— 交给下面的 urllib 路径，语义保持原样
+            else:
+                return status, (json.loads(body) if body.strip() else {})
         req = urllib.request.Request(url, data=data, headers=hdrs, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with (opener.open(req, timeout=timeout) if opener is not None
+                  else urllib.request.urlopen(req, timeout=timeout)) as resp:
                 body = resp.read().decode("utf-8", "replace")
                 return int(resp.status), (json.loads(body) if body.strip() else {})
         except urllib.error.HTTPError as exc:
@@ -2072,8 +2472,9 @@ class AtbrainsStore:
     def _qdrant(self, method: str, path: str, payload: Optional[dict] = None,
                 timeout: float = 15) -> dict:
         url = str(self.cfg["qdrant_url"]).rstrip("/") + path
+        # 明确 no_proxy：向量层是本地服务，绝不能因为进程带着 HTTP_PROXY 而兜一圈代理
         _, data = self._http_json(method, url, headers=self._qdrant_headers(),
-                                  payload=payload, timeout=timeout)
+                                  payload=payload, timeout=timeout, no_proxy=True)
         return data
 
     def qdrant_ensure_collection(self) -> None:
@@ -2169,6 +2570,16 @@ class AtbrainsStore:
                  "embedded": 0, "errors": 0, "deleted": 0, "remaining": 0}
         if not stats["enabled"]:
             return stats
+        if not force and not self._vec_dirty:
+            # 没有新写入：pending 的 LEFT JOIN + OR 是全表扫，60 秒定时唤醒不必跑。
+            # 每 10 次仍放行一轮，兜底重建/手工改库后的欠账。
+            self._drain_ticks += 1
+            if self._drain_ticks % 10 != 0:
+                stats["remaining"] = self._drain_last_remaining
+                return stats
+        self._drain_ticks = 0
+        self._vec_dirty = False
+        self._vector_cache = None
         got = False
         try:
             rows = self._exec("SELECT GET_LOCK('brain_vector_drain', 0) AS got", fetch=True)
@@ -2177,7 +2588,9 @@ class AtbrainsStore:
                 # 锁被另一路 drain 占用（可能正卡在一次慢速 embed 上）：不再硬跳过，
                 # 直接继续——本管线幂等（同 id 覆盖写），最坏只是重复一次嵌入。
                 logger.info("atbrains: drain 锁被占用，仍然继续（幂等处理）")
-            self.qdrant_ensure_collection()
+            if not self._qdrant_ready:
+                self.qdrant_ensure_collection()
+                self._qdrant_ready = True
             model = str(self.cfg["embed_model"])
             batch_n = max(1, int(self.cfg.get("vector_drain_batch") or 8))
             budget = int(max_items) if int(max_items) > 0 else 10 ** 9
@@ -2247,12 +2660,19 @@ class AtbrainsStore:
                 marks = ", ".join(["%s"] * len(ids))
                 self._exec(f"DELETE FROM brain_vector_index WHERE mem_id IN ({marks})", tuple(ids))
                 stats["deleted"] = len(ids)
-            row = self._exec(
-                "SELECT COUNT(*) AS c FROM brain_memories m LEFT JOIN brain_vector_index v "
-                "ON v.mem_id = m.id WHERE m.active = 1 AND (v.mem_id IS NULL OR v.status <> 'ok' "
-                "OR v.model <> %s OR (v.content_hash IS NULL OR v.content_hash <> m.content_hash))",
-                (model[:64],), fetch=True)
-            stats["remaining"] = int(row[0]["c"] or 0)
+            # remaining 的 LEFT JOIN COUNT 也是全表级；没有新写入时复用上次结果（≤60 秒）
+            if (stats["embedded"] or stats["errors"] or stats["deleted"] or force
+                    or time.monotonic() - self._drain_remaining_ts > 60):
+                row = self._exec(
+                    "SELECT COUNT(*) AS c FROM brain_memories m LEFT JOIN brain_vector_index v "
+                    "ON v.mem_id = m.id WHERE m.active = 1 AND (v.mem_id IS NULL OR v.status <> 'ok' "
+                    "OR v.model <> %s OR (v.content_hash IS NULL OR v.content_hash <> m.content_hash))",
+                    (model[:64],), fetch=True)
+                stats["remaining"] = int(row[0]["c"] or 0)
+                self._drain_last_remaining = stats["remaining"]
+                self._drain_remaining_ts = time.monotonic()
+            else:
+                stats["remaining"] = self._drain_last_remaining
         finally:
             if got:
                 try:
@@ -2519,7 +2939,10 @@ class AtbrainsStore:
             "WHERE id = %s AND superseded_by IS NOT NULL", (int(mem_id),))
         return {"id": int(mem_id), "cleared": rowcount}
 
-    def vector_status(self) -> dict[str, Any]:
+    def vector_status(self, *, force: bool = False) -> dict[str, Any]:
+        now = time.monotonic()
+        if not force and self._vector_cache and now - self._vector_cache[0] < self._cache_ttl:
+            return self._vector_cache[1]
         out: dict[str, Any] = {
             "enabled": bool(int(self.cfg.get("vector_enabled") or 0)),
             "embed_model": str(self.cfg.get("embed_model")),
@@ -2551,6 +2974,7 @@ class AtbrainsStore:
             out["qdrant_state"] = {"status": res.get("status"), "points": res.get("points_count")}
         except Exception as exc:  # noqa: BLE001
             out["qdrant_state"] = {"error": str(exc)[:200]}
+        self._vector_cache = (now, out)
         return out
 
     # -------------------------------------------------- 运维
@@ -3172,7 +3596,10 @@ class AtbrainsStore:
             out["mariadb_error"] = str(exc)[:200]
         return out
 
-    def stats(self) -> dict[str, Any]:
+    def stats(self, *, force: bool = False) -> dict[str, Any]:
+        now = time.monotonic()
+        if not force and self._stats_cache and now - self._stats_cache[0] < self._cache_ttl:
+            return self._stats_cache[1]
         out: dict[str, Any] = {"mysql": {}, "redis": {}}
         self.ensure_schema()
         row = self._exec(
@@ -3217,6 +3644,7 @@ class AtbrainsStore:
             }
         except Exception as exc:  # noqa: BLE001
             out["redis"] = {"error": str(exc)[:200]}
+        self._stats_cache = (now, out)
         return out
 
     def prune(self, *, turns_keep_days: Optional[int] = None,
@@ -3246,13 +3674,15 @@ class AtbrainsStore:
                 "SELECT COUNT(*) AS c FROM brain_archive WHERE ts < (NOW() - INTERVAL %s DAY)",
                 (a_days,)))
         if i_days > 0:
+            # 不用 COALESCE(deactivated_at, updated_at)：那会让谓词不可索引（全表扫）；
+            # 拆成两段等价条件，正常行能走 deactivated_at 索引。
+            inactive_cond = ("active = 0 AND (deactivated_at < (NOW() - INTERVAL %s DAY) "
+                             "OR (deactivated_at IS NULL AND updated_at < (NOW() - INTERVAL %s DAY)))")
             targets.append((
                 "inactive_memories",
-                "DELETE FROM brain_memories WHERE active = 0 "
-                "AND COALESCE(deactivated_at, updated_at) < (NOW() - INTERVAL %s DAY)",
-                "SELECT COUNT(*) AS c FROM brain_memories WHERE active = 0 "
-                "AND COALESCE(deactivated_at, updated_at) < (NOW() - INTERVAL %s DAY)",
-                (i_days,)))
+                f"DELETE FROM brain_memories WHERE {inactive_cond}",
+                f"SELECT COUNT(*) AS c FROM brain_memories WHERE {inactive_cond}",
+                (i_days, i_days)))
         if s_days > 0:
             # 会话索引：只删“旧、且其轮次已不在库中（或同样过期）”的行
             cond = ("last_active < (NOW() - INTERVAL %s DAY) AND NOT EXISTS "

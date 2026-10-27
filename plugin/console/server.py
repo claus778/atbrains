@@ -34,6 +34,7 @@ MCP = atbrains_mcp.AtbrainsMCP(SERVICE)   # /mcp MCP 端点(与 /v1 共用令牌
 TOKEN_PATH = HERE / ".token"
 # 访问日志(每请求一行)。用 root 可写的固定路径，systemd 单元的 append 日志另存一份启动信息。
 ACCESS_LOG = Path("/var/log/atbrains-access.log")
+_ACCESS_LOG_FH = None
 CONF_PATH = HERE / "config.json"
 DEFAULT_PORT = 8787
 
@@ -53,11 +54,23 @@ def load_conf() -> dict:
     return c
 
 
+_TOKEN_CACHE: tuple[int, str] | None = None
+
+
 def token() -> str:
-    if not TOKEN_PATH.exists():
+    """控制台口令；按 mtime 缓存（每个 /api 请求都会 _authed，不能每次读盘）。"""
+    global _TOKEN_CACHE
+    try:
+        st = TOKEN_PATH.stat()
+    except OSError:
         TOKEN_PATH.write_text(secrets.token_urlsafe(24), encoding="utf-8")
         TOKEN_PATH.chmod(0o600)
-    return TOKEN_PATH.read_text(encoding="utf-8").strip()
+        st = TOKEN_PATH.stat()
+    if _TOKEN_CACHE is not None and _TOKEN_CACHE[0] == st.st_mtime_ns:
+        return _TOKEN_CACHE[1]
+    value = TOKEN_PATH.read_text(encoding="utf-8").strip()
+    _TOKEN_CACHE = (st.st_mtime_ns, value)
+    return value
 
 
 def jdump(obj) -> bytes:
@@ -72,17 +85,20 @@ class Handler(BaseHTTPRequestHandler):
         """访问日志：每请求一行（IP/方法/路径/状态），便于排查外部 agent 接入。
 
         只写文件，不写 stderr（HTTP/1.1 keep-alive 下 stderr 会被刷屏）。
+        句柄常驻并行缓冲：之前每请求 open/close 一次，轮询下就是无谓的 syscall。
         """
+        global _ACCESS_LOG_FH
         try:
             line = "%s %s %s\n" % (
                 time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 self.address_string(),
                 fmt % args,
             )
-            with open(ACCESS_LOG, "a", encoding="utf-8") as fh:
-                fh.write(line)
+            if _ACCESS_LOG_FH is None:
+                _ACCESS_LOG_FH = open(ACCESS_LOG, "a", encoding="utf-8", buffering=1)
+            _ACCESS_LOG_FH.write(line)
         except Exception:  # noqa: BLE001
-            pass
+            _ACCESS_LOG_FH = None   # 句柄坏了下次重开
 
     def handle_one_request(self):
         """客户端提前断开(HTTP/1.1 keep-alive 常见)不要打整段 traceback。"""
@@ -176,7 +192,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(401, jdump({"error": "unauthorized", "hint": "在页面右上角填入 token"}))
         try:
             if path == "/api/overview":
-                return self._send(200, jdump(probe.overview()))
+                fresh = str(q.get("fresh", ["0"])[0]).strip().lower() in ("1", "true", "yes")
+                return self._send(200, jdump(probe.overview(fresh=fresh)))
             if path == "/api/memories":
                 return self._send(200, jdump(probe.memories(
                     limit=min(int(q.get("limit", ["100"])[0]), 500),
@@ -226,24 +243,36 @@ class Handler(BaseHTTPRequestHandler):
         body = self._body()
         try:
             if u.path == "/api/remember":
-                return self._send(200, jdump({"ok": True, "saved": probe.remember(
-                    (body.get("content") or "").strip(), kind=body.get("kind") or "note",
-                    tags=body.get("tags") or "", importance=int(body.get("importance") or 5))}))
+                saved = probe.remember((body.get("content") or "").strip(),
+                                       kind=body.get("kind") or "note",
+                                       tags=body.get("tags") or "",
+                                       importance=int(body.get("importance") or 5))
+                probe.invalidate_overview()
+                return self._send(200, jdump({"ok": True, "saved": saved}))
             if u.path == "/api/forget":
-                return self._send(200, jdump({"ok": True, "result": probe.forget(int(body.get("id")))}))
+                result = probe.forget(int(body.get("id")))
+                probe.invalidate_overview()
+                return self._send(200, jdump({"ok": True, "result": result}))
             if u.path == "/api/restore":
                 try:
-                    return self._send(200, jdump({"ok": True,
-                                                  "result": probe.restore(int(body.get("id") or 0))}))
+                    result = probe.restore(int(body.get("id") or 0))
+                    probe.invalidate_overview()
+                    return self._send(200, jdump({"ok": True, "result": result}))
                 except Exception as e:  # noqa: BLE001 —— 业务性拒绝(不存在/同内容已有活跃条目)
                     return self._send(200, jdump({"ok": False, "error": str(e)}))
             if u.path == "/api/drain":
-                return self._send(200, jdump(probe.drain()))
+                result = probe.drain()
+                probe.invalidate_overview()
+                return self._send(200, jdump(result))
             if u.path == "/api/doctor":
-                return self._send(200, jdump(probe.doctor()))
+                result = probe.doctor()
+                probe.invalidate_overview()
+                return self._send(200, jdump(result))
             if u.path == "/api/prune":
-                return self._send(200, jdump({"ok": True,
-                                              "result": probe.prune(dry_run=bool(body.get("dry_run", True)))}))
+                result = probe.prune(dry_run=bool(body.get("dry_run", True)))
+                if not bool(body.get("dry_run", True)):
+                    probe.invalidate_overview()
+                return self._send(200, jdump({"ok": True, "result": result}))
             return self._send(404, jdump({"error": "unknown endpoint"}))
         except Exception as e:
             return self._send(500, jdump({"error": f"{type(e).__name__}: {e}"}))

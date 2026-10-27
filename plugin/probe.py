@@ -84,26 +84,38 @@ def _run(cmd: list[str], timeout: int = 20) -> str:
 
 def docker_state() -> list[dict]:
     raw = _run(["docker", "ps", "-a", "--format", "{{.Names}}\t{{.Status}}\t{{.Image}}"])
-    out = []
+    rows: list[tuple[str, str, str]] = []
     for line in raw.splitlines():
         parts = line.split("\t")
         if len(parts) < 3 or parts[0] not in CONTAINERS:
             continue
-        name, status, image = parts
-        restarts = _run(["docker", "inspect", name, "--format", "{{.RestartCount}}"], 10).strip() or "?"
-        out.append({"name": name, "role": CONTAINERS[name], "status": status, "image": image,
-                    "up": status.startswith("Up"), "restarts": restarts})
-    return out
+        rows.append((parts[0], parts[1], parts[2]))
+    # 一次 inspect 拿全部重启次数：以前是每个容器一个子进程（4 次 fork/poll）
+    restarts: dict[str, str] = {}
+    if rows:
+        inspected = _run(["docker", "inspect", *[r[0] for r in rows],
+                          "--format", "{{.Name}}\t{{.RestartCount}}"], 10)
+        for line in inspected.splitlines():
+            name, _, count = line.partition("\t")
+            restarts[name.strip().lstrip("/")] = count.strip() or "?"
+    return [{"name": name, "role": CONTAINERS[name], "status": status, "image": image,
+             "up": status.startswith("Up"), "restarts": restarts.get(name, "?")}
+            for name, status, image in rows]
 
 
 def timer_state() -> dict:
     d = {}
-    for prop in ("ActiveState", "UnitFileState", "LastTriggerUSec", "NextElapseUSecRealtime"):
-        d[prop] = _run(["systemctl", "show", "brain-vector-drain.timer", "-p", prop, "--value"], 10).strip()
-    d["lastRun"] = _run(["systemctl", "show", "brain-vector-drain.service",
-                         "-p", "ExecMainStartTimestamp", "--value"], 10).strip()
-    d["lastExit"] = _run(["systemctl", "show", "brain-vector-drain.service",
-                          "-p", "ExecMainStatus", "--value"], 10).strip()
+    # systemctl 支持重复 -p：把 6 次单属性 show 合成 2 次（每次 fork 都带进程启动成本）
+    for unit, props in (("brain-vector-drain.timer",
+                         ("ActiveState", "UnitFileState", "LastTriggerUSec", "NextElapseUSecRealtime")),
+                        ("brain-vector-drain.service",
+                         ("ExecMainStartTimestamp", "ExecMainStatus"))):
+        out = _run(["systemctl", "show", unit, *[x for p in props for x in ("-p", p)]], 10)
+        for line in out.splitlines():
+            key, _, val = line.partition("=")
+            d[key.strip()] = val.strip()
+    d["lastRun"] = d.get("ExecMainStartTimestamp", "")
+    d["lastExit"] = d.get("ExecMainStatus", "")
     # 下次运行:show 的 NextElapseUSecRealtime 在本机 systemd 上取不到,改从 list-timers 解析
     d["nextRun"] = ""
     try:
@@ -118,24 +130,52 @@ def timer_state() -> dict:
     return d
 
 
+_QDRANT_KEY_CACHE: tuple[int, str] | None = None
+_QDRANT_OPENER = None
+
+
 def qdrant_key() -> str:
+    """清读 qdrant 配置文件里的 api_key；按 mtime 缓存（每次 overview 都读太浪费）。"""
+    global _QDRANT_KEY_CACHE
+    try:
+        st = QDRANT_CONF.stat()
+    except OSError:
+        return ""
+    if _QDRANT_KEY_CACHE and _QDRANT_KEY_CACHE[0] == st.st_mtime_ns:
+        return _QDRANT_KEY_CACHE[1]
+    key = ""
     try:
         for line in QDRANT_CONF.read_text(encoding="utf-8", errors="replace").splitlines():
             m = re.match(r"\s*api_key:\s*(\S+)", line)
             if m:
-                return m.group(1).strip("\"'")
-    except FileNotFoundError:
+                key = m.group(1).strip("\"'")
+                break
+    except OSError:
         pass
-    return ""
+    _QDRANT_KEY_CACHE = (st.st_mtime_ns, key)
+    return key
+
+
+def _qdrant_opener():
+    """本地/私网 Qdrant 必须绕过 HTTP(S)_PROXY。
+
+    Hermes 常带着代理环境变量启动；urllib 默认把 127.0.0.1:6333 也发给代理，
+    实测每次请求 3 秒后 502（overview 因此从 0.3 秒变成 6 秒）。
+    """
+    global _QDRANT_OPENER
+    if _QDRANT_OPENER is None:
+        _QDRANT_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    return _QDRANT_OPENER
 
 
 def qdrant_info() -> dict:
     res = {"url": QDRANT_URL, "collection": QDRANT_COLLECTION}
     key = qdrant_key()
+    opener = _qdrant_opener()
     try:
         req = urllib.request.Request(f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}",
                                      headers={"api-key": key})
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with opener.open(req, timeout=10) as r:
             rr = json.loads(r.read().decode())["result"]
         params = rr.get("config", {}).get("params", {}).get("vectors", {})
         res.update({"status": rr.get("status"), "optimizer": rr.get("optimizer_status"),
@@ -146,10 +186,10 @@ def qdrant_info() -> dict:
             f"{QDRANT_URL}/collections/{QDRANT_COLLECTION}/points/scroll",
             data=json.dumps({"limit": 10000, "with_payload": False, "with_vector": False}).encode(),
             headers={"api-key": key, "Content-Type": "application/json"}, method="POST")
-        with urllib.request.urlopen(req2, timeout=20) as r2:
+        with opener.open(req2, timeout=20) as r2:
             ids = {int(p["id"]) for p in json.loads(r2.read().decode())["result"]["points"]}
-        rows = store()._exec("SELECT id, active FROM brain_memories", fetch=True)
-        active = {int(x["id"]) for x in rows if x["active"]}
+        rows = store()._exec("SELECT id FROM brain_memories WHERE active = 1", fetch=True)
+        active = {int(x["id"]) for x in rows}
         res["coverage"] = {"active_memories": len(active), "with_vector": len(active & ids),
                            "missing": sorted(active - ids)[:50], "stale_vectors": sorted(ids - active)[:50]}
     except Exception as e:
@@ -157,28 +197,62 @@ def qdrant_info() -> dict:
     return res
 
 
+_VERSION_CACHE: tuple[int, str] | None = None
+
+
 def plugin_version() -> str:
-    """本插件版本(读 plugin.yaml)。"""
+    """本插件版本(读 plugin.yaml)；按 mtime 缓存（/v1/health 每次探活都会调）。"""
+    global _VERSION_CACHE
+    try:
+        st = (HERE / "plugin.yaml").stat()
+    except OSError:
+        return "?"
+    if _VERSION_CACHE and _VERSION_CACHE[0] == st.st_mtime_ns:
+        return _VERSION_CACHE[1]
     try:
         m = re.search(r"^version:\s*[\"']?([\w.\-]+)", (HERE / "plugin.yaml").read_text(), re.M)
-        return m.group(1) if m else "?"
+        version = m.group(1) if m else "?"
     except Exception:
-        return "?"
+        version = "?"
+    _VERSION_CACHE = (st.st_mtime_ns, version)
+    return version
 
 
 # ───────────────────────────── 总览 ─────────────────────────────
 
-def overview() -> dict:
+# 控制台每 5-10 秒轮询一次 overview：容器/定时器/向量层这些慢且低频变化的段加 TTL，
+# 多标签页/CLI/agent 工具在窗口内共享同一次结果。stats/ping/vector 由 core 自己缓存。
+_OVERVIEW_CACHE: dict[str, tuple[float, object]] = {}
+_SECTION_TTL = {"containers": 30.0, "timer": 30.0, "qdrant": 15.0}
+
+
+def _cached_section(key: str, fn, *, fresh: bool = False):
+    now = time.monotonic()
+    hit = _OVERVIEW_CACHE.get(key)
+    if not fresh and hit is not None and now - hit[0] < _SECTION_TTL.get(key, 15.0):
+        return hit[1]
+    value = fn()
+    _OVERVIEW_CACHE[key] = (now, value)
+    return value
+
+
+def invalidate_overview() -> None:
+    """写操作（drain/doctor/remember/forget/prune）后调用，让控制台立刻看到新状态。"""
+    _OVERVIEW_CACHE.clear()
+
+
+def overview(*, fresh: bool = False) -> dict:
     out = {"ts": time.strftime("%Y-%m-%d %H:%M:%S"), "version": plugin_version()}
-    for key, fn in (("stats", lambda: store().stats()), ("ping", lambda: store().ping()),
-                    ("vector", lambda: store().vector_status())):
+    for key, fn in (("stats", lambda: store().stats(force=fresh)),
+                    ("ping", lambda: store().ping()),
+                    ("vector", lambda: store().vector_status(force=fresh))):
         try:
             out[key] = fn()
         except Exception as e:
             out[key] = {"error": f"{type(e).__name__}: {e}"}
-    out["containers"] = docker_state()
-    out["timer"] = timer_state()
-    out["qdrant"] = qdrant_info()
+    out["containers"] = _cached_section("containers", docker_state, fresh=fresh)
+    out["timer"] = _cached_section("timer", timer_state, fresh=fresh)
+    out["qdrant"] = _cached_section("qdrant", qdrant_info, fresh=fresh)
     return out
 
 

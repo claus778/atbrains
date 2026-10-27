@@ -86,6 +86,11 @@ hermes atbrains-memory remote-check      # 远程模式自检（开关 / URL / �
 - 非密配置：`$HERMES_HOME/atbrains.json`（host/port/user/db + 行为参数，见 `core.py` DEFAULT_CONFIG）。
 - 密码：`$HERMES_HOME/.env` 中 `ATBRAINS_REDIS_PASSWORD` / `ATBRAINS_MARIADB_PASSWORD`（经 `save_env_value` 写入）。
 - 激活：`memory.provider: atbrains`（`hermes config set memory.provider atbrains`）。
+- 写入方身份：`machine`（缺省 = 主机名）与 `agent`（缺省 `hermes`，≤32 字符、小写）
+  决定 `brain_memories` / `brain_claims` / `brain_episodes` 的来源标注。
+  同机多 agent 时可在 `atbrains.json` 写 `{"agent": "omp"}`；
+  `/v1` 客户端由服务端令牌名 `<machine>|<agent>` 决定，客户端传值一律忽略。
+  查询分布：`SELECT agent,machine,COUNT(*) FROM brain_memories GROUP BY agent,machine`。
 - 多 agent 分库布局与容器重建命令：`/root/agent-db/`（credentials.txt 台账 / rebuild.sh / init.sql）。
 
 ## Python 依赖（重要设计决策）
@@ -275,7 +280,7 @@ hermes atbrains-memory distill --now --turns 8
 
 ## 设计说明
 
-- 多设备共享：`brain_memories` / `brain_turns` / `brain_sessions` 均带 `machine` 列（来源机标识，取自 `atbrains.json` 的 `machine`，缺省=主机名）；召回片段自动标注来源。
+- 多设备共享：`brain_memories` / `brain_turns` / `brain_sessions` 均带 `machine` 列（来源机标识，取自 `atbrains.json` 的 `machine`，缺省=主机名）；`brain_memories` / `brain_claims` / `brain_episodes` 另有 `agent` 列（写入方标识，取自 `atbrains.json` 的 `agent`，缺省 `hermes`；`/v1` 客户端由令牌名决定，客户端不能覆盖）；召回片段自动标注来源。
 - 检索使用 LIKE 词法匹配（中文按双字组切分），个人库规模下足够快；不依赖分词/嵌入服务。
 - 写入路径失败只告警不抛出 —— 数据库暂不可达不阻塞对话。
 - 库内时间戳统一按 UTC 解释（容器 `+00:00`；客户端不得按本机时区解读 naive DATETIME）。

@@ -536,8 +536,14 @@ function originText(origin) {
   return ORIGIN_LABELS[origin] || origin || ''
 }
 
-/** `/atbrains` 的纯文本输出（命令结果直接渲染，不进模型历史）。 */
-export function renderIdentity(identity = {}) {
+/**
+ * `/atbrains` 的纯文本输出（命令结果直接渲染，不进模型历史）。
+ *
+ * `server` = 服务端 `/v1/memory/status` 返回的令牌身份（machine/agent），
+ * `expectedAgent` = 插件希望服务端识别出的 agent（默认 = platform）。
+ * 服务端 agent 只能由令牌名决定，客户端不能改；不一致时给出轮换令牌的命令。
+ */
+export function renderIdentity(identity = {}, { server = null, expectedAgent = '' } = {}) {
   const origin = (field) => {
     const label = originText(identity.origins?.[field])
     return label ? `  [${label}]` : ''
@@ -546,7 +552,7 @@ export function renderIdentity(identity = {}) {
   const missing = missingFields.length
     ? missingFields.map((field) => FIELD_LABELS[field] || field).join('、')
     : '无'
-  return [
+  const lines = [
     'atbrains 本机身份',
     `  machine  ${identity.machine || '（空）'}${origin('machine')}`,
     `  os       ${identity.os || '（空）'}${origin('os')}`,
@@ -554,10 +560,20 @@ export function renderIdentity(identity = {}) {
     `  状态     ${identity.pending ? `待设置（缺少：${missing}）` : '已确认'}`,
     `  插件     ${identity.pluginVersion}${identity.firstInstall ? '（首次安装）' : identity.versionChanged ? '（升级后检查）' : ''}`,
     `  文件     ${identity.file}`,
+  ]
+  if (server) {
+    lines.push(`  服务端   machine=${server.machine || '?'} agent=${server.agent || '?'}（令牌决定；库内 agent 列就用它）`)
+    if (server.agent && expectedAgent && server.agent !== expectedAgent) {
+      lines.push(`  ⚠️       令牌 agent=${server.agent} ≠ 预期 ${expectedAgent}：记忆会记成 agent=${server.agent}`)
+      lines.push(`           服务端执行 hermes atbrains token-add <machine>|${expectedAgent} 轮换令牌，再重启 dsh`)
+    }
+  }
+  lines.push(
     '',
     '用法：/atbrains set machine=<机器名> os=<系统> author=<标识>',
     '      /atbrains reset    重新检测默认值并重新确认',
-  ].join('\n')
+  )
+  return lines.join('\n')
 }
 
 export const IDENTITY_USAGE = '用法：/atbrains [show|set machine=<机器名> os=<系统> author=<标识>|reset]'

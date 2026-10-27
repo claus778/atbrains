@@ -104,7 +104,8 @@ export class AtbrainsClient {
     return this.#request('POST', '/v1/memory/forget', { id: Number(id) }, this.writeTimeoutMs)
   }
 
-  status() {
-    return this.#request('POST', '/v1/memory/status', {}, this.timeoutMs)
+  /** 令牌身份核对/存活检查：light=true 让服务端跳过全表聚合的 stats。 */
+  status({ light = false } = {}) {
+    return this.#request('POST', '/v1/memory/status', light ? { light: true } : {}, this.timeoutMs)
   }
 }

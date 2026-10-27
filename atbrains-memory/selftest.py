@@ -185,6 +185,7 @@ class ResolveConfigTest(unittest.TestCase):
                 "vector_enabled": False,
                 "unknown_key": 1,
                 "redis_host": None,
+                "agent": "OMP",
             }), encoding="utf-8")
             (home / ".env").write_text(
                 'ATBRAINS_REDIS_PASSWORD="r3d#is"  # 注释\n'
@@ -199,6 +200,8 @@ class ResolveConfigTest(unittest.TestCase):
             self.assertEqual(cfg["vector_enabled"], 0)
             self.assertNotIn("unknown_key", cfg)
             self.assertEqual(cfg["redis_host"], DEFAULT_CONFIG["redis_host"])  # None 不覆盖
+            self.assertEqual(cfg["agent"], "OMP")  # 写入方身份可在 atbrains.json 设置
+            self.assertEqual(DEFAULT_CONFIG["agent"], "")  # 空 = 回落 'hermes'
             self.assertEqual(cfg["redis_password"], "r3d#is")
             self.assertEqual(cfg["mariadb_password"], "maria")
             self.assertEqual(cfg["distill_api_key"], "dk")

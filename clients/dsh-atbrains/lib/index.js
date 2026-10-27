@@ -254,6 +254,25 @@ export function createRuntime(ctx, rawConfig, { clientFactory } = {}) {
     return protocolProbe
   }
 
+  /**
+   * 服务端按令牌识别出的身份：machine/agent（客户端不能覆盖）。只用于展示与
+   * 一致性告警（agent 与 platform 不符时说明库内会记成别的名字）；成功才缓存。
+   */
+  let serverIdentityCache = null
+  async function serverIdentity() {
+    if (serverIdentityCache) return serverIdentityCache
+    if (!(await protocolOk())) return null
+    try {
+      const s = await client.status({ light: true })
+      const machine = String(s?.machine || '')
+      const agent = String(s?.agent || '')
+      if (machine || agent) serverIdentityCache = { machine, agent }
+      return serverIdentityCache
+    } catch {
+      return null
+    }
+  }
+
   function pushBuffered(key, message) {
     const arr = buffers.get(key) || []
     arr.push(message)
@@ -381,6 +400,8 @@ export function createRuntime(ctx, rawConfig, { clientFactory } = {}) {
     enabled: true,
     client,
     identity,
+    expectedAgent: String(config.platform || ''),
+    serverIdentity,
     recall: (payload, decision) => recall(payload, decision),
     setup: (payload, decision) => setup(payload, decision),
     archive,
@@ -393,25 +414,35 @@ export function createRuntime(ctx, rawConfig, { clientFactory } = {}) {
 // ---------------------------------------------------------------- 人机接口
 
 /** `/atbrains` 命令体：直接返回 UI 文本，不进模型历史。 */
-export function identityCommandResult(runtime, rawInput) {
+export async function identityCommandResult(runtime, rawInput) {
   const parsed = parseIdentityInput(rawInput)
   const identity = runtime.identity
+  // 语法错误不探服务端；其余路径顺带展示令牌身份（失败静默，不影响命令结果）
+  let server = null
+  if (parsed.action !== 'invalid') {
+    try {
+      server = await runtime.serverIdentity?.()
+    } catch {
+      server = null
+    }
+  }
+  const view = { server, expectedAgent: runtime.expectedAgent }
   if (parsed.action === 'help') {
-    return { kind: 'success', text: `${IDENTITY_USAGE}\n\n${renderIdentity(identity.get())}` }
+    return { kind: 'success', text: `${IDENTITY_USAGE}\n\n${renderIdentity(identity.get(), view)}` }
   }
   if (parsed.action === 'show') {
-    return { kind: 'success', text: renderIdentity(identity.get()) }
+    return { kind: 'success', text: renderIdentity(identity.get(), view) }
   }
   if (parsed.action === 'reset') {
     const res = identity.reset()
-    return { kind: 'success', text: `${res.message}\n\n${renderIdentity(res.identity)}` }
+    return { kind: 'success', text: `${res.message}\n\n${renderIdentity(res.identity, view)}` }
   }
   if (parsed.action === 'invalid') {
     return { kind: 'error', text: `${parsed.error}\n${IDENTITY_USAGE}` }
   }
   try {
     const res = identity.set(parsed.patch)
-    return { kind: 'success', text: `${res.message}\n\n${renderIdentity(res.identity)}` }
+    return { kind: 'success', text: `${res.message}\n\n${renderIdentity(res.identity, view)}` }
   } catch (error) {
     return { kind: 'error', text: `设置失败：${String(error?.message || error)}\n${IDENTITY_USAGE}` }
   }

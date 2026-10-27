@@ -297,8 +297,13 @@ class MemoryService:
             raise BadRequest("query 不能为空")
         session_id = str(body.get("session_id") or "")
         st = self.store_who(machine)
-        text, count = st.prefetch_block(q, session_id=session_id)
-        return {"ok": True, "text": text, "count": int(count), "items": self._hits(st, q)}
+        # items 与注入文本共用同一次检索（旧版这里为 items 又跑了一遍完整的
+        # 向量+关键词召回，每次召回的成本直接翻倍）
+        text, count, hits = st.prefetch_block(q, session_id=session_id, with_hits=True)
+        if not hits and text:
+            # 命中在进程内旧缓存里（TTL 内跨版本升级）：退回一次检索保证 items 形状不变
+            hits = self._hits(st, q)
+        return {"ok": True, "text": text, "count": int(count), "items": hits}
 
     @staticmethod
     def _hits(st: Any, q: str) -> list[dict]:
@@ -308,22 +313,7 @@ class MemoryService:
         所以这里如实只透出这两项,不编造一个排序分。
         """
         limit = max(1, min(int(st.cfg.get("prefetch_memories") or 5), 20))
-        out = []
-        for m in st.search_memories_hybrid(q, limit=limit):
-            vscore = m.get("vscore")
-            out.append({
-                "id": m.get("id"),
-                "kind": m.get("kind"),
-                "memory_type": m.get("memory_type"),
-                "importance": m.get("importance"),
-                "machine": m.get("machine"),
-                "agent": m.get("agent"),
-                "tags": m.get("tags") or "",
-                "via": m.get("via") or "",
-                "vscore": round(float(vscore), 4) if isinstance(vscore, (int, float)) else None,
-                "preview": str(m.get("content") or "")[:240],
-            })
-        return out
+        return st.format_hits(st.search_memories_hybrid(q, limit=limit), limit)
 
     def _remember(self, machine: str, body: dict, query: dict) -> dict:
         content = str(body.get("content") or "").strip()
@@ -408,5 +398,14 @@ class MemoryService:
 
     def _status(self, machine: str, body: dict, query: dict) -> dict:
         st = self.store_who(machine)
-        return {"ok": True, "machine": st.machine, "agent": st.agent,
-                "ping": st.ping(), "stats": st.stats()}
+        # ?light=1 / {"light": true}：只要身份+探活，跳过全表聚合的 stats()。
+        # 客户端拿它做令牌身份核对/存活检查时不该付 17 个聚合的代价。
+        q = query if isinstance(query, dict) else {}
+        raw = q.get("light")
+        if isinstance(raw, (list, tuple)):
+            raw = raw[0] if raw else ""
+        light = bool(body.get("light")) or str(raw or "").strip().lower() in ("1", "true", "yes")
+        out: dict = {"ok": True, "machine": st.machine, "agent": st.agent, "ping": st.ping()}
+        if not light:
+            out["stats"] = st.stats()
+        return out

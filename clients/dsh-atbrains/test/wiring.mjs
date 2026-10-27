@@ -11,7 +11,7 @@
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { apply } from '../lib/index.js'
+import { apply, createRuntime, identityCommandResult } from '../lib/index.js'
 
 const home = mkdtempSync(join(tmpdir(), 'dsh-atbrains-wiring-'))
 process.env.DSH_HOME = home
@@ -90,7 +90,7 @@ const preStep = (sessionId, messages = [userMsg]) =>
 
 // /atbrains set → 保存并确认
 {
-  const result = commands.get('atbrains').handler({
+  const result = await commands.get('atbrains').handler({
     rawInput: 'set machine=r9000p os=Windows 11 author=win:local',
   })
   check('命令 set 成功', result.kind === 'success')
@@ -122,11 +122,11 @@ const preStep = (sessionId, messages = [userMsg]) =>
 // 命令 show / reset / invalid
 {
   const command = commands.get('atbrains')
-  const shown = command.handler({ rawInput: '' })
+  const shown = await command.handler({ rawInput: '' })
   check('命令 show 输出状态', shown.kind === 'success' && shown.text.includes('状态'))
-  const reset = command.handler({ rawInput: 'reset' })
+  const reset = await command.handler({ rawInput: 'reset' })
   check('命令 reset 成功', reset.kind === 'success' && reset.text.includes('待设置'))
-  const invalid = command.handler({ rawInput: 'set nope=1' })
+  const invalid = await command.handler({ rawInput: 'set nope=1' })
   check('命令未知字段返回 error', invalid.kind === 'error')
 }
 
@@ -159,6 +159,31 @@ const preStep = (sessionId, messages = [userMsg]) =>
   check('可选用 ctx.inject 请求 commands/tools', deps.includes('commands') && deps.includes('tools'))
   check('注入路径注册 /atbrains', injected.has('cmd:atbrains'))
   check('注入路径注册 atbrains_identity', injected.has('tool:atbrains_identity'))
+}
+
+// 服务端令牌身份：展示 + agent 不一致时告警（/v1 的 agent 只能由令牌决定）
+{
+  const runtimeWith = (agent) => {
+    const ctx2 = { logger: { info() {}, warn() {}, error() {}, debug() {} } }
+    return createRuntime(
+      ctx2,
+      { token: 't', platform: 'dsh', identityFile: join(home, `identity-server-${agent}.json`) },
+      {
+        clientFactory: () => ({
+          baseUrl: 'mock',
+          health: async () => ({ ok: true, version: '2.0.0' }),
+          status: async () => ({ ok: true, machine: 'r9000p-Windows', agent }),
+          recall: async () => ({}),
+          turn: async () => ({}),
+        }),
+      },
+    )
+  }
+  const mismatch = await identityCommandResult(runtimeWith('hermes'), 'show')
+  check('展示服务端 machine/agent', mismatch.text.includes('machine=r9000p-Windows') && mismatch.text.includes('agent=hermes'))
+  check('agent 与 platform 不符时告警', mismatch.text.includes('token-add'))
+  const match = await identityCommandResult(runtimeWith('dsh'), 'show')
+  check('agent 一致时不告警', match.text.includes('agent=dsh') && !match.text.includes('token-add'))
 }
 
 // 归档：服务不可达也不许抛
