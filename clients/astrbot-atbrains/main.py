@@ -33,6 +33,8 @@ import socket
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 from typing import Any, Optional
 
@@ -303,6 +305,14 @@ def _load_config() -> dict[str, Any]:
         "archive_async": _int("archive_async", 1),
         # 关键词检索走单次 REGEXP；0 = 逐字节回到旧 SQL（OR-LIKE 展开）
         "search_regexp_enabled": _int("search_regexp_enabled", 1),
+        # ----- 远程召回：atbrains /v1（关键词 + Qdrant 向量 → RRF 融合）
+        # service_url 留空则从 mariadb_host 推 http://<host>:8787；
+        # 拿不到令牌 / 服务不可达时自动降级成本地关键词路径（行为与本改造前一致）。
+        "service_url": str(raw.get("service_url") or "").strip().rstrip("/"),
+        "service_token": _cred("ATBRAINS_SERVICE_TOKEN", "BRAIN_REMOTE_TOKEN")
+        or str(raw.get("service_token") or ""),
+        "remote_recall_enabled": _int("remote_recall_enabled", 1),
+        "remote_recall_timeout": _int("remote_recall_timeout", 3),  # 秒
     }
 
 
@@ -322,6 +332,8 @@ class Store:
         # 召回缓存：(query 规范化, 条数, 时间窗) -> (monotonic, (text, count))
         self._cache: "collections.OrderedDict[tuple, tuple[float, tuple[str, int]]]" = collections.OrderedDict()
         self._cache_lock = threading.Lock()
+        # 远程召回状态：失败只告警一次，之后静默降级到本地关键词
+        self._remote_warned = False
 
     # ----- 连接
 
@@ -598,10 +610,81 @@ class Store:
             text = text[:PREFETCH_MAX_CHARS].rstrip() + " …"
         return text
 
-    def prefetch_block(self, query: str) -> tuple[str, int]:
+    # ----- 远程召回：atbrains /v1（关键词 + Qdrant 向量 → RRF 融合）
+
+    def _service_endpoint(self) -> str:
+        """远程召回的服务地址；配置为空时按 mariadb_host 推断，推断不出返回 ""。"""
+        url = str(self.cfg.get("service_url") or "").strip().rstrip("/")
+        if url:
+            return url
+        host = str(self.cfg.get("mariadb_host") or "").strip()
+        if host and host not in ("127.0.0.1", "localhost", "::1"):
+            return f"http://{host}:8787"
+        return ""
+
+    def _remote_fail(self, exc: Any) -> None:
+        """远程召回不可用：只告警一次，之后静默降级，避免每轮刷屏。"""
+        if self._remote_warned:
+            return
+        self._remote_warned = True
+        logger.warning(f"[atbrains] 远程召回不可用，已降级本地关键词：{exc}")
+
+    def remote_recall(self, query: str, session_id: str = "") -> Optional[tuple[str, int]]:
+        """POST /v1/memory/recall，成功返回 (注入文本, 条数)；不可用返回 None 由调用方降级。
+
+        /v1 内部就是 core.prefetch_block —— 关键词 + Qdrant 向量 → RRF 融合，命中带
+        via(kw/vec/both) 与向量余弦 vscore。这里只取注入文本，并把向量命中数记进日志，
+        便于确认走的到底是关键词还是语义通道。
+        """
+        if not _cfg_flag(self.cfg, "remote_recall_enabled", 1):
+            return None
+        token = str(self.cfg.get("service_token") or "").strip()
+        base = self._service_endpoint()
+        if not token or not base:
+            self._remote_fail("未配置 service_token 或 service_url")
+            return None
+        timeout = max(1, int(self.cfg.get("remote_recall_timeout") or 3))
+        payload = json.dumps(
+            {"query": query, "session_id": session_id}, ensure_ascii=False
+        ).encode("utf-8")
+        req = urllib.request.Request(
+            f"{base}/v1/memory/recall",
+            data=payload,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8", "replace"))
+        except Exception as exc:  # noqa: BLE001 —— 网络/令牌/服务端故障一律降级
+            self._remote_fail(exc)
+            return None
+        if not isinstance(data, dict) or not data.get("ok"):
+            self._remote_fail(f"服务端返回异常：{str(data)[:120]}")
+            return None
+        # 成功一次就把告警闸门复位，便于以后再次断连时仍能看到提示
+        self._remote_warned = False
+        items = data.get("items") or []
+        vec = sum(
+            1 for i in items
+            if isinstance(i, dict) and str(i.get("via") or "") in ("vec", "both")
+        )
+        if vec:
+            logger.info(f"[atbrains] 语义召回 {vec}/{len(items)} 条（向量 + 关键词 RRF）")
+        return str(data.get("text") or ""), int(data.get("count") or 0)
+
+    def prefetch_block(self, query: str, session_id: str = "") -> tuple[str, int]:
         query = (query or "").strip()
         if not query:
             return "", 0
+        # ① 首选远程 /v1：语义召回（关键词 + Qdrant 向量 → RRF）
+        remote = self.remote_recall(query, session_id)
+        if remote is not None:
+            return remote
+        # ② 降级：本地关键词路径（与改造前完全一致）
         key = self._cache_key(query)
         if key is not None:
             hit = self._cache_get(key)
@@ -773,7 +856,10 @@ class AtbrainsMemory(Star):
                 # 硬预算：公网抖动不能把首 token 拖到秒级（超时跳过注入，本轮照常回复）
                 try:
                     block, count = await asyncio.wait_for(
-                        asyncio.to_thread(self.store.prefetch_block, query),
+                        asyncio.to_thread(
+                            self.store.prefetch_block, query,
+                            str(event.unified_msg_origin or ""),
+                        ),
                         timeout=timeout_ms / 1000.0,
                     )
                 except asyncio.TimeoutError:
@@ -783,7 +869,10 @@ class AtbrainsMemory(Star):
                     )
                     return
             else:
-                block, count = await asyncio.to_thread(self.store.prefetch_block, query)
+                block, count = await asyncio.to_thread(
+                    self.store.prefetch_block, query,
+                    str(event.unified_msg_origin or ""),
+                )
             if not block:
                 return
             header = (
