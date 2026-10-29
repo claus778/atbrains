@@ -165,6 +165,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "distill_api_base_url": "https://api.commandcode.ai/provider/v1",
     "distill_api_model": "deepseek/deepseek-v4.1-flash",
     "distill_api_timeout": 120,         # 单次 LLM 请求超时（秒）
+    "distill_api_max_tokens": 8000,     # 输出上限：推理模型的 reasoning_tokens 也计入，4000 会被截断
 }
 
 SECRET_ENV_VARS = {
@@ -3367,6 +3368,10 @@ class AtbrainsStore:
         "开关 / 配置项 / 表结构版本这类——额外给出 slot：subject 用稳定名词（服务器 / 项目名 / "
         "设备名），predicate 用不超过 12 字的短谓词（如 SSH 端口、记忆库表结构版本），"
         "value 只放最新值本身。偏好、决策、洞察、一次性记录不要给 slot。\n"
+        "例：content「服务器 SSH 端口已从 22 迁移到 7622」→ "
+        "slot {\"subject\":\"服务器\",\"predicate\":\"SSH 端口\",\"value\":\"7622\"}；"
+        "content「记忆库 schema 已升级到 v10」→ "
+        "slot {\"subject\":\"atbrains 记忆库\",\"predicate\":\"schema 版本\",\"value\":\"v10\"}。\n"
         "只输出严格 JSON 数组，不要任何多余文字：\n"
         "[{\"content\":\"...\",\"kind\":\"fact|preference|decision|insight\","
         "\"importance\":1-10,\"tags\":[\"≤3个\"],\"evidence_turn_ids\":[...],"
@@ -3707,7 +3712,7 @@ class AtbrainsStore:
             "temperature": 0.2,
             # 该模型是推理模型：reasoning_tokens 也计入 max_tokens，1500 会把 JSON 截断，
             # 因此留足预算（输出仍受 distill_max_items 约束，成本可控）。
-            "max_tokens": 4000,
+            "max_tokens": int(cfg.get("distill_api_max_tokens") or 8000),
         }
         status, data, used = 0, {}, ""
         last_exc: Optional[Exception] = None
