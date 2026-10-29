@@ -313,6 +313,9 @@ def _load_config() -> dict[str, Any]:
         or str(raw.get("service_token") or ""),
         "remote_recall_enabled": _int("remote_recall_enabled", 1),
         "remote_recall_timeout": _int("remote_recall_timeout", 3),  # 秒
+        # ----- 写入/检索统一走 /v1：失败仍逐字节降级到上面的本地直连路径
+        "remote_write_enabled": _int("remote_write_enabled", 1),
+        "remote_search_enabled": _int("remote_search_enabled", 1),
     }
 
 
@@ -334,6 +337,8 @@ class Store:
         self._cache_lock = threading.Lock()
         # 远程召回状态：失败只告警一次，之后静默降级到本地关键词
         self._remote_warned = False
+        # 远程写入状态：同一套闸门（失败只告警一次，之后静默走本地直连）
+        self._write_warned = False
 
     # ----- 连接
 
@@ -676,6 +681,37 @@ class Store:
             logger.info(f"[atbrains] 语义召回 {vec}/{len(items)} 条（向量 + 关键词 RRF）")
         return str(data.get("text") or ""), int(data.get("count") or 0)
 
+    def _post(self, path: str, payload: dict, timeout: int) -> dict:
+        """POST JSON 到服务端 /v1；任何失败（未配置 / 网络 / 非 JSON / ok 不真）都抛异常。
+
+        本方法不吞异常：由调用方决定降级到哪条本地路径。
+        """
+        token = str(self.cfg.get("service_token") or "").strip()
+        base = self._service_endpoint()
+        if not token or not base:
+            raise RuntimeError("未配置 service_token 或 service_url")
+        req = urllib.request.Request(
+            f"{base}{path}",
+            data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {token}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=max(1, int(timeout or 3))) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+        if not isinstance(data, dict) or not data.get("ok"):
+            raise RuntimeError(f"服务端返回异常：{str(data)[:120]}")
+        return data
+
+    def _remote_write_fail(self, exc: Any) -> None:
+        """远程写入不可用：只告警一次，之后静默降级本地直连。"""
+        if self._write_warned:
+            return
+        self._write_warned = True
+        logger.warning(f"[atbrains] 远程写入不可用，已降级本地直连：{exc}")
+
     def prefetch_block(self, query: str, session_id: str = "") -> tuple[str, int]:
         query = (query or "").strip()
         if not query:
@@ -714,6 +750,34 @@ class Store:
         kind = (str(kind or "note").strip() or "note")[:32]
         mtype = _memory_type(kind)
         tags = str(tags or "").strip()[:255]
+        # ① 首选远程 /v1：machine 身份、memory_type/TTL、去重合并都由服务端决定
+        if _cfg_flag(self.cfg, "remote_write_enabled", 1):
+            try:
+                data = self._post(
+                    "/v1/memory/remember",
+                    {"content": content, "kind": kind, "tags": tags,
+                     "importance": importance, "memory_type": mtype},
+                    int(self.cfg.get("remote_recall_timeout") or 3),
+                )
+                self._write_warned = False
+                self.cache_clear()
+                saved = data.get("saved")
+                if isinstance(saved, dict):
+                    saved_id = saved.get("id")
+                elif isinstance(saved, int):
+                    saved_id = saved
+                else:
+                    saved_id = 0
+                try:
+                    saved_id = int(saved_id)
+                except (TypeError, ValueError):
+                    saved_id = 0
+                return {"id": saved_id, "kind": kind,
+                        "importance": importance, "memory_type": mtype,
+                        "hot_cache": False, "deduped": False, "via": "service"}
+            except Exception as exc:  # noqa: BLE001 —— 任何远程故障都原样降级本地 SQL
+                self._remote_write_fail(exc)
+        # ② 降级：本地直连（与改造前逐字节一致）
         mem_id = 0
         deduped = False
         for attempt in (0, 1):
@@ -774,6 +838,20 @@ class Store:
         session_id = str(session_id or "")[:96]
         platform = str(platform or "")[:48]
         author = str(author or "")[:64]
+        # ① 首选远程 /v1：服务端统一 machine 身份 + 转录层游标（键名对齐 service._turn）
+        if _cfg_flag(self.cfg, "remote_write_enabled", 1):
+            try:
+                data = self._post(
+                    "/v1/memory/turn",
+                    {"session_id": session_id, "user": u, "assistant": a,
+                     "platform": platform, "author": author},
+                    int(self.cfg.get("remote_recall_timeout") or 3),
+                )
+                self._write_warned = False
+                return int(data.get("id") or 0)
+            except Exception as exc:  # noqa: BLE001 —— 任何远程故障都原样降级本地 SQL + Redis
+                self._remote_write_fail(exc)
+        # ② 降级：本地直连（与改造前逐字节一致）
         turn_stmt = (
             "INSERT INTO brain_turns (session_id, platform, author, machine, truncated, "
             "user_content, assistant_content) VALUES (%s, %s, %s, %s, %s, %s, %s)",
@@ -963,6 +1041,15 @@ class AtbrainsMemory(Star):
             limit(number): 返回条数，默认 5
         """
         try:
+            # ① 首选远程 /v1：remote_recall 自带超时与「只告警一次」降级，这里不重复实现
+            if _cfg_flag(self.store.cfg, "remote_search_enabled", 1):
+                remote = self.store.remote_recall(
+                    query, session_id=str(event.unified_msg_origin or "")
+                )
+                if remote and remote[0]:
+                    text, count = remote
+                    return f"{text}\n共 {count} 条" if count else text
+            # ② 降级：本地关键词检索
             mems, turns = await asyncio.to_thread(self.store.search_all, query, int(limit))
             if not mems and not turns:
                 return "未找到相关记忆。"
@@ -1006,6 +1093,37 @@ def _selftest() -> None:
     text, n = st.prefetch_block("AstrBot 长期记忆 接入")
     print(f"prefetch -> {n} 条, {len(text)} 字符")
     print(text[:300])
+    _selftest_remote(st)
+
+
+def _selftest_remote(st: Store) -> None:
+    """远程 /v1 探测：只读（health + recall），任何异常只打印、不影响退出码。"""
+    base = st._service_endpoint()
+    token = str(st.cfg.get("service_token") or "").strip()
+    if not base or not token:
+        print("远程探测：跳过（未配置 service_url / service_token）")
+        return
+    try:
+        req = urllib.request.Request(f"{base}/v1/health", method="GET")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            health = json.loads(resp.read().decode("utf-8", "replace"))
+        if not isinstance(health, dict):
+            raise RuntimeError(f"health 返回非 dict：{str(health)[:120]}")
+        print(f"远程 health: ok={health.get('ok')} version={health.get('version')}")
+        req = urllib.request.Request(
+            f"{base}/v1/memory/recall",
+            data=json.dumps({"query": "AstrBot 部署 记忆", "session_id": ""},
+                           ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json",
+                     "Authorization": f"Bearer {token}"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            recall = json.loads(resp.read().decode("utf-8", "replace"))
+        count = int(recall.get("count") or 0) if isinstance(recall, dict) else 0
+        print(f"远程 recall -> count={count}")
+    except Exception as exc:  # noqa: BLE001 —— 服务端不可用也必须正常结束
+        print(f"[atbrains] 远程探测失败：{exc}")
 
 
 if __name__ == "__main__":

@@ -5,13 +5,16 @@
 `brain_turns` / `brain_sessions` 与 Redis `brain:recent`。写入方身份固定为
 `agent = 'astrbot'`，与 Hermes、dsh 等 agent 共享同一个 MariaDB 库。
 
+写入统一走 `/v1`（失败降级本地直连）：machine 身份、`memory_type`/TTL、去重合并、
+转录层由服务端决定；开关 `remote_write_enabled`（默认 1）。
+
 ## 能力
 
 | 钩子 | 行为 |
 |---|---|
-| `filter.on_llm_request()` | 按本轮用户消息做关键词召回（长期记忆 + 历史对话片段），拼到 `req.system_prompt`；用 `event.set_extra` 防止同一轮重复注入。检索失败只降级不抛错 |
-| `filter.on_agent_done()` | 归档本轮问答到 `brain_turns` / `brain_sessions`，并 append 到 Redis `brain:recent` |
-| `filter.llm_tool` | 注册 `memory_save` / `memory_search` 两个工具（docstring 里的 `Args:` 必须带 `(string)` / `(number)` 类型标注，否则 AstrBot 解析不出参数 schema） |
+| `filter.on_llm_request()` | 按本轮用户消息召回：`remote_recall_enabled=1` 时先 POST `/v1/memory/recall`（语义 + 关键词 RRF），失败降级本地关键词检索；拼到 `req.system_prompt`。用 `event.set_extra` 防止同一轮重复注入 |
+| `filter.on_agent_done()` | 归档本轮问答：`remote_write_enabled=1` 时先 POST `/v1/memory/turn`，失败降级本地 `brain_turns` / `brain_sessions` + Redis `brain:recent` |
+| `filter.llm_tool` | `memory_save` 写入统一走 `/v1/memory/remember`（失败降级本地直连）；`memory_search` 优先 `/v1/memory/recall`，空结果降级本地检索；docstring 里的 `Args:` 必须带 `(string)` / `(number)` 类型标注，否则 AstrBot 解析不出参数 schema |
 
 插件对记忆库只做「读记忆 / 写记忆 / 写回合」三类操作：**不写转录层、不做向量化**
 （向量回填由 Hermes 侧的 drainer 负责）。
