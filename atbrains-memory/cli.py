@@ -169,6 +169,7 @@ def _cmd_doctor(args) -> int:
         _out(f"表结构: ✓ v{store.schema_version()}"
              " (brain_memories / brain_claims / brain_claim_versions / brain_claim_evidence / brain_episodes"
              " / brain_turns / brain_turn_messages / brain_thoughts / brain_tool_calls"
+             " / brain_entities / brain_edges / brain_entity_mentions"
              " / brain_sessions / brain_archive / brain_meta)")
     except Exception as exc:  # noqa: BLE001
         ok = False
