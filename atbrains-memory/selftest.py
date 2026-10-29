@@ -339,6 +339,40 @@ class StorePureTest(unittest.TestCase):
         self.assertLessEqual(len(text), 62)
 
 
+class GraphSlotPureTest(unittest.TestCase):
+    """图谱实体过滤 + 蒸馏槽位补抽的解析/校验（不连库、不发请求）。"""
+
+    def test_entity_filter(self) -> None:
+        ok = AtbrainsStore._graph_entity_ok
+        self.assertTrue(ok("MariaDB"))
+        self.assertTrue(ok("atbrains 记忆库"))
+        self.assertFalse(ok("用户"))
+        self.assertFalse(ok("User"))
+        self.assertFalse(ok("x"))
+        self.assertFalse(ok(".docx"))
+        self.assertFalse(ok("a" * 61))
+
+    def test_slot_pass_validation(self) -> None:
+        store = AtbrainsStore(dict(DEFAULT_CONFIG))
+        payload = json.dumps({"slots": [
+            {"index": 0, "subject": "服务器", "predicate": "SSH 端口", "value": "7622"},
+            {"index": 1, "subject": "记忆库", "predicate": "schema 版本", "value": "v10。" + "很长" * 80},
+            {"index": 2, "subject": "", "predicate": "y", "value": "z"},
+            {"index": 9, "subject": "越界", "predicate": "y", "value": "z"},
+        ]}, ensure_ascii=False)
+        with mock.patch.object(AtbrainsStore, "_distill_llm_chat", return_value=payload):
+            got = store._distill_slot_pass(["a", "b", "c"])
+        self.assertEqual(got[0], {"subject": "服务器", "predicate": "SSH 端口", "value": "7622"})
+        self.assertNotIn(1, got)   # 超长值 = 多句叙述，形状校验必须丢掉
+        self.assertNotIn(2, got)   # 空 subject
+        self.assertNotIn(9, got)   # 越界 index
+
+    def test_slot_pass_failure_is_empty(self) -> None:
+        store = AtbrainsStore(dict(DEFAULT_CONFIG))
+        with mock.patch.object(AtbrainsStore, "_distill_llm_chat", side_effect=RuntimeError("down")):
+            self.assertEqual(store._distill_slot_pass(["a"]), {})
+
+
 class ClaimLayerTest(unittest.TestCase):
     def test_slot_key_stable_and_distinct(self) -> None:
         a = AtbrainsStore.claim_slot_key("server", "服务器", "时区", "fact")

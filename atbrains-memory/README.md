@@ -51,6 +51,67 @@ atbrains_episode_get(turn_id=750)
 `atbrains_turn_detail` 会自动带出该轮的 episode；`atbrains_recall` 的返回里多一个 `claims` 字段。
 `prune` 删轮次时，连带删该轮的 episode 与证据行（主张版本保留，只把断掉的 `source_turn_id` 置空）。
 
+## 图谱层（schema v11：实体 / 关系 / 提及，第三路召回）
+
+`brain_claims` 解决的是「同一个槽位的值变过几次」，但检索仍然只看字面与语义相似度。
+图谱层补的是**多跳**：「MariaDB 跟哪个项目有关」「AstrBot 装在哪台机器上」这类问题，
+答案所在的记忆往往不含问句里的字面词。
+
+```
+brain_entities          实体（name 唯一）        id / name / kind / mention_count
+brain_edges             有向关系（src,dst,relation 唯一，四种关系）runs_on / uses / part_of / related
+brain_entity_mentions   提及（entity_id + memory_id 主键）—— 实体 ↔ 记忆的多对多
+```
+
+抽取（离线，唯一会花 LLM 的地方）：
+
+```
+hermes atbrains-memory graph-build                 # 预演：只报实体/关系/提及数，不写库
+hermes atbrains-memory graph-build --apply         # 真写；默认只补「还没有提及记录」的记忆
+hermes atbrains-memory graph-build --apply --limit 150 --batch 6
+hermes atbrains-memory graph-build --apply --rebuild   # 连已抽过的一起重抽（慎用，费 API）
+```
+
+- 提及归属**不用模型给的 id**，而用「实体名是否出现在正文里」做确定性判断——模型编不出假提及。
+- 伪实体过滤两处都做（实体列表 + 关系端点）：泛称（用户/助手/system）、以 `.`/`-`/`/` 开头的、超长的一律不收。
+- 两个设计坑：图谱路必须在「向量为空就 return 关键词结果」之前算（否则向量层降级时图谱一起失效）；
+  实体名 LIKE 会撞上 `Hermes` / `Hermes gateway` 这类包含关系，靠「复用 known 实体名」的提示词约束。
+
+查询期（不调 LLM，实测纯图谱路 0.6~8.7 ms）：
+
+```
+实体名 LIKE → 直接提及的记忆（权重 1.0）+ 1 跳邻居提及的记忆（0.5）→ top-k
+融合：RRF 第三路 score += 0.35/(k+rank+1)，via 变成 kw+vec+graph 组合值
+```
+
+### 增量维护（v11 之后新增）
+
+存量靠人工 `graph-build`，新记忆靠维护线程补——否则图谱会停在建库那一刻：
+
+```
+graph_auto_enabled      1      维护线程定期补抽新记忆
+graph_auto_interval_min 10     间隔；没有待抽取记忆时一次 LLM 都不调
+graph_auto_limit        12     每轮最多处理 12 条（2 个 LLM 批次）
+```
+
+游标是 `brain_meta.graph_cursor`（最大已处理记忆 id）。**首次运行只把游标对齐到当前最大 id，
+不回溯**——否则升级后的第一个 tick 会把几百条老记忆重抽一遍，白烧 API；存量用 `graph-build` 显式补齐。
+没有实体可抽的记忆也会被游标推过去，不会被反复送进 LLM。
+
+```
+hermes atbrains-memory graph-status     # 实体/关系/提及/覆盖率 + 游标/待抽取/上次抽取
+hermes atbrains-memory graph-recall "MariaDB 跟哪个项目有关"   # 图谱路 vs 融合路对照
+```
+
+2026-10-29 生产实测（447 条活跃记忆）：
+
+```
+抽取 211 条记忆（两次 graph-build，0 LLM 失败）→ 264 实体 / 461 关系 / 1135 提及
+覆盖 405/447 = 90.6%（余下 42 条正文里没有任何合格实体，被游标跳过）
+实体→邻接项目检索：MRR@5 0.626 → 0.731（30 组，11 好 / 2 差 / 17 平）
+主题查询（8 条）平均语义余弦 0.5347 → 0.5370，无退化；图谱路延迟 +2~7 ms
+```
+
 ## 全量转录层（brain_turn_messages）
 
 `brain_turns` 只存「用户说了什么 + 助手最终回复」，工具调用参数、工具返回原文、推理过程不在里面。
@@ -216,6 +277,7 @@ brain-distill 后台线程（daemon，GET_LOCK('brain_distill') 互斥）
       │
       ▼
 remember(source='distill') → brain_memories；update 时旧条标记 superseded_by
+槽位补抽：本次要写入但没有 slot 的结论 → 一次专项 LLM → 合格值写 brain_claims（同槽位递增 revision）
 水位推进到本批最大 id（即使 0 条写入；手动 `--now` 与旧水位之间仍有积压轮次时保持原水位，
 避免跳过），计数写回 brain_meta
 ```
@@ -224,6 +286,10 @@ remember(source='distill') → brain_memories；update 时旧条标记 supersede
   短命 CLI 进程照常秒退；`distill_enabled=0` 时线程根本不启动。
 - 首次启用不会回灌历史：`distill_watermark` 缺失时只记当前 `MAX(brain_turns.id)` 后返回。
 - 只处理 `ts` 早于 120 秒的轮次（给正在写入的对话留出落库窗口），跳过以 `[IMPORTANT` 开头的轮次。
+- 槽位补抽单独一次 LLM（只在本批有「缺 slot 且要写入」的结论时才调）：extract 阶段把 slot 当可选字段，
+  实测「schema 已升级到 v10」这种教科书级可变值也会被漏掉，claims 因此长期是空的。
+  补抽结果要过形状校验（subject ≤60 / predicate ≤24 / value ≤120 字、不得是多句叙述），宁可漏不可编；
+  补抽失败只 warning，结论照写记忆库、只是没有 claim。
 - 任何异常只 warning + 计数，绝不向上抛、绝不影响记忆读写主路径。
 
 ### 配置（`$HERMES_HOME/atbrains.json`，均有默认值）

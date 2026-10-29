@@ -287,11 +287,13 @@
 
 | 键 | 当前值 | 含义 |
 |---|---|---|
-| `schema_version` | `9` | 结构版本 |
+| `schema_version` | `11` | 结构版本 |
 | `last_prune` | 2026-10-24 05:47:13 | 上次清理时间（维护线程按它判断是否到 7 天） |
 | `distill_watermark` | `1130` | 蒸馏已处理到的最大 turn id |
 | `last_distill` | 2026-10-24 17:48:53 | 上次蒸馏时间 |
 | `distill_runs` / `_added` / `_updated` / `_skipped` / `_errors` | 37 / 180 / 7 / 42 / 3 | 蒸馏计数 |
+| `graph_cursor` | `max(brain_memories.id)` | 图谱增量抽取游标（v11 新增，首次只对齐不回溯） |
+| `last_graph_build` | 时间戳 | 上次增量图谱抽取时间（10 分钟节流） |
 
 列：`meta_key`(PK) / `meta_value` / `updated_at`(ON UPDATE)。
 
@@ -322,6 +324,40 @@
 
 列：`machine`+`platform` 复合主键、`author`、`note`。回落顺序：`(machine,platform)` → `(machine,'*')` → `('*',platform)` → `('*','*')`。
 新机器接入必须往这里加一行，否则 author 落 `unknown`。
+
+### 3.10 图谱层：`brain_entities` / `brain_edges` / `brain_entity_mentions`（v11）
+
+第三路召回的离线结构。**只由 `graph-build`（人工）与维护线程的增量游标写入**，在线召回只读。
+
+**`brain_entities`（实体，name 唯一）**
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `id` | BIGINT UNSIGNED PK | |
+| `name` | VARCHAR(191) UNIQUE | 稳定短名；`User`/`用户`/`system` 等泛称在写入前就被过滤 |
+| `kind` | VARCHAR(32) | server / project / service / person / device / topic |
+| `mention_count` | INT UNSIGNED | 冗余计数，每次抽取后按 mentions 重算 |
+| `machine` / `agent` | VARCHAR | 抽取发起方（归属惯例同其它表） |
+
+**`brain_edges`（有向关系，src+dst+relation 唯一）**
+
+| 列 | 说明 |
+|---|---|
+| `src_id` / `dst_id` | → `brain_entities.id`，`idx_edge_src` / `idx_edge_dst` |
+| `relation` | 只允许 `runs_on` / `uses` / `part_of` / `related` |
+| `weight` | DECIMAL(6,3)，同一条边重复抽取取 GREATEST |
+| `evidence_memory_id` | 预留：抽取来源记忆（当前 LLM 不给，留空） |
+
+**`brain_entity_mentions`（提及，entity_id + memory_id 复合主键）**
+
+提及归属是**确定性**的：实体名是否出现在该记忆正文里（`name.lower() in content.lower()`），
+不用模型给的 id —— 模型会编 id，但编不出「名字出现在正文里」。
+
+```
+2026-10-29 生产：264 实体 / 461 关系 / 1135 提及 / 覆盖 405 条活跃记忆（90.6%）
+brain_meta.graph_cursor  = 增量游标（最大已处理记忆 id，首次只对齐、不回溯）
+brain_meta.last_graph_build = 上次增量抽取时间（节流用，默认 10 分钟一次）
+```
 
 ---
 
@@ -445,6 +481,8 @@ prune 由插件内维护线程执行（`GET_LOCK('brain_prune')`，每 7 天一�
 | v7 | `agent` 列（memories / claims / episodes） |
 | v8 | `brain_claim_versions.agent`（版本级作者） |
 | v9 | `brain_thoughts` + `brain_tool_calls`（思考链与工具调用明细，2026-10-25） |
+| v10 | 访问反馈层（`access_count` / `last_accessed_at`）+ 按类型 TTL（`expires_at`）+ `idx_access` / `idx_expires`（2026-10-29） |
+| v11 | 图谱层：`brain_entities` / `brain_edges` / `brain_entity_mentions`（第三路召回，2026-10-29） |
 
 ---
 

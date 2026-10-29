@@ -33,7 +33,7 @@ import time
 import zlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, cast
 
 logger = logging.getLogger(__name__)
 
@@ -138,6 +138,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     # 图谱层（第三路召回，v11）：实体/关系由 graph-extract 离线抽取，查询期只做实体名匹配 + 1 跳
     "graph_enabled": 1,              # 1 开 / 0 关（关闭后融合仍是原来的关键词+向量两路）
     "graph_route_weight": 0.35,      # 图谱路在 RRF 里的权重（LivingMemory 用的是 0.35 左右）
+    # 增量抽取：维护线程按游标给「新写入的记忆」补实体，避免图谱只覆盖建库那一刻的存量。
+    # 游标 (brain_meta.graph_cursor) 首次运行只对齐到当前最大 id，不回溯——存量用 graph-build 显式补齐。
+    "graph_auto_enabled": 1,         # 1 开 / 0 关
+    "graph_auto_interval_min": 10,   # 间隔（分钟）：无待抽取记忆时不调 LLM、不写 meta
+    "graph_auto_limit": 12,          # 每轮最多处理多少条记忆（12 = 2 个 LLM 批次）
     # rerank（默认关闭；服务端手动开启，失败自动回落 RRF 顺序，绝不阻断检索）
     "rerank_enabled": 0,             # 1 开 / 0 关
     "rerank_url": "https://api.siliconflow.cn/v1/rerank",
@@ -3325,30 +3330,42 @@ class AtbrainsStore:
         return True
 
     def graph_extract(self, *, dry_run: bool = True, limit: int = 200,
-                      batch: int = 6, rebuild: bool = False) -> dict[str, Any]:
+                      batch: int = 6, rebuild: bool = False,
+                      after_id: Optional[int] = None) -> dict[str, Any]:
         """用 LLM 从记忆里抽实体与关系（离线批处理，不参与在线召回）。
 
         mentions 不用 LLM 给的 id，而用「实体名出现在正文里」做确定性归属；
         entities 走 name 唯一键幂等 upsert，edges 走 (src,dst,relation) 唯一键。
+
+        after_id: 只处理 id 更大的记忆（增量游标）。默认 None 时按「还没有提及记录」选，
+        这样人工 graph-build 可以无限次补齐存量；增量维护走 after_id，避免无实体可抽的
+        记忆被反复送进 LLM 花冤枉钱。
         """
         self.ensure_schema()
         out: dict[str, Any] = {"dry_run": bool(dry_run), "memories": 0, "batches": 0,
                                "entities": 0, "edges": 0, "mentions": 0,
-                               "llm_failed": 0, "error": ""}
+                               "llm_failed": 0, "error": "", "max_id": 0}
         if not int(self.cfg.get("graph_enabled") or 0):
             out["error"] = "graph_disabled"
             return out
         if rebuild:
-            rows = self._exec(
+            rows = cast(list, self._exec(
                 "SELECT id, content FROM brain_memories WHERE active = 1 ORDER BY id LIMIT %s",
-                (max(1, int(limit)),), fetch=True)
+                (max(1, int(limit)),), fetch=True))
+        elif after_id is not None:
+            rows = cast(list, self._exec(
+                "SELECT id, content FROM brain_memories WHERE active = 1 AND id > %s "
+                "ORDER BY id LIMIT %s",
+                (int(after_id), max(1, int(limit))), fetch=True))
         else:
-            rows = self._exec(
+            rows = cast(list, self._exec(
                 "SELECT m.id, m.content FROM brain_memories m "
                 "LEFT JOIN brain_entity_mentions e ON e.memory_id = m.id "
                 "WHERE m.active = 1 AND e.memory_id IS NULL ORDER BY m.id LIMIT %s",
-                (max(1, int(limit)),), fetch=True)
+                (max(1, int(limit)),), fetch=True))
         out["memories"] = len(rows)
+        if rows:
+            out["max_id"] = max(int(r["id"]) for r in rows)
         if not rows:
             return out
         known = [str(r["name"]) for r in self._exec(
@@ -3508,13 +3525,23 @@ class AtbrainsStore:
             "SELECT (SELECT COUNT(*) FROM brain_entities) AS entities, "
             "(SELECT COUNT(*) FROM brain_edges) AS edges, "
             "(SELECT COUNT(*) FROM brain_entity_mentions) AS mentions, "
-            "(SELECT COUNT(DISTINCT memory_id) FROM brain_entity_mentions) AS covered", fetch=True)[0]
+            "(SELECT COUNT(DISTINCT memory_id) FROM brain_entity_mentions) AS covered, "
+            "(SELECT COUNT(*) FROM brain_memories WHERE active = 1) AS active", fetch=True)[0]
         top = self._exec(
             "SELECT name, kind, mention_count FROM brain_entities "
             "ORDER BY mention_count DESC, id ASC LIMIT 12", fetch=True)
         out: dict[str, Any] = {"enabled": bool(int(self.cfg.get("graph_enabled") or 0)),
                                "route_weight": float(self.cfg.get("graph_route_weight") or 0)}
         out.update({k: int(v or 0) for k, v in row.items()})
+        active = int(out.get("active") or 0)
+        out["coverage"] = round(100.0 * int(out.get("covered") or 0) / active, 1) if active else 0.0
+        out["auto"] = {"enabled": bool(int(self.cfg.get("graph_auto_enabled") or 0)),
+                       "interval_min": float(self.cfg.get("graph_auto_interval_min") or 0),
+                       "limit": int(self.cfg.get("graph_auto_limit") or 0)}
+        cur = self._meta_get("graph_cursor")
+        out["cursor"] = int(cur) if cur and str(cur).isdigit() else None
+        out["pending"] = self._graph_pending()
+        out["last_build"] = self._meta_get("last_graph_build")
         out["top"] = [dict(r) for r in top]
         return out
 
@@ -3606,12 +3633,81 @@ class AtbrainsStore:
                 logger.warning("atbrains: 维护循环异常（继续下一轮）: %s", exc)
             delay = interval
 
+    def _graph_pending(self) -> int:
+        """返回「id 大于图谱游标」的活跃记忆数（增量抽取的待办量）。"""
+        cur = self._meta_get("graph_cursor")
+        if cur is None:
+            return 0
+        try:
+            after = int(cur)
+        except (TypeError, ValueError):
+            return 0
+        row = cast(list, self._exec(
+            "SELECT COUNT(*) AS n FROM brain_memories WHERE active = 1 AND id > %s",
+            (after,), fetch=True))
+        return int((row[0]["n"] if row else 0) or 0)
+
+    def _graph_autobuild(self) -> None:
+        """增量图谱抽取：只补游标之后的新记忆，按间隔节流 + GET_LOCK 多进程互斥。
+
+        首次运行只把游标对齐到当前最大 id（不回溯）——存量由人工 `graph-build` 显式补齐，
+        否则升级后的第一个 tick 会把几百条老记忆全部重抽一遍，白烧 API。
+        """
+        if not int(self.cfg.get("graph_enabled") or 0):
+            return
+        if not int(self.cfg.get("graph_auto_enabled") or 0):
+            return
+        every = float(self.cfg.get("graph_auto_interval_min") or 0)
+        if every <= 0:
+            return
+        last = self._meta_get("last_graph_build")
+        if last:
+            try:
+                prev = datetime.strptime(last, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+            except ValueError:
+                prev = None
+            if prev is not None and (datetime.now(timezone.utc) - prev).total_seconds() < every * 60:
+                return
+        cur = self._meta_get("graph_cursor")
+        if cur is None:
+            row = cast(list, self._exec("SELECT MAX(id) AS mid FROM brain_memories", fetch=True))
+            self._meta_set("graph_cursor", str(int((row[0]["mid"] if row else 0) or 0)))
+            logger.info("atbrains: 图谱游标初始化（不回溯存量，存量用 graph-build 补齐）")
+            return
+        if self._graph_pending() <= 0:
+            return
+        got = cast(list, self._exec("SELECT GET_LOCK('brain_graph', 0) AS got", fetch=True))
+        if not (got and got[0].get("got")):
+            logger.debug("atbrains: 图谱增量抽取跳过（另一进程正在抽取）")
+            return
+        try:
+            res = self.graph_extract(dry_run=False, limit=int(self.cfg.get("graph_auto_limit") or 12),
+                                     after_id=int(cur))
+            if int(res.get("max_id") or 0) > int(cur):
+                self._meta_set("graph_cursor", str(int(res["max_id"])))
+            self._meta_set("last_graph_build",
+                           datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"))
+            if res.get("memories"):
+                logger.info("atbrains: 图谱增量抽取 memories=%s 实体=%s 关系=%s 提及=%s 失败=%s",
+                            res.get("memories"), res.get("entities"), res.get("edges"),
+                            res.get("mentions"), res.get("llm_failed"))
+        finally:
+            try:
+                self._exec("SELECT RELEASE_LOCK('brain_graph')")
+            except Exception:  # noqa: BLE001
+                pass
+
     def _maintenance_tick(self) -> None:
         # 访问计数回写与 prune 解耦：即使维护清理没到周期（或未启用），也要把 Redis 计数落库。
         try:
             self._flush_access()
         except Exception as exc:  # noqa: BLE001
             logger.debug("atbrains: 访问计数回写异常（忽略）: %s", str(exc)[:160])
+        # 图谱增量抽取同理：放在 prune 的「未到周期就 return」之前，否则永远轮不到。
+        try:
+            self._graph_autobuild()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("atbrains: 图谱增量抽取异常（忽略）: %s", str(exc)[:160])
         if not int(self.cfg.get("maintenance_enabled") or 0):
             return
         every = float(self.cfg.get("prune_every_days") or 0)
@@ -4047,6 +4143,66 @@ class AtbrainsStore:
             raise BrainError("蒸馏 API 返回空内容")
         return content
 
+    _DISTILL_SLOT_PROMPT = (
+        "你是「可变值」槽位抽取器。输入是一批已蒸馏的结论，每行形如 [序号] 结论正文。\n"
+        "只对「会变化的可核对值」抽槽位：端口、版本号、路径、库名/表名、账号、开关、配置项取值、\n"
+        "表结构版本、模型名、URL。偏好、决策理由、过程记录、一次性任务、泛泛描述一律不抽。\n"
+        "subject 用稳定名词（服务器 / 项目名 / 设备名 / 子系统），predicate 不超过 12 字，"
+        "value 只放值本身（不要整句，不要带「已升级到」这类叙述）。\n"
+        "只输出严格 JSON，不要多余文字："
+        '{"slots":[{"index":0,"subject":"...","predicate":"...","value":"..."}]}；\n'
+        "没有合格的就输出 {\"slots\":[]}。有就抽、没把握就跳过——宁可漏，不要编。"
+    )
+
+    def _distill_slot_pass(self, contents: list[str]) -> dict[int, dict[str, str]]:
+        """对缺槽位的蒸馏结论做一次专项补抽（单次 LLM），返回值经形状校验。
+
+        为什么需要这一步：extract 阶段把 slot 当可选字段，模型在长提示里经常直接省略，
+        实测「schema 已从 v9 升级到 v10」这种教科书级可变值也没带 slot，claims 就一直是空的。
+        """
+        if not contents:
+            return {}
+        lines = "\n".join(f"[{i}] {str(c)[:600]}" for i, c in enumerate(contents))
+        try:
+            text = self._distill_llm_chat([
+                {"role": "system", "content": self._DISTILL_SLOT_PROMPT},
+                {"role": "user", "content": lines}])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("atbrains: 槽位补抽 LLM 调用失败: %s", str(exc)[:200])
+            return {}
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            return {}
+        try:
+            data = json.loads(text[start:end + 1])
+        except (TypeError, ValueError):
+            return {}
+        out: dict[int, dict[str, str]] = {}
+        for item in (data.get("slots") or []):
+            if not isinstance(item, dict):
+                continue
+            raw_idx = item.get("index")
+            if raw_idx is None:
+                continue
+            try:
+                idx = int(raw_idx)
+            except (TypeError, ValueError):
+                continue
+            if not (0 <= idx < len(contents)):
+                continue
+            subject = str(item.get("subject") or "").strip()
+            pred = str(item.get("predicate") or "").strip()
+            val = str(item.get("value") or "").strip()
+            # 形状校验：槽位值是「一个值」而不是一段叙述，超长/多句直接判定为不可靠。
+            if not subject or not pred or not val:
+                continue
+            if len(subject) > 60 or len(pred) > 24 or len(val) > 120:
+                continue
+            if val.count("。") > 1 or len(val.split("，")) > 3:
+                continue
+            out[idx] = {"subject": subject[:191], "predicate": pred[:96], "value": val[:2000]}
+        return out
+
     def _distill_reconcile(self, candidates: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
         """灰区统一裁决：一次 LLM 调用返回 index → {decision,target_id}。"""
         text = self._distill_llm_chat([
@@ -4168,6 +4324,26 @@ class AtbrainsStore:
                 it["target_id"] = target if choice == "update" else None
                 if choice == "skip":
                     it["reason"] = "reconciled"
+
+        # 槽位补抽：extract 阶段模型经常漏掉 slot（实测 5 条蒸馏里，含「schema 已升级到 v10」
+        # 这种教科书级可变值也没给 slot）。对将要写入却没有 slot 的条目做一次专项补抽：
+        # 单次 LLM 调用、失败只记 warning 不影响写入，抽出来的值经形状校验才采用。
+        if not dry_run:
+            missing = [it for it in items if it["decision"] in ("new", "update") and not it.get("slot")]
+            if missing:
+                try:
+                    got = self._distill_slot_pass([it["content"] for it in missing])
+                except Exception as exc:  # noqa: BLE001
+                    got = {}
+                    logger.warning("atbrains: 蒸馏槽位补抽失败（按无槽位写入）: %s", str(exc)[:200])
+                filled = 0
+                for i, it in enumerate(missing):
+                    slot = got.get(i)
+                    if slot:
+                        it["slot"] = slot
+                        filled += 1
+                if filled:
+                    logger.info("atbrains: 蒸馏槽位补抽 %s/%s 条命中", filled, len(missing))
 
         for it in items:
             it.pop("_hits", None)

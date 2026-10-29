@@ -249,8 +249,13 @@ def _cmd_graph_build(args) -> int:
 def _cmd_graph_status(args) -> int:
     store = _store()
     st = store.graph_status()
+    auto = st.get("auto") or {}
     _out(f"图谱层 {'开启' if st['enabled'] else '关闭'} · 融合权重 {st['route_weight']}")
-    _out(f"实体 {st['entities']} · 关系 {st['edges']} · 提及 {st['mentions']} · 覆盖记忆 {st['covered']}")
+    _out(f"实体 {st['entities']} · 关系 {st['edges']} · 提及 {st['mentions']} · "
+         f"覆盖记忆 {st['covered']}/{st.get('active', 0)}（{st.get('coverage', 0)}%）")
+    _out(f"增量抽取 {'开启' if auto.get('enabled') else '关闭'} · 每 {auto.get('interval_min', 0):g} 分钟 "
+         f"≤{auto.get('limit', 0)} 条 · 游标 {st.get('cursor')} · 待抽取 {st.get('pending', 0)} · "
+         f"上次 {st.get('last_build') or '从未'}")
     if st["top"]:
         _out("─" * 46)
         for e in st["top"]:
