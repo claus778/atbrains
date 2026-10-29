@@ -166,6 +166,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "distill_api_model": "deepseek/deepseek-v4.1-flash",
     "distill_api_timeout": 120,         # 单次 LLM 请求超时（秒）
     "distill_api_max_tokens": 8000,     # 输出上限：推理模型的 reasoning_tokens 也计入，4000 会被截断
+    # 投影层瘦身：brain_thoughts / brain_tool_calls 与 brain_turn_messages 的 blob 内容重复，
+    # 这里只留前缀（全文权威仍在 blob，用 atbrains_turn_detail 取）。0 = 不截断。
+    "detail_args_max_chars": 512,
+    "detail_result_max_chars": 1024,
+    "detail_reasoning_max_chars": 2000,
 }
 
 SECRET_ENV_VARS = {
@@ -1888,6 +1893,19 @@ class AtbrainsStore:
                 logger.debug("atbrains: 思考/工具调用索引失败（原文已存）: %s", str(exc)[:200])
         return len(rows), total
 
+    def _detail_cap(self, key: str, default: int) -> int:
+        try:
+            return max(0, int(self.cfg.get(key) or default))
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _detail_clip(text: str, cap: int) -> str:
+        """投影层只留前缀：全文权威在 brain_turn_messages 的 zlib blob 里。cap<=0 = 不截。"""
+        if cap <= 0 or len(text) <= cap:
+            return text
+        return text[:cap] + f"\n…[truncated {len(text) - cap} chars]"
+
     def _index_turn_details(self, turn_id: int, messages: list[dict[str, Any]]) -> tuple[int, int]:
         """把一轮里的「思考」与「工具调用」投影成结构化行（schema v9）。
 
@@ -1896,6 +1914,9 @@ class AtbrainsStore:
           brain_tool_calls 一个 tool-call 一行（参数、结果、状态、起止、耗时）
         幂等键：(turn_id, seq) 与 (turn_id, seq, call_index)，重放/回填不会写重。
         """
+        cap_args = self._detail_cap("detail_args_max_chars", 512)
+        cap_res = self._detail_cap("detail_result_max_chars", 1024)
+        cap_reason = self._detail_cap("detail_reasoning_max_chars", 2000)
         thoughts: list[tuple] = []
         calls: list[dict[str, Any]] = []
         for seq, m in enumerate(messages or []):
@@ -1908,7 +1929,7 @@ class AtbrainsStore:
                 if isinstance(reasoning, str) and reasoning.strip():
                     thoughts.append((
                         turn_id, seq, _db_safe(str(m.get("message_uid") or "")[:96]),
-                        _db_safe(reasoning[:200_000]), len(reasoning),
+                        _db_safe(self._detail_clip(reasoning, cap_reason)), len(reasoning),
                         _db_safe(str(m.get("finish_reason") or "")[:32]), ts))
                 for idx, c in enumerate(_as_tool_calls(m.get("tool_calls"))):
                     if not isinstance(c, dict):
@@ -1918,8 +1939,10 @@ class AtbrainsStore:
                         "seq": seq, "idx": idx,
                         "call_id": _db_safe(str(c.get("id") or "")[:128]),
                         "name": _db_safe(str(fn.get("name") or c.get("name") or "")[:64]),
-                        "args": _db_safe(_as_text(fn.get("arguments") if fn else c.get("arguments"))),
-                        "started": ts, "ended": None, "result": None, "status": "pending",
+                        "args": _db_safe(self._detail_clip(
+                            _as_text(fn.get("arguments") if fn else c.get("arguments")), cap_args)),
+                        "started": ts, "ended": None, "result": None, "result_len": 0,
+                        "status": "pending",
                     })
             elif role == "tool":
                 cid = _db_safe(str(m.get("tool_call_id") or m.get("toolCallId") or "")[:128])
@@ -1931,9 +1954,11 @@ class AtbrainsStore:
                     calls.append({"seq": seq, "idx": 0, "call_id": cid,
                                   "name": _db_safe(str(m.get("tool_name") or m.get("name") or "")[:64]),
                                   "args": "", "started": None, "ended": ts,
-                                  "result": text, "status": failed})
+                                  "result": self._detail_clip(text, cap_res),
+                                  "result_len": len(text), "status": failed})
                 else:
-                    target.update({"result": text, "ended": ts, "status": failed})
+                    target.update({"result": self._detail_clip(text, cap_res),
+                                   "result_len": len(text), "ended": ts, "status": failed})
         if not thoughts and not calls:
             return 0, 0
         conn = self._conn()
@@ -1955,7 +1980,7 @@ class AtbrainsStore:
                         if c["started"] and c["ended"]:
                             dur = max(0, int((c["ended"] - c["started"]).total_seconds() * 1000))
                         rows_c.append((turn_id, c["seq"], c["idx"], c["call_id"], c["name"],
-                                       c["args"] or None, c["result"], len(c["result"] or ""),
+                                       c["args"] or None, c["result"], int(c.get("result_len") or 0),
                                        c["status"], c["started"], c["ended"], dur))
                     cur.executemany(
                         "INSERT INTO brain_tool_calls (turn_id, seq, call_index, call_id, tool_name, "
