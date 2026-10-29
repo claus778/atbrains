@@ -1,6 +1,6 @@
 """`hermes atbrains-memory` 子命令：运维与手工操作 atbrains 双存储。
 
-命令：status | stats | search | remember | recent | forget | prune | doctor | vector-status | vector-drain | vector-test | supersede-detect | remote-check | unsupersede | distill
+命令：status | stats | search | remember | recent | forget | prune | doctor | vector-status | vector-drain | vector-test | supersede-detect | consolidate | remote-check | unsupersede | distill
 仅在 atbrains 是活动记忆提供者时可见（由 Hermes CLI 发现机制门控）。
 """
 from __future__ import annotations
@@ -231,6 +231,33 @@ def _cmd_vector_test(args) -> int:
     return 0
 
 
+def _cmd_consolidate(args) -> int:
+    store = _store()
+    res = store.consolidate(dry_run=not args.apply, low=args.low, high=args.high,
+                            window_hours=args.hours, limit=args.limit, use_llm=args.llm)
+    mode = "已应用" if args.apply else "预演（未写库）"
+    _out(f"近重复合并 {mode}：扫描 {res['scanned']} 条 · 区间 {res['low']}~{res['high']} · "
+         f"窗口 {res['window_hours']}h · 缺向量跳过 {res['skipped']}")
+    if res.get("error"):
+        _out(f"Qdrant 读取失败：{res['error']}")
+        return 1
+    _out(f"确定性取代（≥{res['high']}）{len(res['auto'])} 组 · 已标记 {res['superseded']} 条")
+    for p in res["auto"]:
+        _out(f"  [{p['old_id']}] → 被 [{p['new_id']}] 取代 · sim {p['sim']}")
+        _out(f"      旧: {p['old_head']}")
+        _out(f"      新: {p['new_head']}")
+    _out(f"待裁决（{res['low']}~{res['high']}）{len(res['review'])} 组 · "
+         f"已合并 {res['merged']} · 判为两件事 {res['kept']} · LLM 失败 {res['llm_failed']}")
+    for p in res["review"]:
+        tail = f" → 合并为 [{p['merged_id']}]" if p.get("merged_id") else ""
+        _out(f"  [{p['old_id']}] vs [{p['new_id']}] · sim {p['sim']}{tail}")
+        _out(f"      旧: {p['old_head']}")
+        _out(f"      新: {p['new_head']}")
+    if not (res["auto"] or res["review"]):
+        _out("（窗口内没有达到阈值的近重复对）")
+    return 0
+
+
 def _cmd_supersede_detect(args) -> int:
     store = _store()
     result = store.detect_supersedes(dry_run=not args.apply, threshold=args.threshold)
@@ -391,6 +418,14 @@ def register_cli(subparser) -> None:
     p.add_argument("--apply", action="store_true", help="真正写库（默认只预演，不修改任何行）")
     p.add_argument("--threshold", type=float, default=0.90, help="余弦相似度阈值（默认 0.90）")
 
+    p = subs.add_parser("consolidate", help="近重复合并：≥high 取代，[low,high) 交 LLM 裁决（默认预演）")
+    p.add_argument("--apply", action="store_true", help="真正写库（默认只预演）")
+    p.add_argument("--low", type=float, default=0.82, help="灰区下界（默认 0.82）")
+    p.add_argument("--high", type=float, default=0.90, help="确定性取代上界（默认 0.90）")
+    p.add_argument("--hours", type=float, default=24, help="只比较创建时间相差该小时数以内的对（默认 24，0=不限）")
+    p.add_argument("--limit", type=int, default=200, help="扫描最近多少条活跃记忆（默认 200）")
+    p.add_argument("--llm", action="store_true", help="灰区交 LLM 裁决是否合并（需 --apply 才生效）")
+
     p = subs.add_parser("remote-check", help="远程模式自检：开关 / URL / 令牌掩码 / 健康检查往返耗时")
     p.add_argument("--json", action="store_true", help="以 JSON 输出（默认人类可读）")
 
@@ -422,6 +457,7 @@ def atbrains_memory_command(args) -> None:
         "vector-drain": _cmd_vector_drain,
         "vector-test": _cmd_vector_test,
         "supersede-detect": _cmd_supersede_detect,
+        "consolidate": _cmd_consolidate,
         "remote-check": _cmd_remote_check,
         "unsupersede": _cmd_unsupersede,
         "distill": _cmd_distill,
@@ -429,7 +465,7 @@ def atbrains_memory_command(args) -> None:
     handler = handlers.get(sub)
     if handler is None:
         print("用法: hermes atbrains-memory <status|stats|search|remember|recent|forget|prune|doctor|"
-              "vector-status|vector-drain|vector-test|supersede-detect|remote-check|unsupersede|"
+              "vector-status|vector-drain|vector-test|supersede-detect|consolidate|remote-check|unsupersede|"
               "distill>")
         return
     try:

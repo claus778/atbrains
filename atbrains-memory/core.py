@@ -171,6 +171,8 @@ SECRET_ENV_VARS = {
     "redis_password": "ATBRAINS_REDIS_PASSWORD",
     "mariadb_password": "ATBRAINS_MARIADB_PASSWORD",
     "distill_api_key": "HERMES_CUSTOM_API_COMMANDCODE_AI_API_KEY",
+    # 主 key 失效（401/403）时按顺序试的备用环境变量名
+    "distill_api_key_fallbacks": "COMMANDCODE_API_KEY",
 }
 
 PROVIDER_NAME = "atbrains-memory"
@@ -3065,6 +3067,154 @@ class AtbrainsStore:
             "WHERE id = %s AND superseded_by IS NOT NULL", (int(mem_id),))
         return {"id": int(mem_id), "cleared": rowcount}
 
+    _CONSOLIDATE_PROMPT = (
+        "你是记忆合并器。输入是两条语义高度相似的长期记忆（余弦相似度 {sim}）。\n"
+        "判定规则：\n"
+        "  * 若它们表达同一件事的不同说法，或同一条事实的详略两个版本 → 合并成一条："
+        "信息取并集、冲突处以时间较新的那条为准、必须保留具体的数字/端口/路径/账号，不要编造。\n"
+        "  * 若它们虽然相近但确实是两件事（不同对象、不同阶段、并列事实）→ keep。\n"
+        "只输出严格 JSON，无多余文字：{\"action\":\"merge|keep\",\"content\":\"合并后的完整句子\"}"
+    )
+
+    def _merge_pair(self, older: dict[str, Any], newer: dict[str, Any],
+                    sim: float) -> Optional[str]:
+        """让 LLM 判定两条近重复是否该合并。
+
+        返回值三态：合并后的文本 / "" = 判为 keep / None = 调用或鉴权失败（调用方要区分，
+        否则「全部判 keep」会把「全部 401」伪装成一次成功的保守裁决）。
+        """
+        try:
+            prompt = self._CONSOLIDATE_PROMPT.replace("{sim}", f"{sim:.3f}")
+            user = (f"A（较早，{older['created_at']}）：{older['content']}\n"
+                    f"B（较新，{newer['created_at']}）：{newer['content']}")
+            text = self._distill_llm_chat([
+                {"role": "system", "content": prompt},
+                {"role": "user", "content": user}])
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("atbrains: 合并裁决 LLM 调用失败，保留原样: %s", str(exc)[:200])
+            return None
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            return ""
+        try:
+            data = json.loads(text[start:end + 1])
+        except (TypeError, ValueError):
+            return ""
+        if str(data.get("action") or "").strip().lower() != "merge":
+            return ""
+        merged = str(data.get("content") or "").strip()
+        return merged if len(merged) >= 8 else ""
+
+    def consolidate(self, *, dry_run: bool = True, low: float = 0.82, high: float = 0.90,
+                    window_hours: Optional[float] = 24, limit: int = 200,
+                    use_llm: bool = False) -> dict[str, Any]:
+        """近重复合并：≥high 直接取代（确定性），[low,high) 交 LLM 裁决是否真合并。
+
+        只处理 active 且未被取代的行，同 memory_type 内两两比 Qdrant 已有向量（不重新 embed）；
+        只比较 created_at 相差 window_hours 以内的对（默认 24h）——目标是收敛「同一次整理里
+        写出来的近重复」，不动跨月的老条目。LLM 说 keep 就原样保留（不删、不取代）。
+        """
+        self.ensure_schema()
+        try:
+            lo, hi = float(low), float(high)
+        except (TypeError, ValueError):
+            lo, hi = 0.82, 0.90
+        if lo > hi:
+            lo, hi = hi, lo
+        win_sec = float(window_hours) * 3600.0 if window_hours else 0.0
+        rows = [dict(r) for r in self._exec(
+            "SELECT id, kind, memory_type, content, importance, created_at FROM brain_memories "
+            "WHERE active = 1 AND superseded_by IS NULL ORDER BY created_at DESC, id DESC LIMIT %s",
+            (max(2, int(limit)),), fetch=True)]
+        out: dict[str, Any] = {"dry_run": bool(dry_run), "scanned": len(rows), "low": lo, "high": hi,
+                               "window_hours": window_hours, "use_llm": bool(use_llm),
+                               "auto": [], "review": [], "superseded": 0, "merged": 0,
+                               "kept": 0, "llm_failed": 0, "skipped": 0, "error": ""}
+        if len(rows) < 2:
+            return out
+        try:
+            vectors = self.qdrant_get_vectors([int(r["id"]) for r in rows])
+        except Exception as exc:  # noqa: BLE001
+            out["error"] = str(exc)[:200]
+            out["skipped"] = len(rows)
+            return out
+        pairs: list[tuple[float, dict, dict]] = []
+        for i in range(len(rows) - 1):
+            ri = rows[i]
+            vi = vectors.get(int(ri["id"]))
+            if not vi:
+                out["skipped"] += 1
+                continue
+            for j in range(i + 1, len(rows)):
+                rj = rows[j]
+                vj = vectors.get(int(rj["id"]))
+                if not vj:
+                    continue
+                if str(ri.get("memory_type") or "") != str(rj.get("memory_type") or ""):
+                    continue
+                if win_sec > 0:
+                    gap = abs((ri["created_at"] - rj["created_at"]).total_seconds())
+                    if gap > win_sec:
+                        continue
+                sim = _cosine(vi, vj)
+                if sim < lo:
+                    continue
+                older, newer = ((ri, rj)
+                                if (ri["created_at"], int(ri["id"])) < (rj["created_at"], int(rj["id"]))
+                                else (rj, ri))
+                pairs.append((sim, older, newer))
+        pairs.sort(key=lambda p: -p[0])
+        marked: set[int] = set()
+        for sim, older, newer in pairs:
+            old_id, new_id = int(older["id"]), int(newer["id"])
+            if old_id in marked or new_id in marked:
+                continue
+            rec = {"sim": round(sim, 4), "old_id": old_id, "new_id": new_id,
+                   "old_head": str(older["content"])[:70], "new_head": str(newer["content"])[:70]}
+            if sim >= hi:
+                out["auto"].append(rec)
+                if not dry_run:
+                    self._exec(
+                        "UPDATE brain_memories SET superseded_by = %s, superseded_at = UTC_TIMESTAMP(), "
+                        "updated_at = updated_at WHERE id = %s AND active = 1", (new_id, old_id))
+                    out["superseded"] += 1
+                    marked.add(old_id)
+                continue
+            if not (use_llm and not dry_run):
+                out["review"].append(rec)
+                continue
+            merged_text = self._merge_pair(older, newer, sim)
+            if merged_text is None:
+                out["review"].append(rec)
+                out["llm_failed"] += 1
+                continue
+            if not merged_text:
+                out["review"].append(rec)
+                out["kept"] += 1
+                continue
+            try:
+                saved = self.remember(merged_text, kind=str(newer.get("kind") or "note"),
+                                      tags="merge", importance=max(int(older.get("importance") or 5),
+                                                                   int(newer.get("importance") or 5)),
+                                      source="merge")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("atbrains: 合并写入失败，保留原样: %s", str(exc)[:200])
+                out["review"].append(rec)
+                continue
+            mid = saved.get("id")
+            if not mid:
+                out["review"].append(rec)
+                continue
+            self._exec(
+                "UPDATE brain_memories SET superseded_by = %s, superseded_at = UTC_TIMESTAMP(), "
+                "updated_at = updated_at WHERE id IN (%s, %s) AND active = 1", (int(mid), old_id, new_id))
+            rec["merged_id"] = int(mid)
+            out["review"].append(rec)
+            out["merged"] += 1
+            marked.add(old_id)
+            marked.add(new_id)
+        return out
+
     def vector_status(self, *, force: bool = False) -> dict[str, Any]:
         now = time.monotonic()
         if not force and self._vector_cache and now - self._vector_cache[0] < self._cache_ttl:
@@ -3213,9 +3363,14 @@ class AtbrainsStore:
         "importance 分档（必须拉开差距，禁止一律写 7）："
         "9-10=用户明确的偏好/硬约束/不可违反的约定；7-8=架构决策、已定方案、关键事实；"
         "5-6=一般背景事实；3-4=一次性过程记录。\n"
+        "结构化槽位（可选）：若结论是一个「会变化的可核对值」——端口 / 版本 / 路径 / 账号 / "
+        "开关 / 配置项 / 表结构版本这类——额外给出 slot：subject 用稳定名词（服务器 / 项目名 / "
+        "设备名），predicate 用不超过 12 字的短谓词（如 SSH 端口、记忆库表结构版本），"
+        "value 只放最新值本身。偏好、决策、洞察、一次性记录不要给 slot。\n"
         "只输出严格 JSON 数组，不要任何多余文字：\n"
         "[{\"content\":\"...\",\"kind\":\"fact|preference|decision|insight\","
-        "\"importance\":1-10,\"tags\":[\"≤3个\"],\"evidence_turn_ids\":[...]}]\n"
+        "\"importance\":1-10,\"tags\":[\"≤3个\"],\"evidence_turn_ids\":[...],"
+        "\"slot\":{\"subject\":\"...\",\"predicate\":\"...\",\"value\":\"...\"}}]\n"
         "最多 {max_items} 条；没有可提炼的结论就输出 []。"
     )
 
@@ -3532,10 +3687,18 @@ class AtbrainsStore:
         return out
 
     def _distill_llm_chat(self, messages: list[dict[str, str]]) -> str:
-        """POST {base}/chat/completions；必须复用 _http_json（默认 UA 是 CommandCode 前置的刚需）。"""
+        """POST {base}/chat/completions；必须复用 _http_json（默认 UA 是 CommandCode 前置的刚需）。
+
+        key 支持多候选：`distill_api_key` + `distill_api_key_fallbacks`（逗号分隔的环境变量名）。
+        401/403 视为「这把 key 废了」→ 自动换下一把；其它错误直接抛。历史教训：CommandCode 轮换
+        key 后主变量会被留成死值，而系统里往往还有一把能用的（2026-10-29 实测主键 401、备用键 200），
+        没有回退就只能眼睁睁看着蒸馏持续失败。
+        """
         cfg = self.cfg
-        key = str(cfg.get("distill_api_key") or "").strip()
-        if not key:
+        names = [str(cfg.get("distill_api_key") or "").strip()]
+        names += [x.strip() for x in str(cfg.get("distill_api_key_fallbacks") or "").split(",") if x.strip()]
+        keys = [n for n in names if n]
+        if not keys:
             raise BrainError("蒸馏 API key 缺失（HERMES_CUSTOM_API_COMMANDCODE_AI_API_KEY）")
         url = str(cfg.get("distill_api_base_url") or "").rstrip("/") + "/chat/completions"
         payload = {
@@ -3546,12 +3709,24 @@ class AtbrainsStore:
             # 因此留足预算（输出仍受 distill_max_items 约束，成本可控）。
             "max_tokens": 4000,
         }
-        try:
-            status, data = self._http_json(
-                "POST", url, headers={"Authorization": f"Bearer {key}"}, payload=payload,
-                timeout=float(cfg.get("distill_api_timeout") or 120))
-        except Exception as exc:  # noqa: BLE001
-            raise BrainError(f"蒸馏 API 请求失败: {str(exc)[:200]}") from exc
+        status, data, used = 0, {}, ""
+        last_exc: Optional[Exception] = None
+        for name in keys:
+            try:
+                status, data = self._http_json(
+                    "POST", url, headers={"Authorization": f"Bearer {name}"}, payload=payload,
+                    timeout=float(cfg.get("distill_api_timeout") or 120))
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                continue
+            if int(status) in (401, 403):
+                logger.warning("atbrains: 蒸馏 key 鉴权失败（HTTP %s），换下一个候选择试", status)
+                last_exc = BrainError(f"蒸馏 API 返回 HTTP {status}")
+                continue
+            used = name
+            break
+        if not used:
+            raise BrainError(f"蒸馏 API 请求失败: {str(last_exc)[:200]}")
         if int(status) != 200:
             raise BrainError(f"蒸馏 API 返回 HTTP {status}")
         choice = (data.get("choices") or [{}])[0] if isinstance(data, dict) else {}
@@ -3629,6 +3804,8 @@ class AtbrainsStore:
                 "sim": None, "decision": "", "target_id": None,
                 "id": None, "deduped": False, "reason": "",
                 "evidence_turn_ids": cand.get("evidence_turn_ids") or [],
+                "slot": cand.get("slot") if isinstance(cand.get("slot"), dict) else None,
+                "claim": None,
             }
             items.append(item)
             if not content:
@@ -3713,6 +3890,29 @@ class AtbrainsStore:
                         (int(new_id), now_txt, int(it["target_id"])))
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("atbrains: 标记旧记忆取代失败（新记忆已写入）: %s", str(exc)[:200])
+            # 知识层：带 slot 的结论同时写进 brain_claims —— 同槽位只递增 revision、老值自动封版，
+            # 这是把「316 条 knowledge 靠 0.90 相似度猜旧值」换成确定性版本的入口。
+            slot = it.get("slot") or {}
+            if isinstance(slot, dict) and slot:
+                subject = str(slot.get("subject") or "").strip()
+                pred = str(slot.get("predicate") or "").strip()
+                val = str(slot.get("value") or "").strip()
+                if subject and pred and val:
+                    try:
+                        ev = it.get("evidence_turn_ids") or []
+                        try:
+                            tid: Optional[int] = int(ev[0]) if ev else None
+                        except (TypeError, ValueError):
+                            tid = None
+                        res = self.claim_remember(
+                            subject, pred, val, kind="fact", basis="derived_summary",
+                            turn_id=tid, quote=str(it["content"])[:500],
+                            confidence=70, importance=int(it.get("importance") or 5))
+                        it["claim"] = {"claim_id": res.get("claim_id"),
+                                       "revision": res.get("revision"),
+                                       "created": bool(res.get("created"))}
+                    except Exception as exc:  # noqa: BLE001
+                        logger.warning("atbrains: 蒸馏结论写 claims 失败: %s", str(exc)[:200])
         return items
 
     def ping(self) -> dict[str, Any]:
