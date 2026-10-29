@@ -23,6 +23,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import re
 import socket
@@ -125,6 +126,15 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "decay_enabled": 1,              # 1 开 / 0 关（关闭后所有记忆等权参与排序）
     "decay_half_life_days": 45,      # 衰减半衰期（天）：factor = 0.5 ** (age_days / 半衰期)
     "decay_types": "episodic",       # profile / knowledge 不衰减
+    # 访问强化（借 LivingMemory 的 access_count 思路）：被召回注入过的记忆更值钱。
+    # 计数只写 Redis（HINCRBY，零 DB 压力），维护线程定期回写；排序用 1+f*log1p(count) 提权。
+    "access_boost_enabled": 1,       # 1 开 / 0 关（关闭后排序与历史完全一致）
+    "access_boost_factor": 0.35,     # score 乘数 = 1 + factor * log1p(access_count)
+    # 按类型 TTL（借 LivingMemory 的原子 TTL）：episodic 到期停用，knowledge/profile 永久。
+    # 停用不是删除：行仍受 inactive_keep_days(365d) 保护，可 restore。
+    "ttl_enabled": 1,
+    "ttl_days_episodic": 90,
+    "ttl_days_todo": 30,
     # rerank（默认关闭；服务端手动开启，失败自动回落 RRF 顺序，绝不阻断检索）
     "rerank_enabled": 0,             # 1 开 / 0 关
     "rerank_url": "https://api.siliconflow.cn/v1/rerank",
@@ -746,7 +756,7 @@ _DDL = (
 )
 
 # 模式版本与迁移（幂等；多进程/多机并发用 GET_LOCK 串行化）
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 _MIGRATIONS: dict[int, tuple[str, tuple[str, ...]]] = {
     1: ("machine 列（多设备归属）", (
@@ -885,6 +895,16 @@ _MIGRATIONS: dict[int, tuple[str, tuple[str, ...]]] = {
         "PRIMARY KEY (id), UNIQUE KEY uniq_tool_call (turn_id, seq, call_index), "
         "KEY idx_tc_tool (tool_name), KEY idx_tc_status (status), KEY idx_tc_turn (turn_id, seq)"
         ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+    )),
+    10: ("访问反馈 / 按类型 TTL（借 LivingMemory 的 access_count 与原子 TTL）", (
+        # access_count 只在召回注入时自增（Redis 计数 → 维护线程批量回写），
+        # last_accessed_at 参与衰减：被用过就不再按“写于何时”老化。
+        "ALTER TABLE brain_memories ADD COLUMN IF NOT EXISTS access_count INT UNSIGNED NOT NULL DEFAULT 0 AFTER importance",
+        "ALTER TABLE brain_memories ADD COLUMN IF NOT EXISTS last_accessed_at DATETIME NULL DEFAULT NULL AFTER access_count",
+        # expires_at 为 NULL = 永不到期；只有 episodic / todo 会被写值。
+        "ALTER TABLE brain_memories ADD COLUMN IF NOT EXISTS expires_at DATETIME NULL DEFAULT NULL AFTER memory_type",
+        "ALTER TABLE brain_memories ADD INDEX IF NOT EXISTS idx_access (active, access_count)",
+        "ALTER TABLE brain_memories ADD INDEX IF NOT EXISTS idx_expires (active, expires_at)",
     )),
 }
 
@@ -1332,6 +1352,19 @@ class AtbrainsStore:
 
     # -------------------------------------------------- 写路径
 
+    def _expires_at_for(self, kind: str, mtype: str) -> Optional[str]:
+        """按类型算到期时间；None = 永不到期（knowledge / profile 与关闭 TTL 时）。"""
+        if not int(self.cfg.get("ttl_enabled") or 0):
+            return None
+        days = 0
+        if (str(kind or "").strip().lower() == "todo"):
+            days = int(self.cfg.get("ttl_days_todo") or 0)
+        elif str(mtype or "") == "episodic":
+            days = int(self.cfg.get("ttl_days_episodic") or 0)
+        if days <= 0:
+            return None
+        return (datetime.now(timezone.utc) + timedelta(days=days)).strftime("%Y-%m-%d %H:%M:%S")
+
     def remember(self, content: str, *, kind: str = "note", tags: str = "",
                  importance: int = 5, source: str = "tool",
                  session_id: str = "", memory_type: str = "") -> dict[str, Any]:
@@ -1369,13 +1402,15 @@ class AtbrainsStore:
         mem_id = None
         mem_vals: tuple = (kind, content, tags, importance)
         deduped = False
+        expires_at = self._expires_at_for(kind, mtype)
         for attempt in (0, 1):
             try:
                 _, mem_id = self._exec(
                     "INSERT INTO brain_memories (kind, memory_type, content, tags, importance, "
-                    "source, session_id, machine, agent) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                    "source, session_id, machine, agent, expires_at) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (kind, mtype, content, tags, importance, str(source or "")[:64],
-                     str(session_id or "")[:96], self.machine[:48], self.agent),
+                     str(session_id or "")[:96], self.machine[:48], self.agent, expires_at),
                 )
                 break
             except Exception as exc:  # noqa: BLE001
@@ -2052,7 +2087,7 @@ class AtbrainsStore:
         where, params = self._search_where(("content", "tags"), terms)
         sql = (
             "SELECT id, kind, memory_type, content, tags, importance, source, session_id, machine, agent, "
-            "created_at, updated_at "
+            "created_at, updated_at, access_count, last_accessed_at, expires_at "
             f"FROM brain_memories WHERE active = 1 AND superseded_by IS NULL AND ({where}) "
         )
         if kind:
@@ -2216,6 +2251,9 @@ class AtbrainsStore:
         text = self._compose(mems, turns)
         count = len(mems) + len(turns)
         hits = self.format_hits(mems, limit)
+        # 访问计数：只在“未命中缓存”的这次真实检索里计一次（Hermes 同轮会 prefetch + queue_prefetch
+        # 两次调用，第二次走 qcache，因此不会重复计数）。
+        self._bump_access([int(m["id"]) for m in mems if m.get("id")])
         self._write_qcache(cache_key, text, count, hits)
         if with_hits:
             return text, count, hits
@@ -2720,7 +2758,7 @@ class AtbrainsStore:
         ids = [h["id"] for h in hits]
         marks = ", ".join(["%s"] * len(ids))
         sql = ("SELECT id, kind, memory_type, content, tags, importance, source, session_id, machine, agent, "
-               "created_at, updated_at "
+               "created_at, updated_at, access_count, last_accessed_at, expires_at "
                f"FROM brain_memories WHERE active = 1 AND superseded_by IS NULL AND id IN ({marks}) ")
         params: list = list(ids)
         if kind:
@@ -2776,6 +2814,8 @@ class AtbrainsStore:
                 items[mid]["vscore"] = m.get("vscore")
             else:
                 items[mid] = m
+        # 访问强化：对所有层生效（这是“有没有被用到”，不是“新旧”），与衰减相互独立
+        self._apply_access_boost(items, scores)
         # 时间衰减：RRF 打分完成后、排序之前，对白名单层（默认 episodic）乘衰减系数
         if int(self.cfg.get("decay_enabled") or 0):
             self._apply_decay(items, scores)
@@ -2810,11 +2850,90 @@ class AtbrainsStore:
             if layer not in layers:
                 continue
             age = _age_days(item.get("updated_at"), now_ts)
+            # 被注入/回忆过就不再按“写于何时”老化：取 updated_at 与 last_accessed_at 里更新的那个
+            age2 = _age_days(item.get("last_accessed_at"), now_ts)
+            if age2 is not None and (age is None or age2 < age):
+                age = age2
             if age is None:
                 age = _age_days(item.get("created_at"), now_ts)
             if age is None:
                 continue
             scores[mid] = score * (0.5 ** (age / half_life))
+
+    def _apply_access_boost(self, items: dict[int, dict], scores: dict[int, float]) -> None:
+        """按 access_count 提权（原地改 scores）：1 + factor*log1p(count)。
+
+        只乘不除，count=0 时乘数为 1（与关闭本功能逐字节等价）；任何异常都不影响排序。
+        """
+        if not int(self.cfg.get("access_boost_enabled") or 0):
+            return
+        try:
+            factor = float(self.cfg.get("access_boost_factor") or 0.0)
+        except (TypeError, ValueError):
+            factor = 0.0
+        if factor <= 0:
+            return
+        for mid, score in list(scores.items()):
+            item = items.get(mid) or {}
+            try:
+                n = int(item.get("access_count") or 0)
+            except (TypeError, ValueError):
+                n = 0
+            if n > 0:
+                scores[mid] = score * (1.0 + factor * math.log1p(n))
+
+    # -------------------------------------------------- 访问计数（Redis → MariaDB 批量回写）
+
+    def _bump_access(self, ids: list[int]) -> None:
+        """召回命中即计数（只写 Redis：HINCRBY + 脏集合，零 DB 压力）。"""
+        if not ids or not int(self.cfg.get("access_boost_enabled") or 0):
+            return
+        try:
+            r = self.redis()
+            key, dirty = self._rk("hit"), self._rk("hit", "dirty")
+            now = time.time()
+            pipe = r.pipeline()
+            for mid in list(ids)[:50]:
+                pipe.hincrby(key, str(int(mid)), 1)
+                pipe.zadd(dirty, {str(int(mid)): now})
+            pipe.execute()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("atbrains: 访问计数失败（忽略）: %s", str(exc)[:160])
+
+    def _flush_access(self) -> int:
+        """把 Redis 里的访问计数批量回写 MariaDB（维护线程调用；幂等）。"""
+        if not int(self.cfg.get("access_boost_enabled") or 0):
+            return 0
+        try:
+            r = self.redis()
+            key, dirty = self._rk("hit"), self._rk("hit", "dirty")
+            members = [str(x) for x in r.zrange(dirty, 0, -1)]
+            if not members:
+                return 0
+            counts = {str(k): int(v or 0) for k, v in (r.hgetall(key) or {}).items()}
+            n = 0
+            for mid in members:
+                c = counts.get(mid, 0)
+                if c <= 0:
+                    continue
+                # ⚠️ 必须显式 updated_at = updated_at：否则列上的 ON UPDATE CURRENT_TIMESTAMP
+                # 会把“最后更新时间”冲到当下，直接污染召回排序（历史踩过一次）。
+                self._exec(
+                    "UPDATE brain_memories SET access_count = access_count + %s, "
+                    "last_accessed_at = UTC_TIMESTAMP(), updated_at = updated_at "
+                    "WHERE id = %s AND active = 1", (c, int(mid)))
+                n += 1
+            pipe = r.pipeline()
+            if counts:
+                pipe.hdel(key, *list(counts.keys()))
+            pipe.zrem(dirty, *members)
+            pipe.execute()
+            if n:
+                self._invalidate_caches()
+            return n
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("atbrains: 访问计数回写失败（下轮重试）: %s", str(exc)[:200])
+            return 0
 
     # -------------------------------------------------- rerank（服务端可选重排）
 
@@ -3035,6 +3154,11 @@ class AtbrainsStore:
             delay = interval
 
     def _maintenance_tick(self) -> None:
+        # 访问计数回写与 prune 解耦：即使维护清理没到周期（或未启用），也要把 Redis 计数落库。
+        try:
+            self._flush_access()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("atbrains: 访问计数回写异常（忽略）: %s", str(exc)[:160])
         if not int(self.cfg.get("maintenance_enabled") or 0):
             return
         every = float(self.cfg.get("prune_every_days") or 0)
@@ -3626,7 +3750,10 @@ class AtbrainsStore:
             "(SELECT COUNT(*) FROM brain_tool_calls) AS tool_calls, "
             "(SELECT COUNT(*) FROM brain_tool_calls WHERE status = 'error') AS tool_call_errors, "
             "(SELECT COUNT(*) FROM brain_sessions) AS sessions, "
-            "(SELECT COUNT(*) FROM brain_archive) AS archives",
+            "(SELECT COUNT(*) FROM brain_archive) AS archives, "
+            "(SELECT COUNT(*) FROM brain_memories WHERE active = 1 AND access_count > 0) AS memories_accessed, "
+            "(SELECT COALESCE(SUM(access_count), 0) FROM brain_memories WHERE active = 1) AS access_total, "
+            "(SELECT COUNT(*) FROM brain_memories WHERE active = 1 AND expires_at IS NOT NULL) AS memories_with_ttl",
             fetch=True)[0]
         size = self._exec(
             "SELECT COALESCE(SUM(data_length + index_length), 0) AS bytes "
@@ -3693,6 +3820,16 @@ class AtbrainsStore:
                 f"DELETE FROM brain_memories WHERE {inactive_cond}",
                 f"SELECT COUNT(*) AS c FROM brain_memories WHERE {inactive_cond}",
                 (i_days, i_days)))
+        if int(self.cfg.get("ttl_enabled") or 0):
+            # 按类型 TTL 到期 → 停用（不是删除：仍受 inactive_keep_days 保护，可 restore）。
+            # updated_at = updated_at 保持“最后真实更新时间”不变，避免污染召回排序。
+            expired_cond = "active = 1 AND expires_at IS NOT NULL AND expires_at < UTC_TIMESTAMP()"
+            targets.append((
+                "expired",
+                "UPDATE brain_memories SET active = 0, deactivated_at = UTC_TIMESTAMP(), "
+                f"updated_at = updated_at WHERE {expired_cond}",
+                f"SELECT COUNT(*) AS c FROM brain_memories WHERE {expired_cond}",
+                ()))
         if s_days > 0:
             # 会话索引：只删“旧、且其轮次已不在库中（或同样过期）”的行
             cond = ("last_active < (NOW() - INTERVAL %s DAY) AND NOT EXISTS "
@@ -3745,6 +3882,8 @@ class AtbrainsStore:
         out["skipped"] = [name for name, days in (("turns", t_days), ("archives", a_days),
                                                   ("inactive_memories", i_days), ("sessions", s_days))
                           if days <= 0]
+        if not int(self.cfg.get("ttl_enabled") or 0):
+            out["skipped"].append("expired")
         return out
 
 
