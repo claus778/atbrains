@@ -1,6 +1,6 @@
 """`hermes atbrains-memory` 子命令：运维与手工操作 atbrains 双存储。
 
-命令：status | stats | search | remember | recent | forget | prune | doctor | vector-status | vector-drain | vector-test | supersede-detect | consolidate | remote-check | unsupersede | distill
+命令：status | stats | search | remember | recent | forget | prune | doctor | vector-status | vector-drain | vector-test | supersede-detect | consolidate | graph-build | graph-status | graph-recall | remote-check | unsupersede | distill
 仅在 atbrains 是活动记忆提供者时可见（由 Hermes CLI 发现机制门控）。
 """
 from __future__ import annotations
@@ -231,6 +231,46 @@ def _cmd_vector_test(args) -> int:
     return 0
 
 
+def _cmd_graph_build(args) -> int:
+    store = _store()
+    res = store.graph_extract(dry_run=not args.apply, limit=args.limit,
+                              batch=args.batch, rebuild=args.rebuild)
+    mode = "已写入" if args.apply else "预演（未写库）"
+    if res.get("error"):
+        _out(f"图谱抽取跳过：{res['error']}")
+        return 1
+    _out(f"图谱抽取 {mode}：记忆 {res['memories']} 条 / 批次 {res['batches']} · "
+         f"实体 {res['entities']} · 关系 {res['edges']} · 提及 {res['mentions']} · LLM 失败 {res['llm_failed']}")
+    if res.get("sample"):
+        _out("实体样本: " + "、".join(res["sample"]))
+    return 0
+
+
+def _cmd_graph_status(args) -> int:
+    store = _store()
+    st = store.graph_status()
+    _out(f"图谱层 {'开启' if st['enabled'] else '关闭'} · 融合权重 {st['route_weight']}")
+    _out(f"实体 {st['entities']} · 关系 {st['edges']} · 提及 {st['mentions']} · 覆盖记忆 {st['covered']}")
+    if st["top"]:
+        _out("─" * 46)
+        for e in st["top"]:
+            _out(f"  {e['name']} ({e['kind']}) ×{e['mention_count']}")
+    return 0
+
+
+def _cmd_graph_recall(args) -> int:
+    store = _store()
+    q = " ".join(args.query)
+    graph = store.graph_search_memories(q, limit=args.limit)
+    hyb = store.search_memories_hybrid(q, limit=args.limit)
+    _out(f"查询: {q}")
+    _out(f"图谱路 {len(graph)} 条 · 融合路 {len(hyb)} 条")
+    _out("─" * 46)
+    for m in hyb:
+        _out(f"  [{m['id']}] via={m.get('via')} 重要度{m.get('importance')} {str(m['content'])[:90]}")
+    return 0
+
+
 def _cmd_consolidate(args) -> int:
     store = _store()
     res = store.consolidate(dry_run=not args.apply, low=args.low, high=args.high,
@@ -426,6 +466,18 @@ def register_cli(subparser) -> None:
     p.add_argument("--limit", type=int, default=200, help="扫描最近多少条活跃记忆（默认 200）")
     p.add_argument("--llm", action="store_true", help="灰区交 LLM 裁决是否合并（需 --apply 才生效）")
 
+    p = subs.add_parser("graph-build", help="图谱抽取：从记忆抽实体/关系（默认预演）")
+    p.add_argument("--apply", action="store_true", help="真正写库（默认只预演）")
+    p.add_argument("--limit", type=int, default=200, help="本次最多处理多少条记忆（默认 200）")
+    p.add_argument("--batch", type=int, default=6, help="每次 LLM 调用送多少条记忆（默认 6）")
+    p.add_argument("--rebuild", action="store_true", help="连已有提及的记忆一起重抽（默认只补未抽取的）")
+
+    subs.add_parser("graph-status", help="图谱层状态：实体/关系/提及/覆盖")
+
+    p = subs.add_parser("graph-recall", help="诊断：同一查询的图谱路 vs 融合路")
+    p.add_argument("query", nargs="+", help="检索查询")
+    p.add_argument("--limit", type=int, default=8, help="返回条数")
+
     p = subs.add_parser("remote-check", help="远程模式自检：开关 / URL / 令牌掩码 / 健康检查往返耗时")
     p.add_argument("--json", action="store_true", help="以 JSON 输出（默认人类可读）")
 
@@ -458,6 +510,9 @@ def atbrains_memory_command(args) -> None:
         "vector-test": _cmd_vector_test,
         "supersede-detect": _cmd_supersede_detect,
         "consolidate": _cmd_consolidate,
+        "graph-build": _cmd_graph_build,
+        "graph-status": _cmd_graph_status,
+        "graph-recall": _cmd_graph_recall,
         "remote-check": _cmd_remote_check,
         "unsupersede": _cmd_unsupersede,
         "distill": _cmd_distill,
@@ -465,7 +520,8 @@ def atbrains_memory_command(args) -> None:
     handler = handlers.get(sub)
     if handler is None:
         print("用法: hermes atbrains-memory <status|stats|search|remember|recent|forget|prune|doctor|"
-              "vector-status|vector-drain|vector-test|supersede-detect|consolidate|remote-check|unsupersede|"
+              "vector-status|vector-drain|vector-test|supersede-detect|consolidate|graph-build|graph-status|"
+              "graph-recall|remote-check|unsupersede|"
               "distill>")
         return
     try:

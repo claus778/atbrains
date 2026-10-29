@@ -135,6 +135,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "ttl_enabled": 1,
     "ttl_days_episodic": 90,
     "ttl_days_todo": 30,
+    # 图谱层（第三路召回，v11）：实体/关系由 graph-extract 离线抽取，查询期只做实体名匹配 + 1 跳
+    "graph_enabled": 1,              # 1 开 / 0 关（关闭后融合仍是原来的关键词+向量两路）
+    "graph_route_weight": 0.35,      # 图谱路在 RRF 里的权重（LivingMemory 用的是 0.35 左右）
     # rerank（默认关闭；服务端手动开启，失败自动回落 RRF 顺序，绝不阻断检索）
     "rerank_enabled": 0,             # 1 开 / 0 关
     "rerank_url": "https://api.siliconflow.cn/v1/rerank",
@@ -764,7 +767,7 @@ _DDL = (
 )
 
 # 模式版本与迁移（幂等；多进程/多机并发用 GET_LOCK 串行化）
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 _MIGRATIONS: dict[int, tuple[str, tuple[str, ...]]] = {
     1: ("machine 列（多设备归属）", (
@@ -913,6 +916,30 @@ _MIGRATIONS: dict[int, tuple[str, tuple[str, ...]]] = {
         "ALTER TABLE brain_memories ADD COLUMN IF NOT EXISTS expires_at DATETIME NULL DEFAULT NULL AFTER memory_type",
         "ALTER TABLE brain_memories ADD INDEX IF NOT EXISTS idx_access (active, access_count)",
         "ALTER TABLE brain_memories ADD INDEX IF NOT EXISTS idx_expires (active, expires_at)",
+    )),
+    11: ("图谱层：实体 / 关系 / 提及（第三路召回）", (
+        "CREATE TABLE IF NOT EXISTS brain_entities ("
+        "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, name VARCHAR(191) NOT NULL, "
+        "kind VARCHAR(32) NOT NULL DEFAULT '', machine VARCHAR(48) NOT NULL DEFAULT '', "
+        "agent VARCHAR(32) NOT NULL DEFAULT 'hermes', mention_count INT UNSIGNED NOT NULL DEFAULT 1, "
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (id), UNIQUE KEY uniq_entity_name (name), KEY idx_entity_kind (kind)) "
+        "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        "CREATE TABLE IF NOT EXISTS brain_edges ("
+        "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, src_id BIGINT UNSIGNED NOT NULL, "
+        "dst_id BIGINT UNSIGNED NOT NULL, relation VARCHAR(48) NOT NULL DEFAULT 'related', "
+        "weight DECIMAL(6,3) NOT NULL DEFAULT 1.000, evidence_memory_id BIGINT UNSIGNED NULL DEFAULT NULL, "
+        "machine VARCHAR(48) NOT NULL DEFAULT '', agent VARCHAR(32) NOT NULL DEFAULT 'hermes', "
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (id), UNIQUE KEY uniq_edge (src_id, dst_id, relation), "
+        "KEY idx_edge_src (src_id), KEY idx_edge_dst (dst_id)) "
+        "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        "CREATE TABLE IF NOT EXISTS brain_entity_mentions ("
+        "entity_id BIGINT UNSIGNED NOT NULL, memory_id BIGINT UNSIGNED NOT NULL, "
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (entity_id, memory_id), KEY idx_em_memory (memory_id)) "
+        "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
     )),
 }
 
@@ -2821,7 +2848,22 @@ class AtbrainsStore:
         except Exception as exc:  # noqa: BLE001
             logger.warning("atbrains: 向量检索失败，回落纯关键词: %s", str(exc)[:200])
             vec = []
-        if not vec:
+        # 第三路：图谱（实体命中 + 1 跳邻居）。必须在「向量为空就返回」之前算，
+        # 否则向量层一旦降级，图谱这一路也一起失效。
+        graph: list[dict[str, Any]] = []
+        w_graph = 0.0
+        if int(self.cfg.get("graph_enabled") or 0):
+            try:
+                w_graph = float(self.cfg.get("graph_route_weight") or 0.0)
+            except (TypeError, ValueError):
+                w_graph = 0.0
+            if w_graph > 0:
+                try:
+                    graph = self.graph_search_memories(query, limit=max(pool, 12))
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("atbrains: 图谱召回失败（忽略）: %s", str(exc)[:160])
+                    graph = []
+        if not vec and not graph:
             for m in kw:
                 m.setdefault("via", "kw")
             return kw
@@ -2829,6 +2871,7 @@ class AtbrainsStore:
         scores: dict[int, float] = {}
         items: dict[int, dict] = {}
         kw_ids, vec_ids = set(), set()
+        graph_ids: set[int] = set()
         for rank, m in enumerate(kw):
             mid = int(m["id"])
             kw_ids.add(mid)
@@ -2842,6 +2885,13 @@ class AtbrainsStore:
                 items[mid]["vscore"] = m.get("vscore")
             else:
                 items[mid] = m
+        # 第三路打分（图谱在上面的提前返回判断之前已经取好，这里只计分）
+        if w_graph > 0:
+            for rank, m in enumerate(graph):
+                mid = int(m["id"])
+                graph_ids.add(mid)
+                scores[mid] = scores.get(mid, 0.0) + w_graph / (k + rank + 1)
+                items.setdefault(mid, m)
         # 访问强化：对所有层生效（这是“有没有被用到”，不是“新旧”），与衰减相互独立
         self._apply_access_boost(items, scores)
         # 时间衰减：RRF 打分完成后、排序之前，对白名单层（默认 episodic）乘衰减系数
@@ -2852,8 +2902,12 @@ class AtbrainsStore:
         out = []
         for mid, m in ordered:
             m = dict(m)
-            m["via"] = ("both" if (mid in kw_ids and mid in vec_ids)
-                        else ("vec" if mid in vec_ids else "kw"))
+            if mid in graph_ids:
+                m["via"] = "+".join(
+                    p for p, s in (("kw", kw_ids), ("vec", vec_ids), ("graph", graph_ids)) if mid in s)
+            else:
+                m["via"] = ("both" if (mid in kw_ids and mid in vec_ids)
+                            else ("vec" if mid in vec_ids else "kw"))
             out.append(m)
         if out and int(self.cfg.get("rerank_enabled") or 0):
             try:
@@ -3239,6 +3293,229 @@ class AtbrainsStore:
             out["merged"] += 1
             marked.add(old_id)
             marked.add(new_id)
+        return out
+
+    # -------------------------------------------------- 图谱层（第三路召回，v11）
+
+    _GRAPH_PROMPT = (
+        "你是知识图谱抽取器。输入是一批长期记忆（每条带 id 与正文）。\n"
+        "抽取实体与它们之间的关系。\n"
+        "实体名要求：稳定、可复用的短名（≤24 字），不要带修饰语；服务器用主机名或 IP，"
+        "项目用项目名，服务用服务名（如 MariaDB / Redis / Qdrant / Hermes / AstrBot）。\n"
+        "关系只允许四种：runs_on（A 运行在 B 上）/ uses（A 使用 B）/ part_of（A 属于 B）/ related（其它关联）。\n"
+        "已有实体（优先复用这些名字，不要造同义新名）：{known}\n"
+        "宁可少抽取，也不要编造。没有可抽取的就输出空数组。\n"
+        "只输出严格 JSON，无多余文字："
+        '{"entities":[{"name":"...","kind":"server|project|service|person|device|topic"}],'
+        '"relations":[{"src":"...","dst":"...","relation":"runs_on|uses|part_of|related"}]}'
+    )
+
+    _GRAPH_STOP = {"user", "用户", "助手", "系统", "管理员", "assistant", "system", "unknown", "unspecified"}
+
+    @classmethod
+    def _graph_entity_ok(cls, name: str) -> bool:
+        """实体名过滤：太短、以标点开头、或纯泛称（用户/助手/系统）都不收。"""
+        n = (name or "").strip()
+        if len(n) < 2 or len(n) > 60:
+            return False
+        if n[0] in ".-_/#*·,，。":
+            return False
+        if n.lower() in cls._GRAPH_STOP:
+            return False
+        return True
+
+    def graph_extract(self, *, dry_run: bool = True, limit: int = 200,
+                      batch: int = 6, rebuild: bool = False) -> dict[str, Any]:
+        """用 LLM 从记忆里抽实体与关系（离线批处理，不参与在线召回）。
+
+        mentions 不用 LLM 给的 id，而用「实体名出现在正文里」做确定性归属；
+        entities 走 name 唯一键幂等 upsert，edges 走 (src,dst,relation) 唯一键。
+        """
+        self.ensure_schema()
+        out: dict[str, Any] = {"dry_run": bool(dry_run), "memories": 0, "batches": 0,
+                               "entities": 0, "edges": 0, "mentions": 0,
+                               "llm_failed": 0, "error": ""}
+        if not int(self.cfg.get("graph_enabled") or 0):
+            out["error"] = "graph_disabled"
+            return out
+        if rebuild:
+            rows = self._exec(
+                "SELECT id, content FROM brain_memories WHERE active = 1 ORDER BY id LIMIT %s",
+                (max(1, int(limit)),), fetch=True)
+        else:
+            rows = self._exec(
+                "SELECT m.id, m.content FROM brain_memories m "
+                "LEFT JOIN brain_entity_mentions e ON e.memory_id = m.id "
+                "WHERE m.active = 1 AND e.memory_id IS NULL ORDER BY m.id LIMIT %s",
+                (max(1, int(limit)),), fetch=True)
+        out["memories"] = len(rows)
+        if not rows:
+            return out
+        known = [str(r["name"]) for r in self._exec(
+            "SELECT name FROM brain_entities ORDER BY mention_count DESC LIMIT 40", fetch=True)]
+        known_txt = "、".join(known) if known else "（暂无）"
+        ents: dict[str, str] = {}
+        edges: set[tuple[str, str, str]] = set()
+        mentions: set[tuple[str, int]] = set()
+        step = max(1, int(batch))
+        for i in range(0, len(rows), step):
+            chunk = rows[i:i + step]
+            user = "记忆：\n" + "\n".join(
+                f"id={r['id']} | {str(r['content'])[:400]}" for r in chunk)
+            try:
+                text = self._distill_llm_chat([
+                    {"role": "system", "content": self._GRAPH_PROMPT.replace("{known}", known_txt)},
+                    {"role": "user", "content": user}])
+                start, end = text.find("{"), text.rfind("}")
+                data = json.loads(text[start:end + 1]) if start >= 0 and end > start else {}
+            except Exception as exc:  # noqa: BLE001
+                out["llm_failed"] += 1
+                logger.warning("atbrains: 图谱抽取失败（跳过该批）: %s", str(exc)[:200])
+                continue
+            out["batches"] += 1
+            names: list[str] = []
+            for e in data.get("entities") or []:
+                if not isinstance(e, dict):
+                    continue
+                name = str(e.get("name") or "").strip()[:191]
+                if not self._graph_entity_ok(name):
+                    continue
+                ents.setdefault(name, str(e.get("kind") or "topic").strip()[:32] or "topic")
+                names.append(name)
+            for rel in data.get("relations") or []:
+                if not isinstance(rel, dict):
+                    continue
+                src = str(rel.get("src") or "").strip()[:191]
+                dst = str(rel.get("dst") or "").strip()[:191]
+                kind = str(rel.get("relation") or "related").strip().lower()
+                if not src or not dst or src == dst:
+                    continue
+                if not (self._graph_entity_ok(src) and self._graph_entity_ok(dst)):
+                    continue
+                if kind not in ("runs_on", "uses", "part_of", "related"):
+                    kind = "related"
+                edges.add((src, dst, kind))
+                ents.setdefault(src, "topic")
+                ents.setdefault(dst, "topic")
+            for r in chunk:
+                low = str(r["content"]).lower()
+                for name in names:
+                    if name.lower() in low:
+                        mentions.add((name, int(r["id"])))
+        out["entities"] = len(ents)
+        out["edges"] = len(edges)
+        out["mentions"] = len(mentions)
+        if dry_run:
+            out["sample"] = sorted(ents)[:15]
+            return out
+        for name, kind in ents.items():
+            self._exec(
+                "INSERT INTO brain_entities (name, kind, machine, agent, mention_count) "
+                "VALUES (%s, %s, %s, %s, 0) "
+                "ON DUPLICATE KEY UPDATE kind = IF(kind = '', VALUES(kind), kind), updated_at = updated_at",
+                (name, kind, self.machine[:48], self.agent))
+        id_map: dict[str, int] = {}
+        names = sorted(ents)
+        for i in range(0, len(names), 200):
+            part = names[i:i + 200]
+            marks = ", ".join(["%s"] * len(part))
+            for r in self._exec(f"SELECT id, name FROM brain_entities WHERE name IN ({marks})",
+                                tuple(part), fetch=True):
+                id_map[str(r["name"])] = int(r["id"])
+        for name, mem_id in mentions:
+            eid = id_map.get(name)
+            if not eid:
+                continue
+            self._exec("INSERT IGNORE INTO brain_entity_mentions (entity_id, memory_id) VALUES (%s, %s)",
+                       (eid, mem_id))
+        for src, dst, kind in edges:
+            sid, did = id_map.get(src), id_map.get(dst)
+            if not sid or not did or sid == did:
+                continue
+            self._exec(
+                "INSERT INTO brain_edges (src_id, dst_id, relation, weight, machine, agent) "
+                "VALUES (%s, %s, %s, 1.000, %s, %s) "
+                "ON DUPLICATE KEY UPDATE weight = GREATEST(weight, VALUES(weight))",
+                (sid, did, kind, self.machine[:48], self.agent))
+        for eid in id_map.values():
+            self._exec(
+                "UPDATE brain_entities SET mention_count = (SELECT COUNT(*) FROM brain_entity_mentions "
+                "WHERE entity_id = %s) WHERE id = %s", (eid, eid))
+        self._invalidate_caches()
+        return out
+
+    def graph_search_memories(self, query: str, *, limit: int = 12) -> list[dict[str, Any]]:
+        """查询期图谱路：实体名匹配 → 直接提及的记忆 + 1 跳邻居提及的记忆（不调 LLM）。"""
+        if not int(self.cfg.get("graph_enabled") or 0) or not (query or "").strip():
+            return []
+        terms = search_terms(query, max_terms=4) or [str(query)]
+        if not terms:
+            return []
+        clauses, params = [], []
+        for t in terms:
+            clauses.append("name LIKE %s")
+            params.append(f"%{_esc_like(t)}%")
+        ents = self._exec(
+            "SELECT id, name FROM brain_entities WHERE " + " OR ".join(clauses) + " LIMIT 20",
+            tuple(params), fetch=True)
+        if not ents:
+            return []
+        direct = [int(e["id"]) for e in ents]
+        marks = ", ".join(["%s"] * len(direct))
+        neigh_rows = self._exec(
+            f"SELECT DISTINCT dst_id AS id FROM brain_edges WHERE src_id IN ({marks}) "
+            f"UNION SELECT DISTINCT src_id AS id FROM brain_edges WHERE dst_id IN ({marks})",
+            tuple(direct + direct), fetch=True)
+        neigh = [int(r["id"]) for r in neigh_rows if int(r["id"]) not in direct]
+        scored: dict[int, float] = {}
+
+        def add_memories(entity_ids: list[int], weight: float) -> None:
+            if not entity_ids:
+                return
+            mk = ", ".join(["%s"] * len(entity_ids))
+            for r in self._exec(
+                    f"SELECT DISTINCT memory_id FROM brain_entity_mentions WHERE entity_id IN ({mk})",
+                    tuple(entity_ids), fetch=True):
+                mid = int(r["memory_id"])
+                scored[mid] = max(scored.get(mid, 0.0), weight)
+
+        add_memories(direct, 1.0)
+        add_memories(neigh[:40], 0.5)
+        if not scored:
+            return []
+        top = sorted(scored.items(), key=lambda kv: (-kv[1], -kv[0]))[: max(1, int(limit))]
+        ids = [mid for mid, _ in top]
+        mk2 = ", ".join(["%s"] * len(ids))
+        rows = self._exec(
+            "SELECT id, kind, memory_type, content, tags, importance, source, session_id, machine, agent, "
+            "created_at, updated_at, access_count, last_accessed_at, expires_at "
+            f"FROM brain_memories WHERE active = 1 AND superseded_by IS NULL AND id IN ({mk2})",
+            tuple(ids), fetch=True)
+        by_id = {int(r["id"]): dict(r) for r in rows}
+        out: list[dict[str, Any]] = []
+        for mid, sc in top:
+            row = by_id.get(mid)
+            if not row:
+                continue
+            row["gscore"] = round(sc, 3)
+            row["via"] = "graph"
+            out.append(row)
+        return out
+
+    def graph_status(self) -> dict[str, Any]:
+        self.ensure_schema()
+        row = self._exec(
+            "SELECT (SELECT COUNT(*) FROM brain_entities) AS entities, "
+            "(SELECT COUNT(*) FROM brain_edges) AS edges, "
+            "(SELECT COUNT(*) FROM brain_entity_mentions) AS mentions, "
+            "(SELECT COUNT(DISTINCT memory_id) FROM brain_entity_mentions) AS covered", fetch=True)[0]
+        top = self._exec(
+            "SELECT name, kind, mention_count FROM brain_entities "
+            "ORDER BY mention_count DESC, id ASC LIMIT 12", fetch=True)
+        out: dict[str, Any] = {"enabled": bool(int(self.cfg.get("graph_enabled") or 0)),
+                               "route_weight": float(self.cfg.get("graph_route_weight") or 0)}
+        out.update({k: int(v or 0) for k, v in row.items()})
+        out["top"] = [dict(r) for r in top]
         return out
 
     def vector_status(self, *, force: bool = False) -> dict[str, Any]:
@@ -3983,7 +4260,10 @@ class AtbrainsStore:
             "(SELECT COUNT(*) FROM brain_archive) AS archives, "
             "(SELECT COUNT(*) FROM brain_memories WHERE active = 1 AND access_count > 0) AS memories_accessed, "
             "(SELECT COALESCE(SUM(access_count), 0) FROM brain_memories WHERE active = 1) AS access_total, "
-            "(SELECT COUNT(*) FROM brain_memories WHERE active = 1 AND expires_at IS NOT NULL) AS memories_with_ttl",
+            "(SELECT COUNT(*) FROM brain_memories WHERE active = 1 AND expires_at IS NOT NULL) AS memories_with_ttl, "
+            "(SELECT COUNT(*) FROM brain_entities) AS entities, "
+            "(SELECT COUNT(*) FROM brain_edges) AS graph_edges, "
+            "(SELECT COUNT(*) FROM brain_entity_mentions) AS entity_mentions",
             fetch=True)[0]
         size = self._exec(
             "SELECT COALESCE(SUM(data_length + index_length), 0) AS bytes "
