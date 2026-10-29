@@ -149,7 +149,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "distill_stagnation_hours": 24,     # 不足 min_turns 但最老一条已滞留该小时数 → 也蒸馏
     "distill_max_items": 6,             # 单批最多产出多少条结论
     "distill_min_importance": 4,        # importance 下限（裁剪）
-    "distill_max_importance": 7,        # importance 上限（裁剪）
+    "distill_max_importance": 10,       # importance 上限（裁剪）：放到 10，否则分档被压平
     "distill_low_sim": 0.85,            # 余弦相似度低于该值 → 新结论
     "distill_high_sim": 0.94,           # 余弦相似度达到该值 → 视为重复跳过；两者之间交 LLM 裁决
     "distill_api_base_url": "https://api.commandcode.ai/provider/v1",
@@ -2175,6 +2175,10 @@ class AtbrainsStore:
         if not query:
             return ("", 0, []) if with_hits else ("", 0)
         cache_key = self._rk("qcache", hashlib.sha1(query.encode("utf-8")).hexdigest())
+        # 归一化键：同一句话只差标点/大小写/空白时复用同一次检索（原始 query 仍用于检索本身）
+        _norm = re.sub(r"[\s\W_]+", "", query.lower(), flags=re.UNICODE)
+        if _norm and _norm != query:
+            cache_key = self._rk("qcache", hashlib.sha1(("n:" + _norm).encode("utf-8")).hexdigest())
         if use_cache:
             try:
                 raw = self.redis().get(cache_key)
@@ -2240,7 +2244,7 @@ class AtbrainsStore:
         if mems:
             lines = ["[atbrains 长期记忆 · MariaDB]"]
             for m in mems:
-                line = f"- [{m['kind']}·重要度{m['importance']}] {_clip(str(m['content']), 240)}"
+                line = f"- [{m['kind']}·重要度{m['importance']}] {_clip(str(m['content']), 480)}"
                 if m.get("tags"):
                     line += f" (tags: {m['tags']})"
                 if m.get("machine"):
@@ -2741,7 +2745,10 @@ class AtbrainsStore:
                                kind: Optional[str] = None,
                                agent: Optional[str] = None) -> list[dict[str, Any]]:
         """关键词 + 向量 RRF 融合；向量任一环节失败自动回落关键词。"""
-        kw = self.search_memories(query, limit=limit, kind=kind, agent=agent)
+        # 融合池必须对称：关键词路若只取 limit 条，第 limit+1..topk 名的纯关键词命中
+        # 根本进不了 RRF（向量路却取满 topk），等于结构性偏袒向量路。
+        pool = max(int(limit) * 3, int(self.cfg.get("vector_topk") or 12))
+        kw = self.search_memories(query, limit=pool, kind=kind, agent=agent)
         try:
             vec = self.vector_search_memories(
                 query, limit=int(self.cfg.get("vector_topk") or 12), kind=kind, agent=agent)
@@ -3079,6 +3086,9 @@ class AtbrainsStore:
         "排除：一次性任务细节、工具输出、寒暄、临时状态；"
         "凭证/密钥/口令/token 一律禁止出现在输出里；宁少而准。\n"
         "每条结论必须自足可读（脱离上下文也能看懂）。\n"
+        "importance 分档（必须拉开差距，禁止一律写 7）："
+        "9-10=用户明确的偏好/硬约束/不可违反的约定；7-8=架构决策、已定方案、关键事实；"
+        "5-6=一般背景事实；3-4=一次性过程记录。\n"
         "只输出严格 JSON 数组，不要任何多余文字：\n"
         "[{\"content\":\"...\",\"kind\":\"fact|preference|decision|insight\","
         "\"importance\":1-10,\"tags\":[\"≤3个\"],\"evidence_turn_ids\":[...]}]\n"
@@ -3469,7 +3479,7 @@ class AtbrainsStore:
         """候选逐条裁剪 → 向量对账 → （真实模式下）写入；返回带决策的明细。"""
         cfg = self.cfg
         min_imp = int(cfg.get("distill_min_importance") or 4)
-        max_imp = int(cfg.get("distill_max_importance") or 7)
+        max_imp = int(cfg.get("distill_max_importance") or 10)
         if min_imp > max_imp:
             min_imp, max_imp = max_imp, min_imp
         low = float(cfg.get("distill_low_sim") or 0.85)
