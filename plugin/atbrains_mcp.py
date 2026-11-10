@@ -5,11 +5,13 @@
 ----
 记忆引擎本体是 atbrains 自带的 Python 库（Hermes 通过 memory provider 加载它）。其它
 agent（编辑器、DeepSeek Harness、Codex 等）不能直接 import 它。本模块把同一套 AtbrainsStore 能力包成
-**MCP server**（stdio 语义上的 JSON-RPC 2.0），与 atbrains Memory Service 共用
-8787 端口和 `service-tokens.json` 令牌表：
+**MCP server**（JSON-RPC 2.0，与传输无关）：
 
-    POST /mcp      Authorization: Bearer <令牌>
-    → initialize / tools/list / tools/call ...
+    HTTP  : POST /mcp      Authorization: Bearer <令牌>   （console/server.py 交给本模块）
+    stdio : mcp_stdio.py   --agent <身份>                 （客户端拉起子进程）
+
+传输层只负责收消息；`AtbrainsMCP.handle()` 处理 initialize / tools / resources / prompts。
+工具集合参考 mnemos-mcp 的形状：会话开头 atbrains_context，收尾 atbrains_handoff。
 
 令牌决定 agent 身份（令牌表 machine 名）。所有 agent 共用同一个 MariaDB
 长期库（默认 agent_memory），写入以 `agent` 列标注来源 agent —— 与
@@ -30,8 +32,11 @@ import uuid
 from datetime import date, datetime
 from typing import Any, Optional
 
-MCP_PROTOCOL_DEFAULT = "2025-03-26"
-SERVER_INFO = {"name": "atbrains", "version": "2.0.0"}
+# 协议版本：客户端报什么就回什么（在支持集合内），否则回最新的。
+MCP_PROTOCOL_DEFAULT = "2025-06-18"
+MCP_PROTOCOLS = ("2025-06-18", "2025-03-26", "2024-11-05")
+SERVER_INFO = {"name": "atbrains", "version": "2.1.0",
+               "title": "atbrains 共享长期记忆"}
 
 # --------------------------------------------------------------------------- 工具
 
@@ -193,7 +198,72 @@ TOOLS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "name": "atbrains_context",
+        "description": "醒来包：一次取回「我是谁 + 我记着什么 + 上次做到哪」。"
+                       "会话开始时先调用它（比 recall 更全：重点记忆 + 结构化主张 + 未完成情节 + 最近对话）。"
+                       "带 focus 时按当前任务做语义检索，否则返回高重要度记忆。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "focus": {"type": "string",
+                          "description": "当前任务/问题关键词（可选）；给了就按它召回，不给返回高重要度记忆。"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20,
+                          "description": "记忆条数，默认 8。"},
+                "include_turns": {"type": "boolean",
+                                  "description": "是否附最近对话一行摘要，默认 true。"},
+                "include_episodes": {"type": "boolean",
+                                     "description": "是否附未完成情节（open），默认 true。"},
+                "max_chars": {"type": "integer", "minimum": 80, "maximum": 2000,
+                              "description": "每条记忆正文截断长度，默认 400。"},
+            },
+        },
+    },
+    {
+        "name": "atbrains_handoff",
+        "description": "给下一次会话留一段话（handoff 便签）：写一条 kind=note、tags=handoff 的记忆，"
+                       "可选同时把 next_step / open_items 挂到某一轮的情节头上。"
+                       "会话收尾、任务只做了一半、要交接给别人时调用。",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "note": {"type": "string",
+                         "description": "留给下一次的话：做到哪、坑在哪、下一步做什么。"},
+                "next_step": {"type": "string", "description": "下一步（写进情节头，可选）。"},
+                "open_items": {"type": "array", "items": {"type": "string"},
+                               "description": "未完成项（写进情节头，可选）。"},
+                "turn_id": {"type": "integer",
+                            "description": "要挂情节头的 brain_turns.id（可选；不给就只写便签）。"},
+                "importance": {"type": "integer", "minimum": 1, "maximum": 10,
+                               "description": "重要度，默认 7（handoff 比普通笔记重要）。"},
+            },
+            "required": ["note"],
+        },
+    },
 ]
+
+# 工具声明（title/只读/破坏性/幂等）—— MCP 2025-03-26 起的 annotations 字段，
+# 客户端用它决定要不要二次确认、能不能并发。缺省按「写操作」保守处理。
+_ANNOTATION_FLAGS: dict[str, tuple[str, bool, bool, bool]] = {
+    "atbrains_remember": ("保存记忆", False, False, False),
+    "atbrains_recall": ("检索记忆", True, False, True),
+    "atbrains_forget": ("停用记忆", False, True, True),
+    "atbrains_recent": ("最近动态", True, False, True),
+    "atbrains_stats": ("库统计", True, False, True),
+    "atbrains_turn_detail": ("单轮详情", True, False, True),
+    "atbrains_claim_remember": ("记录主张", False, False, False),
+    "atbrains_claim_recall": ("检索主张", True, False, True),
+    "atbrains_episode_set": ("写情节头", False, False, True),
+    "atbrains_episode_get": ("读情节头", True, False, True),
+    "atbrains_context": ("醒来包", True, False, True),
+    "atbrains_handoff": ("交接便签", False, False, False),
+}
+for _tool in TOOLS:
+    _title, _ro, _destructive, _idem = _ANNOTATION_FLAGS.get(
+        _tool["name"], (_tool["name"], False, False, False))
+    _tool["annotations"] = {"title": _title, "readOnlyHint": _ro,
+                            "destructiveHint": _destructive, "idempotentHint": _idem,
+                            "openWorldHint": False}
 
 TOOL_ALIASES = {t["name"].replace("atbrains_", "brain_"): t["name"] for t in TOOLS}
 
@@ -202,6 +272,8 @@ INSTRUCTIONS = """\
 共用同一个长期库；每条记忆都会标注来源 agent（本会话来源 = {agent}）。
 
 使用规则（按需调用，不要每轮都调）：
+0. 会话开头先调一次 atbrains_context（可带 focus=用户第一句话的关键词）：它一次给出重点记忆、
+   结构化主张、未完成情节和最近对话，比反复 recall 省事。
 1. 开始一个任务、或回答涉及用户历史/偏好/项目约定之前，先调用 atbrains_recall，
    query 用当前问题的关键词（不是整段话）。查到的事实可以直接使用，不必再问用户。
 2. 用户明确陈述稳定的偏好、身份、约定、决定、待办时，调用 atbrains_remember 保存；
@@ -209,11 +281,186 @@ INSTRUCTIONS = """\
 3. 「X 的 Y 是 Z」这类可核对的值，用 atbrains_claim_remember（同槽位自动版本化）；
    查历史版本用 atbrains_claim_recall(history=true)。
 4. 需要知道最近发生了什么 → atbrains_recent；复盘某一轮工具过程 → atbrains_turn_detail。
-5. 不要编造记忆里没有的内容；检索为空就如实说没有记录。
+5. 任务做到一半要结束、或要交接给别人时，调 atbrains_handoff 留一段话给下一次会话。
+6. 不要编造记忆里没有的内容；检索为空就如实说没有记录。
 """
 
 
+# --------------------------------------------------------------------------- 资源 / 提示词
+
+# 资源 = 只读快照，客户端（Claude Desktop / Cursor / Codex）可以在会话开始时
+# 直接把 @atbrains://context 塞进上下文，不用先调工具。
+RESOURCES: list[dict[str, Any]] = [
+    {"uri": "atbrains://context",
+     "name": "醒来包",
+     "title": "atbrains 醒来包（重点记忆 + 主张 + 未完成情节 + 最近对话）",
+     "description": "会话开始时读取：我是谁、我记着什么、上次做到哪。markdown 文本。",
+     "mimeType": "text/markdown"},
+    {"uri": "atbrains://stats",
+     "name": "库统计",
+     "title": "atbrains 库统计",
+     "description": "记忆/对话/主张/图谱计数、向量覆盖与存储占用。JSON。",
+     "mimeType": "application/json"},
+    {"uri": "atbrains://recent/memories",
+     "name": "最近记忆",
+     "title": "最近写入的记忆（Redis 热点镜像）",
+     "description": "最近写入的 20 条记忆。JSON。",
+     "mimeType": "application/json"},
+    {"uri": "atbrains://recent/turns",
+     "name": "最近对话",
+     "title": "最近对话归档（一行摘要，20 条）",
+     "description": "最近 20 轮对话的用户/助手摘要。JSON。",
+     "mimeType": "application/json"},
+]
+
+PROMPTS: list[dict[str, Any]] = [
+    {"name": "wake-up",
+     "title": "带记忆开始",
+     "description": "把 atbrains 醒来包作为会话的第一条上下文注入。",
+     "arguments": [{"name": "focus", "description": "当前任务/问题关键词（可选）", "required": False}]},
+    {"name": "handoff",
+     "title": "交接给下一次会话",
+     "description": "让模型把当前进度写成一段 handoff 便签并存进 atbrains。",
+     "arguments": [{"name": "next_step", "description": "下一步（可选）", "required": False}]},
+]
+
+
 # --------------------------------------------------------------------------- 工具层
+
+_CONTEXT_MEMORY_CHARS = 400
+
+
+def _clip(text: Any, limit: int) -> str:
+    s = str(text if text is not None else "")
+    if limit <= 0 or len(s) <= limit:
+        return s
+    return s[: max(limit - 1, 0)] + "…"
+
+
+def _as_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(v) for v in value if str(v).strip()]
+    return [str(value)] if str(value).strip() else []
+
+
+def _open_episodes(store: Any, limit: int = 5) -> list[dict[str, Any]]:
+    """未完成情节（status=open），最近的在前。表在 core 里，这里只读。"""
+    try:
+        rows = store._exec(
+            "SELECT turn_id, session_id, goal, decisions, open_items, blockers, "
+            "next_step, status, updated_at FROM brain_episodes "
+            "WHERE status = 'open' ORDER BY updated_at DESC, turn_id DESC LIMIT %s",
+            (int(max(1, limit)),), fetch=True)
+    except Exception:  # noqa: BLE001 —— 情节头是附加信息，读不到不影响主包
+        return []
+    return _clean(list(rows))
+
+
+def _top_memories(store: Any, limit: int) -> list[dict[str, Any]]:
+    """没有 focus 时的醒来包内容：高重要度 + 最近更新。"""
+    try:
+        rows = store._exec(
+            "SELECT id, kind, content, tags, importance, agent, updated_at "
+            "FROM brain_memories WHERE active = 1 AND superseded_by IS NULL "
+            "ORDER BY importance DESC, updated_at DESC, id DESC LIMIT %s",
+            (int(max(1, limit)),), fetch=True)
+    except Exception:  # noqa: BLE001
+        return []
+    return _clean(list(rows))
+
+
+def _context_packet(store: Any, machine: str, *, focus: str = "", limit: int = 8,
+                    include_turns: bool = True, include_episodes: bool = True,
+                    max_chars: int = _CONTEXT_MEMORY_CHARS) -> dict[str, Any]:
+    """醒来包：一次调用取回「我是谁 + 记着什么 + 上次做到哪」。
+
+    记忆正文截断到 max_chars：醒来包是索引，不是全文库 —— 需要原文再用
+    atbrains_turn_detail / atbrains_recall 取。
+    """
+    store.ensure_schema()
+    limit = max(1, min(20, int(limit)))
+    max_chars = max(80, min(2000, int(max_chars)))
+    if focus:
+        memories = _recall_memories(store, focus, limit, None)
+    else:
+        memories = _top_memories(store, limit)
+    for m in memories:
+        m["content"] = _clip(m.get("content"), max_chars)
+        m["truncated"] = len(str(m.get("content") or "")) >= max_chars
+    try:
+        claims = store.claim_recall(limit=5)
+    except Exception:  # noqa: BLE001
+        claims = []
+    packet: dict[str, Any] = {
+        "agent": machine,
+        "focus": focus,
+        "memories": memories,
+        "claims": claims,
+        "open_episodes": _open_episodes(store, 5) if include_episodes else [],
+        "recent_turns": [],
+        "counts": {},
+    }
+    if include_turns:
+        for t in store.recent_turns(5):
+            packet["recent_turns"].append({
+                "id": t.get("id"),
+                "ts": _iso(t.get("ts")),
+                "machine": t.get("machine") or "",
+                "user": _clip(t.get("user_content") or t.get("user"), 120),
+                "assistant": _clip(t.get("assistant_content") or t.get("assistant"), 160),
+            })
+    try:
+        mysql = dict(store.stats().get("mysql") or {})
+        packet["counts"] = {k: mysql.get(k) for k in
+                            ("memories_active", "turns", "claims_active", "episodes", "sessions")
+                            if k in mysql}
+    except Exception:  # noqa: BLE001
+        pass
+    return packet
+
+
+def _context_markdown(packet: dict[str, Any]) -> str:
+    """醒来包的 markdown 形式：资源和 wake-up 提示词都用它。"""
+    lines = [f"# atbrains 醒来包（agent={packet.get('agent') or '-'}）", ""]
+    counts = packet.get("counts") or {}
+    if counts:
+        lines.append("库：" + " · ".join(f"{k}={v}" for k, v in counts.items()))
+        lines.append("")
+    if packet.get("focus"):
+        lines += [f"焦点：{packet['focus']}", ""]
+    mems = packet.get("memories") or []
+    lines.append(f"## 记忆（{len(mems)}）")
+    for m in mems:
+        lines.append(f"- [{m.get('kind')}/{m.get('importance')}] {m.get('content')}"
+                     f"  (id={m.get('id')}{'，截断' if m.get('truncated') else ''})")
+    if not mems:
+        lines.append("- （无）")
+    claims = packet.get("claims") or []
+    if claims:
+        lines += ["", f"## 结构化主张（{len(claims)}）"]
+        for c in claims:
+            lines.append(f"- {c.get('subject')} · {c.get('predicate')} = "
+                         f"{_clip(c.get('value'), 200)}")
+    eps = packet.get("open_episodes") or []
+    if eps:
+        lines += ["", f"## 未完成情节（{len(eps)}）"]
+        for e in eps:
+            parts = [f"turn#{e.get('turn_id')}"]
+            if e.get("goal"):
+                parts.append(f"目标={_clip(e.get('goal'), 120)}")
+            if e.get("next_step"):
+                parts.append(f"下一步={_clip(e.get('next_step'), 120)}")
+            lines.append("- " + " · ".join(parts))
+    turns = packet.get("recent_turns") or []
+    if turns:
+        lines += ["", f"## 最近对话（{len(turns)}）"]
+        for t in turns:
+            lines.append(f"- [{t.get('ts')}] 用户：{t.get('user')} ／ 助手：{t.get('assistant')}")
+    lines += ["", "_用 atbrains_recall / atbrains_turn_detail 取原文；"
+                  "用 atbrains_remember / atbrains_handoff 写回。_"]
+    return "\n".join(lines)
 
 def _iso(v: Any) -> Any:
     if isinstance(v, (datetime, date)):
@@ -337,13 +584,19 @@ class AtbrainsMCP:
         params: dict[str, Any] = raw_params if isinstance(raw_params, dict) else {}
 
         if method == "initialize":
-            version = str(params.get("protocolVersion") or MCP_PROTOCOL_DEFAULT)
+            asked = str(params.get("protocolVersion") or "")
+            version = asked if asked in MCP_PROTOCOLS else MCP_PROTOCOL_DEFAULT
             return {
                 "jsonrpc": "2.0",
                 "id": msg_id,
                 "result": {
                     "protocolVersion": version,
-                    "capabilities": {"tools": {"listChanged": False}},
+                    "capabilities": {
+                        "tools": {"listChanged": False},
+                        "resources": {"listChanged": False, "subscribe": False},
+                        "prompts": {"listChanged": False},
+                        "logging": {},
+                    },
                     "serverInfo": dict(SERVER_INFO),
                     "instructions": INSTRUCTIONS.format(agent=machine),
                 },
@@ -352,12 +605,30 @@ class AtbrainsMCP:
             return None
         if method == "ping":
             return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
+        if method == "logging/setLevel":
+            return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
         if method == "tools/list":
             return {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": TOOLS}}
         if method == "resources/list":
-            return {"jsonrpc": "2.0", "id": msg_id, "result": {"resources": []}}
+            return {"jsonrpc": "2.0", "id": msg_id, "result": {"resources": RESOURCES}}
+        if method == "resources/read":
+            uri = str(params.get("uri") or "")
+            try:
+                contents = self.read_resource(machine, uri)
+            except Exception as exc:  # noqa: BLE001
+                return _error(msg_id, -32603, f"resource read failed: {type(exc).__name__}: {exc}"[:300])
+            if contents is None:
+                return _error(msg_id, -32602, f"unknown resource: {uri}")
+            return {"jsonrpc": "2.0", "id": msg_id, "result": {"contents": [contents]}}
         if method == "prompts/list":
-            return {"jsonrpc": "2.0", "id": msg_id, "result": {"prompts": []}}
+            return {"jsonrpc": "2.0", "id": msg_id, "result": {"prompts": PROMPTS}}
+        if method == "prompts/get":
+            raw_prompt_args = params.get("arguments")
+            prompt_args: dict[str, Any] = raw_prompt_args if isinstance(raw_prompt_args, dict) else {}
+            got = self.get_prompt(machine, str(params.get("name") or ""), prompt_args)
+            if got is None:
+                return _error(msg_id, -32602, f"unknown prompt: {params.get('name')}")
+            return {"jsonrpc": "2.0", "id": msg_id, "result": got}
         if method == "tools/call":
             name = TOOL_ALIASES.get(str(params.get("name") or ""), str(params.get("name") or ""))
             raw_args = params.get("arguments")
@@ -380,6 +651,48 @@ class AtbrainsMCP:
         if is_notification:
             return None
         return _error(msg_id, -32601, f"method not found: {method}")
+
+    # ---------------------------------------------------------------- 资源 / 提示词
+
+    def read_resource(self, machine: str, uri: str) -> Optional[dict[str, Any]]:
+        """resources/read：只读快照。uri 不认识返回 None（由调用方回 -32602）。"""
+        store = self.service.store_for("", agent=machine)
+        if uri == "atbrains://context":
+            packet = _context_packet(store, machine)
+            return {"uri": uri, "mimeType": "text/markdown", "text": _context_markdown(packet)}
+        if uri == "atbrains://stats":
+            data = self.call(machine, "atbrains_stats", {})
+            return {"uri": uri, "mimeType": "application/json",
+                    "text": json.dumps(data, ensure_ascii=False, default=str)}
+        if uri == "atbrains://recent/memories":
+            data = self.call(machine, "atbrains_recent", {"n": 20, "what": "memories"})
+            return {"uri": uri, "mimeType": "application/json",
+                    "text": json.dumps(data, ensure_ascii=False, default=str)}
+        if uri == "atbrains://recent/turns":
+            data = self.call(machine, "atbrains_recent", {"n": 20, "what": "turns"})
+            return {"uri": uri, "mimeType": "application/json",
+                    "text": json.dumps(data, ensure_ascii=False, default=str)}
+        return None
+
+    def get_prompt(self, machine: str, name: str, args: dict[str, Any]) -> Optional[dict[str, Any]]:
+        """prompts/get：醒来包与交接提示词。"""
+        store = self.service.store_for("", agent=machine)
+        if name == "wake-up":
+            focus = str(args.get("focus") or "")
+            packet = _context_packet(store, machine, focus=focus)
+            return {"description": "atbrains 醒来包：把这段放在会话最前面。",
+                    "messages": [{"role": "user",
+                                  "content": {"type": "text", "text": _context_markdown(packet)}}]}
+        if name == "handoff":
+            next_step = str(args.get("next_step") or "")
+            text = ("请把当前这轮工作整理成一段 handoff 便签，然后调用 "
+                    "atbrains_handoff(note=..., next_step=..., open_items=[...]) 存进 atbrains。"
+                    "便签写清：做到哪、坑在哪、下一步做什么。")
+            if next_step:
+                text += f"\n下一步：{next_step}"
+            return {"description": "交接给下一次会话",
+                    "messages": [{"role": "user", "content": {"type": "text", "text": text}}]}
+        return None
 
     # ---------------------------------------------------------------- 工具实现
 
@@ -494,6 +807,34 @@ class AtbrainsMCP:
             return {"ok": True, **store.episode_get(
                 _as_int(turn_id) if turn_id is not None else 0,
                 session_id=str(args.get("session_id") or ""))}
+
+        if name == "atbrains_context":
+            return {"ok": True, **_context_packet(
+                store, machine,
+                focus=str(args.get("focus") or ""),
+                limit=_as_int(args.get("limit"), 8),
+                include_turns=_as_bool(args.get("include_turns"), True),
+                include_episodes=_as_bool(args.get("include_episodes"), True),
+                max_chars=_as_int(args.get("max_chars"), _CONTEXT_MEMORY_CHARS))}
+
+        if name == "atbrains_handoff":
+            note = str(args.get("note") or "").strip()
+            if not note:
+                return {"ok": False, "error": "需要 note（留给下一次的那段话）"}
+            saved = store.remember(
+                note, kind="note", tags="handoff",
+                importance=max(1, min(10, _as_int(args.get("importance"), 7))),
+                source="mcp", session_id="")
+            out: dict[str, Any] = {"ok": True, "saved": saved,
+                                   "hint": "下一次会话开头用 atbrains_context 读回这段便签"}
+            turn_id = args.get("turn_id")
+            if turn_id is not None:
+                out["episode"] = store.episode_set(
+                    _as_int(turn_id),
+                    next_step=args.get("next_step") or None,
+                    open_items=_as_list(args.get("open_items")) or None,
+                    session_id="")
+            return out
 
         return {"ok": False, "error": f"未知工具 {name}"}
 

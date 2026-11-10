@@ -38,6 +38,10 @@ hermes atbrains token-list                      # 列出 machine 与令牌掩码
 hermes atbrains token-add <machine>             # 生成服务令牌(只显示这一次)
 hermes atbrains token-rm <machine>              # 删除服务令牌
 hermes atbrains service                         # Memory Service(/v1)自检
+hermes atbrains mcp serve [--agent NAME]        # 以 stdio 跑 MCP 服务端(给客户端当 command)
+hermes atbrains mcp install <client> --write    # 把 atbrains 写进客户端 MCP 配置
+hermes atbrains mcp print <client>              # 只打印配置片段
+hermes atbrains mcp doctor                      # MCP 自检 + 各客户端接入状态
 ```
 
 ### 2. Agent 工具(微信/CLI 里直接问就行)
@@ -159,6 +163,67 @@ hermes atbrains service                     # 自检:端口/路径/令牌数/健
 令牌写进各机客户端配置(每机一枚,由 `token-add <machine>` 生成)。
 在此之前旧路径照用,`/v1` 已可独立使用(读写的是同一份库)。
 
+## MCP 服务端
+
+同一套记忆能力对外提供 **MCP**（Model Context Protocol），两种传输：
+
+| 传输 | 入口 | 认证 | 适合 |
+|---|---|---|---|
+| stdio | `mcp_stdio.py`（`hermes atbrains mcp serve`） | 本机进程，无需令牌；身份=`--agent` | Claude Code / Codex / Cursor / Claude Desktop 自己拉起子进程 |
+| streamable HTTP | `POST /mcp`（与 `/v1` 同端口） | `Authorization: Bearer <服务令牌>`，令牌名即 agent 身份 | 其他机器、常驻服务、需要共享一份令牌表 |
+
+两边共用 `atbrains_mcp.py` 的同一份工具声明与实现 —— 工具名/参数/返回不会漂移。
+
+### 工具（12 个）
+
+| 工具 | 作用 | 只读 |
+|---|---|---|
+| `atbrains_context` | **醒来包**：重点记忆 + 结构化主张 + 未完成情节 + 最近对话，一次取回 | ✅ |
+| `atbrains_recall` | 混合召回（向量 + 关键词 + 整句精确提升），可带历史对话 | ✅ |
+| `atbrains_remember` | 写一条长期记忆（kind/tags/importance） | |
+| `atbrains_forget` | 停用一条（软删除） | |
+| `atbrains_handoff` | **交接便签**：给下一次会话留一段话，可同时更新情节头 | |
+| `atbrains_claim_remember` / `atbrains_claim_recall` | 结构化主张，同槽位自动版本化；可查历史版本 | 后者 ✅ |
+| `atbrains_episode_set` / `atbrains_episode_get` | 情节头：目标/决策/未完成项/阻碍/下一步 | 后者 ✅ |
+| `atbrains_recent` | Redis 热点记忆 / 最近对话 | ✅ |
+| `atbrains_turn_detail` | 某一轮的工具调用、输出、推理全文 | ✅ |
+| `atbrains_stats` | 库统计（计数、向量覆盖、存储） | ✅ |
+
+每个工具都带 MCP `annotations`（`readOnlyHint` / `destructiveHint` / `idempotentHint`），
+客户端据此决定要不要二次确认；工具故障以 `isError: true` 返回正文，不炸传输层。
+
+### 资源与提示词
+
+资源（`resources/list` + `resources/read`，只读快照）：
+
+| URI | 内容 |
+|---|---|
+| `atbrains://context` | 醒来包 markdown（会话开头直接塞进上下文） |
+| `atbrains://stats` | 库统计 JSON |
+| `atbrains://recent/memories` | 最近 20 条记忆 JSON |
+| `atbrains://recent/turns` | 最近 20 轮对话摘要 JSON |
+
+提示词（`prompts/list` + `prompts/get`）：`wake-up`（注入醒来包，可带 focus）、
+`handoff`（引导模型写交接便签）。
+
+### 客户端接入
+
+```bash
+hermes atbrains mcp install claude-code --write     # ~/.claude.json
+hermes atbrains mcp install cursor      --write     # ~/.cursor/mcp.json
+hermes atbrains mcp install codex       --write     # ~/.codex/config.toml（缺表才追加）
+hermes atbrains mcp install claude-desktop --write  # ~/.config/Claude/claude_desktop_config.json
+hermes atbrains mcp print generic                   # 任意客户端：打印片段自己粘
+```
+
+- 默认只**预演**，`--write` 才落盘；JSON 配置先备份成 `*.bak-atbrains`。
+- `--agent` 决定记忆的 `agent` 列（例如 `--agent codex`），不传则用 `$ATBRAINS_AGENT` 或 `stdio`。
+- HTTP 方式：`hermes atbrains mcp install cursor --transport http --agent omp --write`，
+  令牌自动从令牌表里按 agent 名取（没有就先 `token-add omp`）。
+- `hermes atbrains mcp doctor` 一句话自检：initialize / tools / resources / prompts / 真实召回。
+
+详见 `docs/mcp.md`。
+
 ## 结构
 
 ```
@@ -167,6 +232,9 @@ atbrains/plugin/               ← 仓库中的真实代码(git 管理)
 ├── __init__.py        register(ctx):注册 2 个工具 + `hermes atbrains` 命令
 ├── probe.py           ★ 唯一数据层(CLI/工具/网页共用);atbrains-memory 插件路径自动定位
 ├── service.py         ★ Memory Service(/v1):令牌表 + 路由 + 每 machine 一个 AtbrainsStore
+├── atbrains_mcp.py    ★ MCP 协议实现(工具/资源/提示词;stdio 与 /mcp 共用)
+├── mcp_stdio.py       ★ MCP stdio 传输(一行一条 JSON-RPC;客户端拉起子进程用)
+├── mcp_clients.py     客户端配置写入(~/.claude.json / cursor / codex …)
 ├── cli.py             `hermes atbrains` 实现
 ├── tools.py           agent 工具实现
 ├── console/           网页控制台(server.py + index.html + config.json;.token 运行时生成)

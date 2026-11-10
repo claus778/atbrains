@@ -367,6 +367,101 @@ def cmd_restore(args) -> int:
     return 0
 
 
+# ───────────────────────────── mcp ─────────────────────────────
+
+def _mcp_script() -> Path:
+    return HERE / "mcp_stdio.py"
+
+
+def _default_mcp_url() -> str:
+    port = _console_url_port()
+    return f"http://127.0.0.1:{port}/mcp"
+
+
+def _mcp_python() -> str:
+    """写进客户端配置的解释器：优先系统 python3（稳定，不随 Hermes 工具缓存清理消失）。"""
+    for cand in (os.environ.get("ATBRAINS_MCP_PYTHON"), "/usr/bin/python3", sys.executable):
+        if cand and Path(cand).is_file():
+            return str(cand)
+    return sys.executable
+
+
+def _mcp_spec(args):
+    """按参数拼出一条 MCP server 定义（stdio 默认；http 用服务令牌）。"""
+    from . import mcp_clients
+
+    agent = (getattr(args, "agent", None) or os.environ.get("ATBRAINS_AGENT") or "stdio").strip()
+    if getattr(args, "transport", "stdio") == "http":
+        token = getattr(args, "token", None) or ""
+        if not token:
+            tokens = service.load_tokens()
+            token = tokens.get(agent, "")
+        if not token:
+            _p(f"⚠️ 没有 agent={agent} 的服务令牌；先跑 `hermes atbrains token-add {agent}`")
+        url = getattr(args, "url", None) or _default_mcp_url()
+        return mcp_clients.ServerSpec(transport="http", url=url, token=token)
+    return mcp_clients.ServerSpec(command=_mcp_python(),
+                                  args=[str(_mcp_script()), "--agent", agent])
+
+
+def cmd_mcp_serve(args) -> int:
+    """以 stdio 方式跑 MCP 服务端：本进程直接让位给 mcp_stdio.py。
+
+    客户端的 `command` 指向 `hermes atbrains mcp serve` 也能用，但多一层 Python
+    启动；安装脚本默认直接指向 mcp_stdio.py。
+    """
+    agent = (args.agent or os.environ.get("ATBRAINS_AGENT") or "stdio").strip()
+    script = _mcp_script()
+    if not script.is_file():
+        _p(f"❌ 找不到 {script}")
+        return 1
+    sys.stdout.flush()
+    os.execv(sys.executable, [sys.executable, str(script), "--agent", agent])
+    return 0  # 不会走到这里
+
+
+def cmd_mcp_print(args) -> int:
+    from . import mcp_clients
+    spec = _mcp_spec(args)
+    _p(mcp_clients.snippet(args.client, spec))
+    return 0
+
+
+def cmd_mcp_install(args) -> int:
+    from . import mcp_clients
+    spec = _mcp_spec(args)
+    ok, msg = mcp_clients.install(args.client, spec, write=args.write)
+    _p(("✅ " if ok else "❌ ") + msg)
+    if ok and not args.write:
+        _p("\n（以上是预演；加 --write 才落盘）")
+    return 0 if ok else 1
+
+
+def cmd_mcp_doctor(args) -> int:
+    """MCP 自检：进程内 selftest + 各客户端接入状态。"""
+    from . import mcp_clients
+    script = _mcp_script()
+    agent = (args.agent or "stdio").strip()
+    _p("== stdio 服务端 ==")
+    try:
+        proc = subprocess.run([sys.executable, str(script), "--selftest", "--agent", agent],
+                              capture_output=True, text=True, timeout=120)
+        _p((proc.stdout or "").strip() or "(无输出)")
+        if proc.returncode != 0:
+            _p((proc.stderr or "").strip())
+            _p(f"❌ selftest 退出码 {proc.returncode}")
+            return 1
+    except Exception as exc:  # noqa: BLE001
+        _p(f"❌ selftest 跑不起来：{type(exc).__name__}: {exc}")
+        return 1
+    _p("\n== 客户端接入 ==")
+    for label, state in mcp_clients.status():
+        _p(f"  {label:<16} {state}")
+    _p("\n安装：hermes atbrains mcp install <client> --write")
+    _p("客户端：" + "、".join(mcp_clients.clients()))
+    return 0
+
+
 # ───────────────────────────── 注册 ─────────────────────────────
 
 def setup_parser(parser: argparse.ArgumentParser) -> None:
@@ -444,6 +539,33 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
     p = sub.add_parser("restore", help="恢复一条被停用的记忆")
     p.add_argument("id", type=int)
     p.set_defaults(func=cmd_restore)
+
+    p = sub.add_parser("mcp", help="MCP 服务端(stdio)与客户端接入")
+    msub = p.add_subparsers(dest="atbrains_mcp_cmd", metavar="<子命令>", required=False)
+    msub.add_parser("serve", help="以 stdio 跑 MCP 服务端（默认）").add_argument(
+        "--agent", default=None, help="写入方身份，默认 $ATBRAINS_AGENT 或 stdio")
+    msub.choices["serve"].set_defaults(func=cmd_mcp_serve)
+
+    q = msub.add_parser("install", help="把 atbrains 写进客户端的 MCP 配置")
+    q.add_argument("client", help="claude-code | claude-desktop | cursor | codex | generic")
+    q.add_argument("--agent", default=None, help="写入方身份（默认 stdio）")
+    q.add_argument("--transport", default="stdio", choices=("stdio", "http"))
+    q.add_argument("--url", default=None, help="http 模式地址（默认本机控制台 /mcp）")
+    q.add_argument("--token", default=None, help="http 模式服务令牌（默认查令牌表）")
+    q.add_argument("--write", action="store_true", help="真正落盘（默认只预演）")
+    q.set_defaults(func=cmd_mcp_install)
+
+    q = msub.add_parser("print", help="只打印配置片段，不写文件")
+    q.add_argument("client", help="claude-code | claude-desktop | cursor | codex | generic")
+    q.add_argument("--agent", default=None)
+    q.add_argument("--transport", default="stdio", choices=("stdio", "http"))
+    q.add_argument("--url", default=None)
+    q.add_argument("--token", default=None)
+    q.set_defaults(func=cmd_mcp_print)
+
+    q = msub.add_parser("doctor", help="MCP 自检（selftest + 客户端接入状态）")
+    q.add_argument("--agent", default=None)
+    q.set_defaults(func=cmd_mcp_doctor)
 
 
 def handle(args) -> int:

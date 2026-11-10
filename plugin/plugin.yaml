@@ -1,10 +1,11 @@
 name: atbrains
-version: "2.0.1"
+version: "2.1.0"
 description: >-
   atbrains —— 记忆系统(Redis 短期 + MariaDB 长期 + Qdrant 向量)的监控与控制台。
-  提供 `hermes atbrains status|serve|stop|open|drain|doctor|memories|turns|sessions|search|remember|forget|restore`
-  命令行、两个 agent 工具(atbrains_status / atbrains_control),以及**按需启动**的网页控制台
-  (`hermes atbrains serve`,不注册任何 systemd 服务)。
+  提供 `hermes atbrains status|serve|stop|open|drain|doctor|memories|turns|sessions|search|remember|forget|restore|mcp`
+  命令行、两个 agent 工具(atbrains_status / atbrains_control),**按需启动**的网页控制台
+  (`hermes atbrains serve`,不注册任何 systemd 服务),以及对外 MCP 服务端
+  (`/mcp` streamable HTTP + `mcp_stdio.py` stdio,`hermes atbrains mcp install <client>` 一键接入)。
   代码的家:/root/atbrains(仓库,git 管理);用仓库根目录 install.sh 安装到 ~/.hermes/plugins/atbrains。
 author: claus778
 kind: standalone
