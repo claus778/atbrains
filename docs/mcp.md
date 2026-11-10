@@ -121,6 +121,22 @@ hermes atbrains mcp print generic                # 任意客户端
   避免绑定 Hermes 的工具缓存 Python（会被清理）。
 - HTTP：`--transport http --agent omp --url http://host:8787/mcp`，令牌按 agent 名自动取。
 
+### 在 Hermes 本机接入
+
+Hermes 自带 MCP 客户端，把本仓库的 stdio 服务端当普通 MCP server 加进去即可
+（工具以 `mcp_atbrains_*` 前缀注册，和内置的 `atbrains_*` 工具并存、不冲突）：
+
+```bash
+hermes mcp add atbrains --command /usr/bin/python3 \
+  --args /root/.hermes/plugins/atbrains/mcp_stdio.py --agent hermes
+hermes mcp test atbrains     # ✓ Connected, 12 tools
+hermes mcp list
+```
+
+装完新开一个会话（或 `/reload-mcp`）就能用 `mcp_atbrains_atbrains_context`、
+`mcp_atbrains_atbrains_handoff` 等工具；`--agent hermes` 让 MCP 写入的 `agent` 列与
+内置 memory provider 一致。删掉用 `hermes mcp remove atbrains`。
+
 ## 安全
 
 - **令牌只在服务端解析**：`/mcp` 的 Bearer 令牌决定 agent 身份，请求体里自报的 `agent` 不采信。
