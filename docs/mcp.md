@@ -124,7 +124,8 @@ hermes atbrains mcp print generic                # 任意客户端
 ### 在 Hermes 本机接入
 
 Hermes 自带 MCP 客户端，把本仓库的 stdio 服务端当普通 MCP server 加进去即可
-（工具以 `mcp_atbrains_*` 前缀注册，和内置的 `atbrains_*` 工具并存、不冲突）：
+（工具以 `mcp__<服务器>__<工具>` 双下划线前缀注册，例如
+`mcp__atbrains__atbrains_context`；和内置的 `atbrains_*` 工具并存、不冲突）：
 
 ```bash
 hermes mcp add atbrains --command /usr/bin/python3 \
@@ -133,9 +134,11 @@ hermes mcp test atbrains     # ✓ Connected, 12 tools
 hermes mcp list
 ```
 
-装完新开一个会话（或 `/reload-mcp`）就能用 `mcp_atbrains_atbrains_context`、
-`mcp_atbrains_atbrains_handoff` 等工具；`--agent hermes` 让 MCP 写入的 `agent` 列与
-内置 memory provider 一致。删掉用 `hermes mcp remove atbrains`。
+装完新开一个会话（或在会话里 `/reload-mcp`）就能用
+`mcp__atbrains__atbrains_context`、`mcp__atbrains__atbrains_handoff` 等工具
+（另有 4 个通用桥工具 `list_resources` / `read_resource` / `list_prompts` / `get_prompt`）；
+`--agent hermes` 让 MCP 写入的 `agent` 列与内置 memory provider 一致。
+删掉用 `hermes mcp remove atbrains`。
 
 ## 安全
 
