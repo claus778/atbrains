@@ -1,7 +1,7 @@
 ---
 name: atbrains-memory-memory
 description: "Use when saving/recalling durable facts or inspecting the atbrains store (Redis short-term + MariaDB long-term + Qdrant vector layer)."
-version: 1.4.0
+version: 1.5.0
 ---
 
 # atbrains 记忆库使用指南
@@ -20,6 +20,8 @@ atbrains 是本机自托管的双层记忆库，已作为 Hermes 记忆提供者
 
 ## 何时用什么
 
+- 会话刚开始 / 换了一个 agent 接手 → **MCP 客户端**调 `atbrains_context`（醒来包：重点记忆 + 结构化主张 + 未完成情节 + 最近对话，一次取回）；Hermes 本机每轮已自动预取，不用手动调。
+- 任务做到一半要收尾/交接 → **MCP 客户端**调 `atbrains_handoff(note=…)`，给下一次会话留一段话。
 - 用户说「记住/别忘了/以后都用…」→ `atbrains_remember`（kind=preference/fact，带 tags）。
 - 需要「X 的 Y 是 Z」这类可核对、会变化的结论 → `atbrains_claim_remember(subject, predicate, value)`：
   同槽位再写只递增版本（`brain_claim_versions`），旧版本自动封版；可用 `turn_id`/`seq`/`quote` 挂证据。
@@ -48,6 +50,24 @@ hermes atbrains-memory vector-test <查询>    # 同一查询：关键词/向量
 ```
 
 配置：`~/.hermes/atbrains.json`（非密）+ `~/.hermes/.env`（ATBRAINS_REDIS_PASSWORD / ATBRAINS_MARIADB_PASSWORD）。
+
+## MCP 通道（Claude Code / Codex / Cursor / 其它 agent）
+
+两条传输共用同一份工具（`plugin/atbrains_mcp.py`）：
+
+- **stdio**：`python3 <插件目录>/mcp_stdio.py --agent <身份>`，客户端自己拉子进程，不需要令牌。
+- **HTTP**：`POST http://<服务器>:8787/mcp`，`Authorization: Bearer <令牌>`，令牌名即 agent 身份。
+
+```bash
+hermes atbrains mcp doctor                     # 自检：12 工具 / 4 资源 / 2 提示词 + 真实召回
+hermes atbrains mcp install cursor --write     # 写 ~/.cursor/mcp.json（claude-code/codex/desktop 同理）
+hermes atbrains mcp print generic              # 其它客户端：打印片段自己粘
+```
+
+工具面：`atbrains_context`（醒来包）、`recall`、`remember`、`forget`、`handoff`、
+`claim_remember/claim_recall`、`episode_set/get`、`recent`、`turn_detail`、`stats`；
+资源 `atbrains://context|stats|recent/memories|recent/turns`；提示词 `wake-up`、`handoff`。
+详见仓库 `docs/mcp.md`。
 
 ## 共享库约束（所有实例共同遵守，2026-10-24）
 

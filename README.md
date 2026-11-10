@@ -193,16 +193,24 @@ POST /api/prune      {dry_run:true}
 
 > 设计原则:**凭据只在服务端解析,绝不下发浏览器**;所有 `/api/*` 都要 token。
 
-### MCP 端点(非 Hermes agent 接入,v1.2 起)
+### MCP 端点(非 Hermes agent 接入,v1.2 起;2.1.0 加 stdio 与醒来包)
 
 `POST /mcp` 是标准 MCP(JSON-RPC 2.0)端点,与 `/v1` 共用 8787 端口,但用
 `Authorization: Bearer <service-tokens.json 令牌>` 鉴权,令牌决定 agent 身份。
+2.1.0 起同一份工具也支持 **stdio**(`mcp_stdio.py`),本机客户端直接拉起子进程、不需要令牌。
 
 ```bash
 hermes atbrains token-add omp      # 生成/轮换令牌(明文只显示一次)
 hermes atbrains token-list         # 只看掩码
+hermes atbrains mcp doctor         # MCP 自检:12 工具 / 4 资源 / 2 提示词 + 真实召回
+hermes atbrains mcp install codex --write   # 一键写客户端配置(claude-code/cursor/desktop/codex)
 python3 /root/agent-db/mcp_client_test.py --agent omp --write-test   # 端到端自检
 ```
+
+工具面参考 [mnemos-mcp](https://github.com/Riley-Coyote/mnemos-mcp):会话开头一次
+`atbrains_context`(醒来包:重点记忆 + 主张 + 未完成情节 + 最近对话),收尾一次
+`atbrains_handoff`(给下一次会话留话);另有 4 个只读资源与 2 个提示词。
+详见 [`docs/mcp.md`](docs/mcp.md)。
 
 omp 的 `~/.omp/agent/mcp.json`、dsh 的 `cordis.patch.yml` 接法见
 [`docs/multi-agent.md`](docs/multi-agent.md)。要点:**所有 agent 共用
