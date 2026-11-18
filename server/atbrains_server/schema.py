@@ -1,0 +1,404 @@
+"""数据库结构：建表 DDL 与按版本递增的迁移块（已落库的块不可修改，只能追加）。"""
+from __future__ import annotations
+
+
+_DDL = (
+    """CREATE TABLE IF NOT EXISTS brain_memories (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        kind VARCHAR(32) NOT NULL DEFAULT 'note',
+        content MEDIUMTEXT NOT NULL,
+        tags VARCHAR(255) NOT NULL DEFAULT '',
+        importance TINYINT NOT NULL DEFAULT 5,
+        source VARCHAR(64) NOT NULL DEFAULT '',
+        session_id VARCHAR(96) NOT NULL DEFAULT '',
+        machine VARCHAR(48) NOT NULL DEFAULT '',
+        active TINYINT NOT NULL DEFAULT 1,
+        deactivated_at DATETIME NULL DEFAULT NULL,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        content_hash CHAR(32) GENERATED ALWAYS AS (IF(active = 1, MD5(content), NULL)) STORED,
+        PRIMARY KEY (id),
+        KEY idx_active_updated (active, updated_at),
+        KEY idx_kind (kind),
+        KEY idx_recall (active, importance, updated_at),
+        UNIQUE KEY uniq_active_content (content_hash),
+        CONSTRAINT chk_importance CHECK (importance BETWEEN 1 AND 10),
+        CONSTRAINT chk_active CHECK (active IN (0, 1))
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    """CREATE TABLE IF NOT EXISTS brain_turns (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        session_id VARCHAR(96) NOT NULL DEFAULT '',
+        platform VARCHAR(48) NOT NULL DEFAULT '',
+        author VARCHAR(64) NOT NULL DEFAULT '',
+        machine VARCHAR(48) NOT NULL DEFAULT '',
+        truncated TINYINT NOT NULL DEFAULT 0,
+        user_content MEDIUMTEXT NOT NULL,
+        assistant_content MEDIUMTEXT NOT NULL,
+        ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        KEY idx_ts (ts),
+        KEY idx_session_ts (session_id, ts)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    # 全量转录层：一行一条消息（含 tool 调用/工具输出/推理），body = zlib(JSON)
+    """CREATE TABLE IF NOT EXISTS brain_turn_messages (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        turn_id BIGINT UNSIGNED NOT NULL,
+        seq SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+        role VARCHAR(16) NOT NULL DEFAULT '',
+        tool_name VARCHAR(64) NOT NULL DEFAULT '',
+        tool_call_id VARCHAR(128) NOT NULL DEFAULT '',
+        raw_bytes INT UNSIGNED NOT NULL DEFAULT 0,
+        body LONGBLOB NOT NULL,
+        ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        KEY idx_turn_seq (turn_id, seq),
+        KEY idx_tm_ts (ts)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    # v9：思考链 / 工具调用明细（brain_turn_messages 的投影，便于按工具名·状态·耗时检索）
+    """CREATE TABLE IF NOT EXISTS brain_thoughts (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        turn_id BIGINT UNSIGNED NOT NULL,
+        seq SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+        message_uid VARCHAR(96) NOT NULL DEFAULT '',
+        reasoning MEDIUMTEXT NOT NULL,
+        reasoning_chars INT UNSIGNED NOT NULL DEFAULT 0,
+        finish_reason VARCHAR(32) NOT NULL DEFAULT '',
+        ts DATETIME NULL DEFAULT NULL,
+        PRIMARY KEY (id),
+        UNIQUE KEY uniq_thought (turn_id, seq),
+        KEY idx_thought_ts (ts)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    """CREATE TABLE IF NOT EXISTS brain_tool_calls (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        turn_id BIGINT UNSIGNED NOT NULL,
+        seq SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+        call_index SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+        call_id VARCHAR(128) NOT NULL DEFAULT '',
+        tool_name VARCHAR(64) NOT NULL DEFAULT '',
+        args MEDIUMTEXT NULL,
+        result MEDIUMTEXT NULL,
+        result_chars INT UNSIGNED NOT NULL DEFAULT 0,
+        status VARCHAR(16) NOT NULL DEFAULT 'pending',
+        started_at DATETIME NULL DEFAULT NULL,
+        ended_at DATETIME NULL DEFAULT NULL,
+        duration_ms INT UNSIGNED NULL DEFAULT NULL,
+        PRIMARY KEY (id),
+        UNIQUE KEY uniq_tool_call (turn_id, seq, call_index),
+        KEY idx_tc_tool (tool_name),
+        KEY idx_tc_status (status),
+        KEY idx_tc_turn (turn_id, seq)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    """CREATE TABLE IF NOT EXISTS brain_sessions (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        session_id VARCHAR(96) NOT NULL,
+        platform VARCHAR(48) NOT NULL DEFAULT '',
+        machine VARCHAR(48) NOT NULL DEFAULT '',
+        started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        last_active DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        turn_count INT NOT NULL DEFAULT 0,
+        archived_messages INT UNSIGNED NOT NULL DEFAULT 0,
+        note VARCHAR(512) NOT NULL DEFAULT '',
+        PRIMARY KEY (id),
+        UNIQUE KEY uniq_session_id (session_id),
+        KEY idx_sessions_time (started_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    """CREATE TABLE IF NOT EXISTS brain_archive (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        session_id VARCHAR(96) NOT NULL DEFAULT '',
+        machine VARCHAR(48) NOT NULL DEFAULT '',
+        platform VARCHAR(48) NOT NULL DEFAULT '',
+        kind VARCHAR(24) NOT NULL DEFAULT 'precompress',
+        ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        payload MEDIUMTEXT NOT NULL,
+        PRIMARY KEY (id),
+        KEY idx_archive (session_id, ts)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    """CREATE TABLE IF NOT EXISTS brain_meta (
+        meta_key VARCHAR(64) NOT NULL,
+        meta_value VARCHAR(255) NOT NULL DEFAULT '',
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (meta_key)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    """CREATE TABLE IF NOT EXISTS brain_vector_index (
+        mem_id BIGINT UNSIGNED NOT NULL,
+        status VARCHAR(16) NOT NULL DEFAULT 'ok',
+        model VARCHAR(64) NOT NULL DEFAULT '',
+        dim SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+        content_hash CHAR(32) NULL DEFAULT NULL,
+        error VARCHAR(255) NOT NULL DEFAULT '',
+        embedded_at DATETIME NULL DEFAULT NULL,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (mem_id),
+        KEY idx_vec_status (status)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    # 知识层（v6）：主张身份 + 版本 + 证据 + 情节头
+    """CREATE TABLE IF NOT EXISTS brain_claims (
+        id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+        machine VARCHAR(48) NOT NULL DEFAULT '',
+        subject VARCHAR(191) NOT NULL,
+        predicate VARCHAR(96) NOT NULL,
+        kind VARCHAR(24) NOT NULL DEFAULT 'fact',
+        slot_key CHAR(32) NOT NULL,
+        current_revision INT UNSIGNED NOT NULL DEFAULT 1,
+        state VARCHAR(16) NOT NULL DEFAULT 'active',
+        importance TINYINT NOT NULL DEFAULT 5,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id),
+        UNIQUE KEY uniq_claim_slot (slot_key),
+        KEY idx_claim_subject (subject, predicate),
+        KEY idx_claim_state (state, updated_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    """CREATE TABLE IF NOT EXISTS brain_claim_versions (
+        claim_id BIGINT UNSIGNED NOT NULL,
+        revision INT UNSIGNED NOT NULL,
+        value_text MEDIUMTEXT NOT NULL,
+        basis VARCHAR(16) NOT NULL DEFAULT 'direct_report',
+        valid_from DATETIME NULL DEFAULT NULL,
+        valid_to DATETIME NULL DEFAULT NULL,
+        recorded_from DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        recorded_to DATETIME NULL DEFAULT NULL,
+        replaces_revision INT UNSIGNED NULL DEFAULT NULL,
+        source_turn_id BIGINT UNSIGNED NULL DEFAULT NULL,
+        source_seq SMALLINT UNSIGNED NULL DEFAULT NULL,
+        quote VARCHAR(2048) NOT NULL DEFAULT '',
+        confidence TINYINT UNSIGNED NOT NULL DEFAULT 80,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (claim_id, revision),
+        KEY idx_cv_source (source_turn_id),
+        KEY idx_cv_recorded (recorded_from)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    """CREATE TABLE IF NOT EXISTS brain_claim_evidence (
+        claim_id BIGINT UNSIGNED NOT NULL,
+        revision INT UNSIGNED NOT NULL,
+        turn_id BIGINT UNSIGNED NOT NULL,
+        seq SMALLINT UNSIGNED NOT NULL DEFAULT 0,
+        relation VARCHAR(16) NOT NULL DEFAULT 'supports',
+        quote VARCHAR(2048) NOT NULL DEFAULT '',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        PRIMARY KEY (claim_id, revision, turn_id, seq, relation),
+        KEY idx_evidence_turn (turn_id, seq)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    """CREATE TABLE IF NOT EXISTS brain_episodes (
+        turn_id BIGINT UNSIGNED NOT NULL,
+        session_id VARCHAR(96) NOT NULL DEFAULT '',
+        machine VARCHAR(48) NOT NULL DEFAULT '',
+        goal TEXT NULL,
+        decisions MEDIUMTEXT NULL,
+        open_items MEDIUMTEXT NULL,
+        blockers MEDIUMTEXT NULL,
+        next_step TEXT NULL,
+        status VARCHAR(16) NOT NULL DEFAULT 'open',
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (turn_id),
+        KEY idx_episode_session (session_id, turn_id),
+        KEY idx_episode_status (status, updated_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+    """CREATE TABLE IF NOT EXISTS brain_author_defaults (
+        machine VARCHAR(48) NOT NULL DEFAULT '*',
+        platform VARCHAR(32) NOT NULL DEFAULT '*',
+        author VARCHAR(64) NOT NULL,
+        note VARCHAR(160) NOT NULL DEFAULT '',
+        PRIMARY KEY (machine, platform)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
+)
+
+# 模式版本与迁移（幂等；多进程/多机并发用 GET_LOCK 串行化）
+SCHEMA_VERSION = 12
+
+_MIGRATIONS: dict[int, tuple[str, tuple[str, ...]]] = {
+    1: ("machine 列（多设备归属）", (
+        "ALTER TABLE brain_memories ADD COLUMN IF NOT EXISTS machine VARCHAR(48) NOT NULL DEFAULT '' AFTER session_id",
+        "ALTER TABLE brain_turns ADD COLUMN IF NOT EXISTS machine VARCHAR(48) NOT NULL DEFAULT '' AFTER author",
+        "ALTER TABLE brain_sessions ADD COLUMN IF NOT EXISTS machine VARCHAR(48) NOT NULL DEFAULT '' AFTER platform",
+    )),
+    2: ("防重唯一键 / 召回索引 / 停用时间 / CHECK / 截断标记 / 存档来源列", (
+        "ALTER TABLE brain_memories MODIFY COLUMN content MEDIUMTEXT NOT NULL",
+        "ALTER TABLE brain_memories ADD COLUMN IF NOT EXISTS deactivated_at DATETIME NULL DEFAULT NULL AFTER active",
+        "ALTER TABLE brain_memories ADD COLUMN IF NOT EXISTS content_hash CHAR(32) "
+        "GENERATED ALWAYS AS (IF(active = 1, MD5(content), NULL)) STORED",
+        "ALTER TABLE brain_memories ADD UNIQUE KEY IF NOT EXISTS uniq_active_content (content_hash)",
+        "ALTER TABLE brain_memories ADD INDEX IF NOT EXISTS idx_recall (active, importance, updated_at)",
+        "ALTER TABLE brain_memories ADD CONSTRAINT IF NOT EXISTS chk_importance CHECK (importance BETWEEN 1 AND 10)",
+        "ALTER TABLE brain_memories ADD CONSTRAINT IF NOT EXISTS chk_active CHECK (active IN (0, 1))",
+        "ALTER TABLE brain_turns ADD COLUMN IF NOT EXISTS truncated TINYINT NOT NULL DEFAULT 0 AFTER machine",
+        "ALTER TABLE brain_archive ADD COLUMN IF NOT EXISTS machine VARCHAR(48) NOT NULL DEFAULT '' AFTER session_id",
+        "ALTER TABLE brain_archive ADD COLUMN IF NOT EXISTS platform VARCHAR(48) NOT NULL DEFAULT '' AFTER machine",
+    )),
+    3: ("向量索引表（brain_vector_index）", (
+        "CREATE TABLE IF NOT EXISTS brain_vector_index ("
+        "mem_id BIGINT UNSIGNED NOT NULL, status VARCHAR(16) NOT NULL DEFAULT 'ok', "
+        "model VARCHAR(64) NOT NULL DEFAULT '', dim SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
+        "content_hash CHAR(32) NULL DEFAULT NULL, error VARCHAR(255) NOT NULL DEFAULT '', "
+        "embedded_at DATETIME NULL DEFAULT NULL, "
+        "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (mem_id), KEY idx_vec_status (status)) "
+        "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+    )),
+    4: ("取代关系与记忆分层", (
+        "ALTER TABLE brain_memories ADD COLUMN IF NOT EXISTS superseded_by BIGINT UNSIGNED NULL DEFAULT NULL AFTER active",
+        "ALTER TABLE brain_memories ADD COLUMN IF NOT EXISTS superseded_at DATETIME NULL DEFAULT NULL AFTER superseded_by",
+        "ALTER TABLE brain_memories ADD COLUMN IF NOT EXISTS memory_type VARCHAR(16) NOT NULL DEFAULT '' AFTER kind",
+        "ALTER TABLE brain_memories ADD INDEX IF NOT EXISTS idx_supersede (active, superseded_by)",
+        # 回填：老行按 kind 推导分层（与 _memory_type() 的映射一致）。
+        # 末尾 updated_at = updated_at 是必须的：不显式写该列会触发它的
+        # ON UPDATE CURRENT_TIMESTAMP，把全部记忆的“最后更新/年龄”信号冲成当下。
+        "UPDATE brain_memories SET memory_type = CASE "
+        "WHEN kind = 'builtin-memory' THEN 'profile' "
+        "WHEN kind IN ('fact', 'decision') THEN 'knowledge' "
+        "ELSE 'episodic' END, updated_at = updated_at WHERE memory_type = ''",
+    )),
+    5: ("全量转录层（brain_turn_messages + 每轮计数 + 会话增量游标）", (
+        "CREATE TABLE IF NOT EXISTS brain_turn_messages ("
+        "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, turn_id BIGINT UNSIGNED NOT NULL, "
+        "seq SMALLINT UNSIGNED NOT NULL DEFAULT 0, role VARCHAR(16) NOT NULL DEFAULT '', "
+        "tool_name VARCHAR(64) NOT NULL DEFAULT '', tool_call_id VARCHAR(128) NOT NULL DEFAULT '', "
+        "raw_bytes INT UNSIGNED NOT NULL DEFAULT 0, body LONGBLOB NOT NULL, "
+        "ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (id), KEY idx_turn_seq (turn_id, seq), KEY idx_tm_ts (ts)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        "ALTER TABLE brain_turns ADD COLUMN IF NOT EXISTS message_count SMALLINT UNSIGNED NOT NULL DEFAULT 0 AFTER truncated",
+        "ALTER TABLE brain_turns ADD COLUMN IF NOT EXISTS message_bytes INT UNSIGNED NOT NULL DEFAULT 0 AFTER message_count",
+        "ALTER TABLE brain_sessions ADD COLUMN IF NOT EXISTS archived_messages INT UNSIGNED NOT NULL DEFAULT 0 AFTER turn_count",
+    )),
+    6: ("知识层：主张 / 版本 / 证据 / 情节", (
+        "CREATE TABLE IF NOT EXISTS brain_claims ("
+        "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, machine VARCHAR(48) NOT NULL DEFAULT '', "
+        "subject VARCHAR(191) NOT NULL, predicate VARCHAR(96) NOT NULL, "
+        "kind VARCHAR(24) NOT NULL DEFAULT 'fact', slot_key CHAR(32) NOT NULL, "
+        "current_revision INT UNSIGNED NOT NULL DEFAULT 1, state VARCHAR(16) NOT NULL DEFAULT 'active', "
+        "importance TINYINT NOT NULL DEFAULT 5, "
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (id), UNIQUE KEY uniq_claim_slot (slot_key), "
+        "KEY idx_claim_subject (subject, predicate), KEY idx_claim_state (state, updated_at)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        "CREATE TABLE IF NOT EXISTS brain_claim_versions ("
+        "claim_id BIGINT UNSIGNED NOT NULL, revision INT UNSIGNED NOT NULL, "
+        "value_text MEDIUMTEXT NOT NULL, basis VARCHAR(16) NOT NULL DEFAULT 'direct_report', "
+        "valid_from DATETIME NULL DEFAULT NULL, valid_to DATETIME NULL DEFAULT NULL, "
+        "recorded_from DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, recorded_to DATETIME NULL DEFAULT NULL, "
+        "replaces_revision INT UNSIGNED NULL DEFAULT NULL, source_turn_id BIGINT UNSIGNED NULL DEFAULT NULL, "
+        "source_seq SMALLINT UNSIGNED NULL DEFAULT NULL, quote VARCHAR(2048) NOT NULL DEFAULT '', "
+        "confidence TINYINT UNSIGNED NOT NULL DEFAULT 80, "
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (claim_id, revision), KEY idx_cv_source (source_turn_id), KEY idx_cv_recorded (recorded_from)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        "CREATE TABLE IF NOT EXISTS brain_claim_evidence ("
+        "claim_id BIGINT UNSIGNED NOT NULL, revision INT UNSIGNED NOT NULL, "
+        "turn_id BIGINT UNSIGNED NOT NULL, seq SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
+        "relation VARCHAR(16) NOT NULL DEFAULT 'supports', quote VARCHAR(2048) NOT NULL DEFAULT '', "
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (claim_id, revision, turn_id, seq, relation), KEY idx_evidence_turn (turn_id, seq)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        "CREATE TABLE IF NOT EXISTS brain_episodes ("
+        "turn_id BIGINT UNSIGNED NOT NULL, session_id VARCHAR(96) NOT NULL DEFAULT '', "
+        "machine VARCHAR(48) NOT NULL DEFAULT '', goal TEXT NULL, decisions MEDIUMTEXT NULL, "
+        "open_items MEDIUMTEXT NULL, blockers MEDIUMTEXT NULL, next_step TEXT NULL, "
+        "status VARCHAR(16) NOT NULL DEFAULT 'open', "
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (turn_id), KEY idx_episode_session (session_id, turn_id), "
+        "KEY idx_episode_status (status, updated_at)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+    )),
+    7: ("agent 列（跨 agent 共享归属，与 machine 主机名解耦）", (
+        # agent = 写入方身份（hermes / omp / dsh / artex / codex …），machine = 主机。
+        # 默认 'hermes' 是老版本代码的兜底：未升级的进程 INSERT 不写 agent 时，
+        # 行仍会带着正确归属入库，不会出现空 agent。
+        "ALTER TABLE brain_memories ADD COLUMN IF NOT EXISTS agent VARCHAR(32) NOT NULL DEFAULT 'hermes' AFTER machine",
+        "ALTER TABLE brain_claims ADD COLUMN IF NOT EXISTS agent VARCHAR(32) NOT NULL DEFAULT 'hermes' AFTER machine",
+        "ALTER TABLE brain_episodes ADD COLUMN IF NOT EXISTS agent VARCHAR(32) NOT NULL DEFAULT 'hermes' AFTER machine",
+        "ALTER TABLE brain_memories ADD INDEX IF NOT EXISTS idx_agent (active, agent, updated_at)",
+        # v6 之前 MCP 通道把 agent 名塞进了 machine（store_for(令牌名) 覆盖 machine）。
+        # 这里迁到正确的列：agent=原 machine，machine 归位为跑 MCP 端点的主机（server）。
+        # updated_at = updated_at 防止 ON UPDATE CURRENT_TIMESTAMP 把记忆年龄冲成当下。
+        "UPDATE brain_memories SET agent = machine, machine = 'server', updated_at = updated_at "
+        "WHERE source = 'mcp' AND machine IN ('omp', 'dsh', 'artex', 'codex')",
+    )),
+    8: ("主张版本级 agent（历史版本各自记录写入方）", (
+        # 只靠 brain_claims.agent 会丢掉「哪一版是谁写的」——同一槽位被别的 agent
+        # 改写后，历史版本会全部显示成最新写入方。版本级 agent 修掉这个歧义。
+        "ALTER TABLE brain_claim_versions ADD COLUMN IF NOT EXISTS agent VARCHAR(32) NOT NULL DEFAULT 'hermes' AFTER revision",
+        "UPDATE brain_claim_versions v JOIN brain_claims c ON c.id = v.claim_id "
+        "SET v.agent = c.agent WHERE v.agent = 'hermes' AND c.agent <> 'hermes'",
+    )),
+    9: ("思考链与工具调用明细（brain_thoughts / brain_tool_calls）", (
+        # 原文仍以 brain_turn_messages 的 zlib blob 为权威；这两张是它的投影，
+        # 用来按工具名、状态、耗时、时间检索，不参与召回、不进向量。
+        "CREATE TABLE IF NOT EXISTS brain_thoughts ("
+        "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, turn_id BIGINT UNSIGNED NOT NULL, "
+        "seq SMALLINT UNSIGNED NOT NULL DEFAULT 0, message_uid VARCHAR(96) NOT NULL DEFAULT '', "
+        "reasoning MEDIUMTEXT NOT NULL, reasoning_chars INT UNSIGNED NOT NULL DEFAULT 0, "
+        "finish_reason VARCHAR(32) NOT NULL DEFAULT '', ts DATETIME NULL DEFAULT NULL, "
+        "PRIMARY KEY (id), UNIQUE KEY uniq_thought (turn_id, seq), KEY idx_thought_ts (ts)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        "CREATE TABLE IF NOT EXISTS brain_tool_calls ("
+        "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, turn_id BIGINT UNSIGNED NOT NULL, "
+        "seq SMALLINT UNSIGNED NOT NULL DEFAULT 0, call_index SMALLINT UNSIGNED NOT NULL DEFAULT 0, "
+        "call_id VARCHAR(128) NOT NULL DEFAULT '', tool_name VARCHAR(64) NOT NULL DEFAULT '', "
+        "args MEDIUMTEXT NULL, result MEDIUMTEXT NULL, result_chars INT UNSIGNED NOT NULL DEFAULT 0, "
+        "status VARCHAR(16) NOT NULL DEFAULT 'pending', started_at DATETIME NULL DEFAULT NULL, "
+        "ended_at DATETIME NULL DEFAULT NULL, duration_ms INT UNSIGNED NULL DEFAULT NULL, "
+        "PRIMARY KEY (id), UNIQUE KEY uniq_tool_call (turn_id, seq, call_index), "
+        "KEY idx_tc_tool (tool_name), KEY idx_tc_status (status), KEY idx_tc_turn (turn_id, seq)"
+        ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+    )),
+    10: ("访问反馈 / 按类型 TTL（借 LivingMemory 的 access_count 与原子 TTL）", (
+        # access_count 只在召回注入时自增（Redis 计数 → 维护线程批量回写），
+        # last_accessed_at 参与衰减：被用过就不再按“写于何时”老化。
+        "ALTER TABLE brain_memories ADD COLUMN IF NOT EXISTS access_count INT UNSIGNED NOT NULL DEFAULT 0 AFTER importance",
+        "ALTER TABLE brain_memories ADD COLUMN IF NOT EXISTS last_accessed_at DATETIME NULL DEFAULT NULL AFTER access_count",
+        # expires_at 为 NULL = 永不到期；只有 episodic / todo 会被写值。
+        "ALTER TABLE brain_memories ADD COLUMN IF NOT EXISTS expires_at DATETIME NULL DEFAULT NULL AFTER memory_type",
+        "ALTER TABLE brain_memories ADD INDEX IF NOT EXISTS idx_access (active, access_count)",
+        "ALTER TABLE brain_memories ADD INDEX IF NOT EXISTS idx_expires (active, expires_at)",
+    )),
+    11: ("图谱层：实体 / 关系 / 提及（第三路召回）", (
+        "CREATE TABLE IF NOT EXISTS brain_entities ("
+        "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, name VARCHAR(191) NOT NULL, "
+        "kind VARCHAR(32) NOT NULL DEFAULT '', machine VARCHAR(48) NOT NULL DEFAULT '', "
+        "agent VARCHAR(32) NOT NULL DEFAULT 'hermes', mention_count INT UNSIGNED NOT NULL DEFAULT 1, "
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (id), UNIQUE KEY uniq_entity_name (name), KEY idx_entity_kind (kind)) "
+        "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        "CREATE TABLE IF NOT EXISTS brain_edges ("
+        "id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT, src_id BIGINT UNSIGNED NOT NULL, "
+        "dst_id BIGINT UNSIGNED NOT NULL, relation VARCHAR(48) NOT NULL DEFAULT 'related', "
+        "weight DECIMAL(6,3) NOT NULL DEFAULT 1.000, evidence_memory_id BIGINT UNSIGNED NULL DEFAULT NULL, "
+        "machine VARCHAR(48) NOT NULL DEFAULT '', agent VARCHAR(32) NOT NULL DEFAULT 'hermes', "
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (id), UNIQUE KEY uniq_edge (src_id, dst_id, relation), "
+        "KEY idx_edge_src (src_id), KEY idx_edge_dst (dst_id)) "
+        "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        "CREATE TABLE IF NOT EXISTS brain_entity_mentions ("
+        "entity_id BIGINT UNSIGNED NOT NULL, memory_id BIGINT UNSIGNED NOT NULL, "
+        "created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP, "
+        "PRIMARY KEY (entity_id, memory_id), KEY idx_em_memory (memory_id)) "
+        "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+    )),
+    12: ("通用化收口：补全 brain_author_defaults 与 brain_turns.agent 列", (
+        "CREATE TABLE IF NOT EXISTS brain_author_defaults ("
+        "machine VARCHAR(48) NOT NULL DEFAULT '*', platform VARCHAR(32) NOT NULL DEFAULT '*', "
+        "author VARCHAR(64) NOT NULL, note VARCHAR(160) NOT NULL DEFAULT '', "
+        "PRIMARY KEY (machine, platform)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        "ALTER TABLE brain_turns ADD COLUMN IF NOT EXISTS agent VARCHAR(32) NOT NULL DEFAULT '' AFTER machine",
+    )),
+}
+
+# DDL 幂等重跑时的“已存在”类报错（迁移时容忍）
+_BENIGN_DDL_ERRNOS = {1050, 1060, 1061, 1826}
+
+def _benign_ddl_error(exc: Exception) -> bool:
+    return bool(exc.args) and exc.args[0] in _BENIGN_DDL_ERRNOS
+
+def _is_duplicate_error(exc: Exception) -> bool:
+    """唯一键冲突（active 行内容防重）→ errno 1062。"""
+    return bool(exc.args) and exc.args[0] == 1062
+
+# 进程级 schema 就绪标记：同 (host,port,db,schema 版本) 只需一个 store 跑 DDL/迁移检查。
+# provider/service/CLI 各自构造 store（service 还按 machine|agent 各一个），
+# 每个实例都跑 ~10 条 CREATE TABLE IF NOT EXISTS 是纯浪费。
+_SCHEMA_READY: set[tuple[str, int, str, int]] = set()

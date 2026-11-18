@@ -1,0 +1,197 @@
+openapi: 3.1.0
+info:
+  title: atbrains Universal Multi-Agent Memory API
+  version: 2.1.0
+  description: >
+    Cross-process HTTP contract for the universal atbrains memory server.
+    Clients never connect directly to MariaDB, Redis, or Qdrant; all reads,
+    writes, claims, episodes, transcripts, and admin ops flow through /v1.
+servers:
+  - url: http://127.0.0.1:8787
+security:
+  - bearerAuth: []
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: Token issued by atbrains-server (`<machine>|<agent>`).
+    consoleAuth:
+      type: apiKey
+      in: header
+      name: X-Auth-Token
+  schemas:
+    ErrorResponse:
+      type: object
+      properties:
+        ok: { type: boolean, const: false }
+        error: { type: string }
+paths:
+  /v1/health:
+    get:
+      summary: Liveness & protocol version check (unauthenticated)
+      security: []
+      responses:
+        "200": { description: Service alive with protocol version }
+    post:
+      summary: Liveness check (POST compatibility)
+      security: []
+      responses:
+        "200": { description: Service alive }
+  /v1/memory/recall:
+    post:
+      summary: Hybrid recall (keyword + Qdrant vector + graph RRF + decay + rerank)
+      responses:
+        "200": { description: Formatted recall block and hit items }
+  /v1/memory/remember:
+    post:
+      summary: Save a long-term memory with server-side dedup, TTL, and vector wake
+      responses:
+        "200": { description: Saved memory metadata }
+  /v1/memory/forget:
+    post:
+      summary: Soft-delete an active memory by id
+      responses:
+        "200": { description: Deactivation count }
+  /v1/memory/restore:
+    post:
+      summary: Restore a deactivated memory by id
+      responses:
+        "200": { description: Restoration result }
+  /v1/memory/deactivate:
+    post:
+      summary: Deactivate active memories matching exact content
+      responses:
+        "200": { description: Deactivation count }
+  /v1/memory/recent:
+    post:
+      summary: Fetch Redis hot memories and recent turns
+      responses:
+        "200": { description: Hot memories and recent turns }
+  /v1/memory/turn:
+    post:
+      summary: Archive a turn and incremental transcript messages (cursor-idempotent)
+      responses:
+        "200": { description: Recorded turn id and updated cursor }
+  /v1/memory/turn/detail:
+    post:
+      summary: Retrieve full compressed transcript and episode for a turn
+      responses:
+        "200": { description: Turn detail }
+  /v1/memory/archive:
+    post:
+      summary: Store pre-compression or snapshot archive payload
+      responses:
+        "200": { description: Archive row id }
+  /v1/memory/session/touch:
+    post:
+      summary: Update session heartbeat
+      responses:
+        "200": { description: Session touched }
+  /v1/memory/status:
+    get:
+      summary: Identity verification, DB ping, and optional full stats
+      responses:
+        "200": { description: Status payload }
+    post:
+      summary: Identity verification, DB ping, and optional full stats
+      responses:
+        "200": { description: Status payload }
+  /v1/claim/remember:
+    post:
+      summary: Upsert a versioned structured claim (subject/predicate/value)
+      responses:
+        "200": { description: Claim revision info }
+  /v1/claim/recall:
+    post:
+      summary: Query active claims or full revision history
+      responses:
+        "200": { description: Matching claims }
+  /v1/claim/retire:
+    post:
+      summary: Retract a structured claim
+      responses:
+        "200": { description: Retirement result }
+  /v1/episode/set:
+    post:
+      summary: Attach or update episodic metadata on a turn
+      responses:
+        "200": { description: Episode update result }
+  /v1/episode/get:
+    post:
+      summary: Read episodic metadata by turn_id or session_id
+      responses:
+        "200": { description: Episode payload }
+  /v1/context:
+    post:
+      summary: Wake-up context packet (top/focused memories + claims + open episodes + turns)
+      responses:
+        "200": { description: Context packet }
+  /v1/handoff:
+    post:
+      summary: Store a session handoff note and optional episode next_step
+      responses:
+        "200": { description: Handoff result }
+  /v1/admin/overview:
+    get:
+      summary: Admin overview across MariaDB, Redis, Qdrant, and host status
+      responses:
+        "200": { description: Admin overview }
+  /v1/admin/memories:
+    get:
+      summary: Admin paginated memory listing
+      responses:
+        "200": { description: Memory page }
+  /v1/admin/memory:
+    get:
+      summary: Admin single memory inspection
+      responses:
+        "200": { description: Memory item }
+  /v1/admin/turns:
+    get:
+      summary: Admin paginated turn listing
+      responses:
+        "200": { description: Turn page }
+  /v1/admin/turn:
+    get:
+      summary: Admin single turn inspection
+      responses:
+        "200": { description: Turn item }
+  /v1/admin/sessions:
+    get:
+      summary: Admin paginated session listing
+      responses:
+        "200": { description: Session page }
+  /v1/admin/search:
+    get:
+      summary: Admin hybrid memory + turn search
+      responses:
+        "200": { description: Search results }
+  /v1/admin/drain:
+    post:
+      summary: Trigger vector backfill drain
+      responses:
+        "200": { description: Drain summary }
+  /v1/admin/doctor:
+    post:
+      summary: Run full backend diagnostics
+      responses:
+        "200": { description: Doctor report }
+  /v1/admin/prune:
+    post:
+      summary: Prune expired memories and old records
+      responses:
+        "200": { description: Prune counts }
+  /v1/admin/tokens:
+    get:
+      summary: List issued tokens (masked)
+      responses:
+        "200": { description: Token inventory }
+    post:
+      summary: Issue or rotate an agent/admin token
+      responses:
+        "200": { description: Created token (shown once) }
+    delete:
+      summary: Revoke a token by name
+      responses:
+        "200": { description: Removal status }

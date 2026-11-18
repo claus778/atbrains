@@ -1,23 +1,15 @@
-"""`hermes atbrains` 命令行 —— 记忆系统的监控与控制。
+#!/usr/bin/env python3
+"""`atbrains-server` 独立命令行 —— 通用记忆服务端的管理、迁移与 MCP 入口。
 
-    hermes atbrains status              一屏总览(三层 + 容器 + 向量覆盖 + 定时器)
-    hermes atbrains serve               前台启动网页控制台(打印地址与口令)
-    hermes atbrains serve --background  后台启动(写 pidfile,`atbrains stop` 停)
-    hermes atbrains stop                停掉后台控制台
-    hermes atbrains open                打印控制台地址与口令(便于 SSH 隧道)
-    hermes atbrains drain [--force]     手动向量回填(增量;--force 全量重嵌)
-    hermes atbrains doctor              系统体检
-    hermes atbrains memories [--all] [--q 关键词] [--limit N]
-    hermes atbrains turns [--limit N] [--machine M] [--q 关键词]   最近对话归档
-    hermes atbrains sessions [--limit N] [--machine M]            会话索引
-    hermes atbrains search 关键词       混合检索(向量 + 关键词)
-    hermes atbrains remember 内容 [--kind fact] [--tags a,b] [--importance 8]
-    hermes atbrains forget ID           停用一条记忆(软删除)
-    hermes atbrains restore ID          恢复一条被停用的记忆(与 forget 对偶)
-    hermes atbrains token-list          列出 machine 与令牌掩码
-    hermes atbrains token-add <machine> 生成令牌(只显示一次)
-    hermes atbrains token-rm <machine>  删除令牌
-    hermes atbrains service             /v1 Memory Service 自检(端口/令牌/健康)
+示例:
+    atbrains-server serve [--port 8787] [--background]
+    atbrains-server stop
+    atbrains-server status
+    atbrains-server migrate
+    atbrains-server doctor
+    atbrains-server drain [--force]
+    atbrains-server token-list | token-add <machine|agent> | token-rm <name>
+    atbrains-server mcp <serve|install|print|doctor> ...
 """
 from __future__ import annotations
 
@@ -31,19 +23,20 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from typing import Optional
 
-from . import probe, service
-
-HERE = Path(__file__).resolve().parent
-CONSOLE_DIR = HERE / "console"
-PIDFILE = Path("/tmp/atbrains-console.pid")
+from . import PROTOCOL_VERSION, __version__
+from .admin import AdminOps
+from .config import resolve_config, resolve_data_dir, resolve_server_http_config
+from .store import AtbrainsStore
+from .tokens import TokenStore, mask
 
 
 def _p(msg: str = "") -> None:
     print(msg, flush=True)
 
 
-def _ok(cond) -> str:
+def _ok(cond: object) -> str:
     return "✅" if cond else "❌"
 
 
@@ -52,27 +45,36 @@ def _short(s: str, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
-def _ts(v) -> str:
-    """DB 返回的 ts 是 datetime(不可直接切片);统一转成 16 字符时间戳。"""
+def _ts(v: object) -> str:
     return str(v)[:16] if v is not None else ""
 
 
-# ───────────────────────────── status ─────────────────────────────
+def _pidfile(config_home: Optional[str] = None) -> Path:
+    return resolve_data_dir(config_home) / "atbrains-server.pid"
+
+
+def _tokens(config_home: Optional[str] = None) -> TokenStore:
+    cfg = resolve_config(config_home)
+    return TokenStore(Path(str(cfg["data_dir"])) / "service-tokens.json")
+
+
+def _ops(config_home: Optional[str] = None) -> AdminOps:
+    return AdminOps(config_home=config_home)
+
 
 def cmd_status(args) -> int:
     try:
-        d = probe.overview()
-    except Exception as e:
-        _p(f"❌ 无法读取记忆系统:{e}")
+        d = _ops(args.config_home).overview()
+    except Exception as e:  # noqa: BLE001
+        _p(f"❌ 无法读取记忆系统: {e}")
         return 1
     st = d.get("stats", {}).get("mysql", {}) if isinstance(d.get("stats"), dict) else {}
     rd = d.get("stats", {}).get("redis", {}) if isinstance(d.get("stats"), dict) else {}
     q = d.get("qdrant", {})
     cov = q.get("coverage", {})
-    tm = d.get("timer", {})
     v = d.get("vector", {}) if isinstance(d.get("vector"), dict) else {}
 
-    _p(f"🧠 atbrains 记忆系统 · {d.get('ts')}")
+    _p(f"🧠 atbrains-server v{__version__} (protocol v{PROTOCOL_VERSION}) · {d.get('ts')}")
     _p("─" * 58)
     if st:
         _p(f"  MariaDB(长期)   记忆 {st.get('memories_active','?')}/{st.get('memories_total','?')} 活跃/总")
@@ -96,235 +98,188 @@ def cmd_status(args) -> int:
            + (f" · 残留 {len(cov.get('stale_vectors', []))}" if cov.get("stale_vectors") else ""))
     if v and not v.get("error"):
         _p(f"  向量开关        {v.get('enabled')} · 模型 {str(v.get('embed_model') or '?')}")
-    _p("─" * 58)
-    for c in d.get("containers", []):
-        _p(f"  {_ok(c['up'])} 容器 {c['name']:<9} {c['status'] or '未运行':<28} 重启 {c['restarts']} 次")
-    if not d.get("containers"):
-        _p("  ❌ 未发现 redis/mariadb/qdrant 容器")
-    _p("─" * 58)
-    active = tm.get("ActiveState") == "active"
-    _p(f"  {_ok(active)} 定时器 brain-vector-drain  {tm.get('ActiveState','?')}/{tm.get('UnitFileState','?')}")
-    _p(f"     上次运行 {tm.get('lastRun') or '?'} · 退出码 {tm.get('lastExit') or '?'}")
     return 0
 
 
-# ───────────────────────────── serve ─────────────────────────────
-
-def _console_url_port() -> int:
-    try:
-        return int(json.loads((CONSOLE_DIR / "config.json").read_text())["port"])
-    except Exception:
-        return 8787
-
-
-def _console_token() -> str:
-    f = CONSOLE_DIR / ".token"
-    try:
-        return f.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        return "(首次启动时生成)"
+def cmd_migrate(args) -> int:
+    cfg = resolve_config(args.config_home)
+    st = AtbrainsStore(cfg, start_workers=False)
+    ver = st.migrate()
+    _p(f"✅ schema 迁移完成，当前版本 v{ver} (db={cfg['mariadb_db']})")
+    return 0
 
 
 def cmd_serve(args) -> int:
-    server = CONSOLE_DIR / "server.py"
-    if not server.exists():
-        _p(f"❌ 控制台源码缺失:{server}")
-        return 1
-    port = args.port or _console_url_port()
-    env = {**os.environ, "HERMES_HOME": probe.hermes_home(), "ATBRAINS_PORT": str(port)}
+    http_cfg = resolve_server_http_config(args.config_home)
+    port = args.port or int(http_cfg["port"])
+    data_dir = Path(http_cfg["data_dir"])
+    data_dir.mkdir(parents=True, exist_ok=True)
+    pidfile = _pidfile(args.config_home)
+    env = {**os.environ, "ATBRAINS_PORT": str(port), "ATBRAINS_DATA_DIR": str(data_dir)}
+    if args.config_home:
+        env["ATBRAINS_HOME"] = str(args.config_home)
     if args.background:
-        if PIDFILE.exists():
-            pid = PIDFILE.read_text().strip()
+        if pidfile.exists():
+            pid = pidfile.read_text().strip()
             if pid and Path(f"/proc/{pid}").exists():
-                _p(f"⚠️ 控制台已在跑(pid {pid})。先 `hermes atbrains stop`")
+                _p(f"⚠️ 服务端已在运行 (pid {pid})。先 `atbrains-server stop`")
                 return 1
-        log = open("/tmp/atbrains-console.log", "ab")
-        p = subprocess.Popen([sys.executable, str(server)], cwd=str(CONSOLE_DIR),
-                             env=env, stdout=log, stderr=log, start_new_session=True)
-        PIDFILE.write_text(str(p.pid))
-        time.sleep(3)
+        logfile = data_dir / "server.log"
+        log = open(logfile, "ab")
+        p = subprocess.Popen(
+            [sys.executable, "-m", "atbrains_server.http"],
+            env=env, stdout=log, stderr=log, start_new_session=True,
+        )
+        pidfile.write_text(str(p.pid), encoding="utf-8")
+        time.sleep(2)
         if Path(f"/proc/{p.pid}").exists():
-            _p(f"✅ 控制台已在后台启动(pid {p.pid})")
-            _p(f"   本机地址 http://127.0.0.1:{port}/")
-            _p(f"   口令     {_console_token()}")
-            _p(f"   日志     /tmp/atbrains-console.log")
-            _p(f"   SSH 隧道 ssh -p 7622 -L {port}:127.0.0.1:{port} root@<服务器>")
-        else:
-            _p(f"❌ 启动失败,看 /tmp/atbrains-console.log")
-            return 1
-        return 0
-    _p(f"▶ 控制台启动中 http://0.0.0.0:{port}/   (Ctrl-C 停止)")
-    _p(f"  口令 {_console_token()}")
-    try:
-        return subprocess.call([sys.executable, str(server)], cwd=str(CONSOLE_DIR), env=env)
-    except KeyboardInterrupt:
-        return 0
+            tok_file = data_dir / ".token"
+            tok = tok_file.read_text(encoding="utf-8").strip() if tok_file.exists() else "(生成中)"
+            _p(f"✅ atbrains-server 已在后台启动 (pid {p.pid})")
+            _p(f"   控制台   http://127.0.0.1:{port}/")
+            _p(f"   口令     {tok}")
+            _p(f"   日志     {logfile}")
+            return 0
+        _p(f"❌ 启动失败，查看 {logfile}")
+        return 1
+    from .http import main as http_main
+    os.environ.update(env)
+    http_main()
+    return 0
 
 
 def cmd_stop(args) -> int:
-    if not PIDFILE.exists():
-        _p("控制台没在后台跑(无 pidfile)")
+    pidfile = _pidfile(args.config_home)
+    if not pidfile.exists():
+        _p("服务端未在后台运行（无 pidfile）")
         return 0
-    pid = PIDFILE.read_text().strip()
+    pid = pidfile.read_text().strip()
     try:
         os.kill(int(pid), signal.SIGTERM)
         time.sleep(1)
-        _p(f"✅ 已停止控制台(pid {pid})")
+        _p(f"✅ 已停止服务端 (pid {pid})")
     except ProcessLookupError:
-        _p(f"进程 {pid} 已不存在,清理 pidfile")
-    except Exception as e:
-        _p(f"❌ 停止失败:{e}")
+        _p(f"进程 {pid} 已不存在，清理 pidfile")
+    except Exception as e:  # noqa: BLE001
+        _p(f"❌ 停止失败: {e}")
         return 1
-    PIDFILE.unlink(missing_ok=True)
+    pidfile.unlink(missing_ok=True)
     return 0
 
 
 def cmd_open(args) -> int:
-    port = _console_url_port()
-    _p("网页控制台(按需启动,不是系统服务):")
-    _p(f"  1) hermes atbrains serve --background")
-    _p(f"  2) SSH 隧道: ssh -p 7622 -L {port}:127.0.0.1:{port} root@<服务器>")
-    _p(f"  3) 浏览器打开 http://127.0.0.1:{port}/")
-    _p(f"  口令:{_console_token()}")
-    _p(f"  免输入直连(打开即登录): http://127.0.0.1:{port}/?token={_console_token()}")
-    _p(f"  停止:hermes atbrains stop")
+    http_cfg = resolve_server_http_config(args.config_home)
+    port = int(http_cfg["port"])
+    tok_file = Path(http_cfg["data_dir"]) / ".token"
+    tok = tok_file.read_text(encoding="utf-8").strip() if tok_file.exists() else "(首次启动时生成)"
+    _p(f"网页控制台: http://127.0.0.1:{port}/")
+    _p(f"口令:       {tok}")
+    _p(f"直连 URL:   http://127.0.0.1:{port}/?token={tok}")
     return 0
 
 
-# ───────────────────────────── Memory Service(/v1) ─────────────────────────────
-
 def cmd_token_list(args) -> int:
-    toks = service.load_tokens()
-    _p(f"Memory Service 令牌表(权限 600):{service.TOKENS_PATH}")
+    ts = _tokens(args.config_home)
+    entries = ts.entries()
+    _p(f"Memory Service 令牌表 (权限 600): {ts.path}")
     _p("─" * 58)
-    if not toks:
-        _p("  (空) 用 `hermes atbrains token-add <machine>` 生成")
+    if not entries:
+        _p("  (空) 用 `atbrains-server token-add <machine|agent>` 生成")
         return 0
-    for machine in sorted(toks):
-        _p(f"  {machine:<20} {service.mask(toks[machine])}")
-    _p("  提示:只显示掩码;明文仅在 token-add 时出现一次")
+    for name in sorted(entries):
+        ent = entries[name]
+        _p(f"  {name:<24} [{ent.get('role','agent'):<5}] {mask(ent.get('token',''))}")
     return 0
 
 
 def cmd_token_add(args) -> int:
-    existed = args.machine in service.load_tokens()
-    tok = service.token_add(args.machine)
-    _p(f"{'🔄 已轮换' if existed else '✅ 已生成'} {args.machine} 的令牌(只显示这一次,请立即写入客户端配置):")
+    ts = _tokens(args.config_home)
+    existed = args.machine in ts.entries()
+    tok = ts.add(args.machine, role=args.role or "")
+    _p(f"{'🔄 已轮换' if existed else '✅ 已生成'} {args.machine} 的令牌（只显示一次）:")
     _p(f"   {tok}")
-    _p(f"   用法:Authorization: Bearer <令牌>  或  X-Memory-Token: <令牌>")
-    if existed:
-        _p(f"   ⚠️ {args.machine} 的旧令牌已立即失效")
+    _p("   用法: Authorization: Bearer <令牌>")
     return 0
 
 
 def cmd_token_rm(args) -> int:
-    if not service.token_rm(args.machine):
+    ts = _tokens(args.config_home)
+    if not ts.remove(args.machine):
         _p(f"❌ {args.machine} 没有令牌")
         return 1
-    _p(f"✅ 已删除 {args.machine} 的令牌(该机客户端的 /v1 请求将返回 401)")
+    _p(f"✅ 已删除 {args.machine} 的令牌")
     return 0
 
 
 def _http_json(url: str) -> tuple[int, dict]:
-    """GET 一个 JSON 端点;连不上返回 (0, {})。"""
     try:
         with urllib.request.urlopen(url, timeout=5) as r:
             return r.status, json.loads(r.read().decode("utf-8") or "{}")
     except urllib.error.HTTPError as e:
         return e.code, {}
-    except Exception:  # noqa: BLE001 —— 控制台可能压根没起
+    except Exception:  # noqa: BLE001
         return 0, {}
 
 
 def cmd_service(args) -> int:
-    port = _console_url_port()
-    toks = service.load_tokens()
-    try:
-        pid = PIDFILE.read_text(encoding="utf-8").strip()
-    except FileNotFoundError:
-        pid = ""
-    alive = bool(pid) and Path(f"/proc/{pid}").exists()
+    http_cfg = resolve_server_http_config(args.config_home)
+    port = int(http_cfg["port"])
+    ts = _tokens(args.config_home)
     code, health = _http_json(f"http://127.0.0.1:{port}/v1/health")
-
-    if code == 200:
-        state = f"✅ 控制台在跑(pid {pid})" if alive else "✅ 控制台在跑(前台进程,无 pidfile)"
-    elif code == 404:
-        state = (f"⚠️ 端口 {port} 上的控制台还是旧版本(没有 /v1)"
-                 f" → `hermes atbrains stop && hermes atbrains serve --background`")
-    elif alive:
-        state = f"⚠️ pidfile 里是 {pid},但 /v1 不可达"
-    else:
-        state = "❌ 未在跑 → `hermes atbrains serve --background`"
-
-    _p("🔌 atbrains Memory Service(/v1)—— 统一记忆服务端")
+    _p(f"🔌 atbrains-server v{__version__} (protocol v{PROTOCOL_VERSION})")
     _p("─" * 58)
-    _p(f"  版本     {probe.plugin_version()}")
-    _p(f"  端口     {port}(与网页控制台共用同一端口,不额外监听)")
-    _p("  路径     GET /v1/health · POST /v1/memory/{recall,remember,forget,recent,turn} · "
-       "GET|POST /v1/memory/status")
-    _p(f"  进程     {state}")
-    _p(f"  令牌     {len(toks)} 个 machine ← {service.TOKENS_PATH}")
-    for machine in sorted(toks):
-        _p(f"           · {machine:<20} {service.mask(toks[machine])}")
+    _p(f"  端口     {port}")
+    _p(f"  令牌表   {ts.path} ({len(ts.entries())} 个)")
     if code == 200:
-        _p(f"  健康     ✅ HTTP 200 version={health.get('version','?')} ts={health.get('ts','?')}")
+        _p(f"  健康     ✅ HTTP 200 {json.dumps(health, ensure_ascii=False)}")
     else:
-        _p(f"  健康     ❌ HTTP {code or '连接被拒'}(控制台没起时不提供 /v1)")
+        _p(f"  健康     ❌ HTTP {code or '连接被拒'}")
     try:
-        ping = probe.store().ping()
+        ping = _ops(args.config_home).store.ping()
+        _p(f"  存储     Redis {_ok(ping.get('redis'))} · MariaDB {_ok(ping.get('mariadb'))}")
     except Exception as e:  # noqa: BLE001
         _p(f"  存储     ❌ {e}")
         return 1
-    _p(f"  存储     Redis {_ok(ping.get('redis'))} · MariaDB {_ok(ping.get('mariadb'))}"
-       f"(各 machine 共用同一组凭据,数据按 machine 列区分)")
     return 0
 
 
-# ───────────────────────────── 控制 ─────────────────────────────
-
 def cmd_drain(args) -> int:
     force = bool(getattr(args, "force", False))
-    _p("⏳ 向量回填中(全量重嵌)…" if force else "⏳ 向量回填中(增量,只补缺失)…")
-    r = probe.drain(force=force)
-    _p(r.get("out") or r.get("err") or "(无输出)")
-    _p("✅ 完成" if r.get("ok") else f"❌ 失败(退出码 {r.get('code')})")
-    return 0 if r.get("ok") else 1
+    r = _ops(args.config_home).drain(force=force)
+    _p(json.dumps(r, ensure_ascii=False, indent=2))
+    return 0
 
 
 def cmd_doctor(args) -> int:
-    r = probe.doctor()
-    _p(r.get("out") or "")
-    if r.get("err"):
-        _p(r["err"])
+    r = _ops(args.config_home).doctor()
+    _p(json.dumps(r, ensure_ascii=False, indent=2, default=str))
     return 0 if r.get("ok") else 1
 
 
 def cmd_memories(args) -> int:
     active = "all" if args.all else "1"
-    d = probe.memories(limit=args.limit, active=active, q=args.q or "")
-    _p(f"共 {d['total']} 条,显示 {len(d['items'])} 条(active={active})")
-    _p("─" * 70)
+    d = _ops(args.config_home).memories(limit=args.limit, active=active, q=args.q or "")
+    _p(f"共 {d['total']} 条,显示 {len(d['items'])} 条 (active={active})")
     for m in d["items"]:
         flag = "●" if m.get("active") else "○"
-        _p(f" {flag} [{m['id']:>4}] {m.get('kind',''):<10} 重要度{m.get('importance','?')} "
-           f"{(m.get('tags') or ''):<18} {_short(m.get('content',''), 90)}")
+        _p(f" {flag} [{m['id']:>4}] {m.get('kind',''):<10} @{m.get('agent','')} "
+           f"重要度{m.get('importance','?')} {_short(m.get('content',''), 90)}")
     return 0
 
 
 def cmd_turns(args) -> int:
-    d = probe.turns(limit=args.limit, offset=getattr(args, "offset", 0),
-                    machine=getattr(args, "machine", "") or "", q=getattr(args, "q", "") or "")
+    d = _ops(args.config_home).turns(
+        limit=args.limit, offset=getattr(args, "offset", 0),
+        machine=getattr(args, "machine", "") or "", q=getattr(args, "q", "") or "")
     _p(f"共 {d['total']} 轮,显示 {len(d['items'])} 轮")
-    _p("─" * 70)
     for t in d["items"]:
         _p(f" [{t['id']:>5}] {_ts(t.get('ts'))} {t.get('machine') or '-':<16} {_short(t.get('u',''), 70)}")
     return 0
 
 
 def cmd_sessions(args) -> int:
-    d = probe.sessions(limit=args.limit, machine=getattr(args, "machine", "") or "")
+    d = _ops(args.config_home).sessions(limit=args.limit, machine=getattr(args, "machine", "") or "")
     _p(f"共 {d['total']} 个会话,显示 {len(d['items'])} 个")
-    _p("─" * 70)
     for s in d["items"]:
         _p(f" [{_short(s.get('session_id',''),32):<32}] {s.get('machine') or '-':<16} "
            f"{s.get('platform') or '-':<10} {s.get('turn_count','?'):>4} 轮  最近 {_ts(s.get('last_active'))}")
@@ -333,191 +288,135 @@ def cmd_sessions(args) -> int:
 
 def cmd_search(args) -> int:
     q = " ".join(args.query)
-    d = probe.search(q, limit=args.limit)
-    _p(f"🔍 「{q}」(混合检索:向量 + 关键词)")
-    _p(f"── 命中记忆 {len(d['memories'])} 条 " + "─" * 40)
+    d = _ops(args.config_home).search(q, limit=args.limit)
+    _p(f"🔍 「{q}」→ 记忆 {len(d['memories'])} 条 / 对话 {len(d['turns'])} 条")
     for i, m in enumerate(d["memories"], 1):
-        score = f" score={m['score']:.3f}" if isinstance(m.get("score"), (int, float)) else ""
-        _p(f" {i}. {_short(m.get('content') or m.get('preview') or '', 110)}{score}")
-    _p(f"── 命中历史对话 {len(d['turns'])} 条 " + "─" * 36)
-    for t in d["turns"]:
-        _p(f" · {_ts(t.get('ts'))} {_short(t.get('user_content') or '', 90)}")
+        _p(f" {i}. [{m['id']}] ({m.get('agent','')}) {_short(m.get('content') or '', 110)}")
     return 0
 
 
 def cmd_remember(args) -> int:
-    r = probe.remember(args.content, kind=args.kind, tags=args.tags or "", importance=args.importance)
-    _p(f"✅ 已保存:{r}")
+    r = _ops(args.config_home).remember(
+        args.content, kind=args.kind, tags=args.tags or "", importance=args.importance)
+    _p(f"✅ 已保存: {r}")
     return 0
 
 
 def cmd_forget(args) -> int:
-    r = probe.forget(args.id)
-    _p(f"✅ 已停用 {args.id}:{r}")
+    r = _ops(args.config_home).forget(args.id)
+    _p(f"✅ 已停用 {args.id}: {r}")
     return 0
 
 
 def cmd_restore(args) -> int:
-    try:
-        r = probe.restore(args.id)
-    except Exception as e:  # noqa: BLE001 —— 例如同内容已有活跃条目
-        _p(f"❌ 恢复失败:{e}")
-        return 1
-    _p(f"✅ 已恢复 {args.id}:{r}")
+    r = _ops(args.config_home).restore(args.id)
+    _p(f"✅ 已恢复 {args.id}: {r}")
     return 0
 
 
-# ───────────────────────────── mcp ─────────────────────────────
-
-def _mcp_script() -> Path:
-    return HERE / "mcp_stdio.py"
-
-
-def _default_mcp_url() -> str:
-    port = _console_url_port()
-    return f"http://127.0.0.1:{port}/mcp"
-
-
-def _mcp_python() -> str:
-    """写进客户端配置的解释器：优先系统 python3（稳定，不随 Hermes 工具缓存清理消失）。"""
-    for cand in (os.environ.get("ATBRAINS_MCP_PYTHON"), "/usr/bin/python3", sys.executable):
-        if cand and Path(cand).is_file():
-            return str(cand)
-    return sys.executable
+def _mcp_clients_mod():
+    try:
+        from atbrains_client import mcp_clients
+        return mcp_clients
+    except ImportError:
+        sdk_root = Path(__file__).resolve().parents[2] / "sdk" / "python"
+        if sdk_root.is_dir() and str(sdk_root) not in sys.path:
+            sys.path.insert(0, str(sdk_root))
+        from atbrains_client import mcp_clients  # type: ignore
+        return mcp_clients
 
 
 def _mcp_spec(args):
-    """按参数拼出一条 MCP server 定义（stdio 默认；http 用服务令牌）。"""
-    from . import mcp_clients
-
+    mcp_clients = _mcp_clients_mod()
     agent = (getattr(args, "agent", None) or os.environ.get("ATBRAINS_AGENT") or "stdio").strip()
     if getattr(args, "transport", "stdio") == "http":
-        token = getattr(args, "token", None) or ""
-        if not token:
-            tokens = service.load_tokens()
-            token = tokens.get(agent, "")
-        if not token:
-            _p(f"⚠️ 没有 agent={agent} 的服务令牌；先跑 `hermes atbrains token-add {agent}`")
-        url = getattr(args, "url", None) or _default_mcp_url()
+        http_cfg = resolve_server_http_config(args.config_home)
+        token = getattr(args, "token", None) or _tokens(args.config_home).load().get(agent, "")
+        url = getattr(args, "url", None) or f"http://127.0.0.1:{http_cfg['port']}/mcp"
         return mcp_clients.ServerSpec(transport="http", url=url, token=token)
-    return mcp_clients.ServerSpec(command=_mcp_python(),
-                                  args=[str(_mcp_script()), "--agent", agent])
+    script = str(Path(__file__).resolve().parent / "mcp_stdio.py")
+    return mcp_clients.ServerSpec(command=sys.executable, args=[script, "--agent", agent])
 
 
 def cmd_mcp_serve(args) -> int:
-    """以 stdio 方式跑 MCP 服务端：本进程直接让位给 mcp_stdio.py。
-
-    客户端的 `command` 指向 `hermes atbrains mcp serve` 也能用，但多一层 Python
-    启动；安装脚本默认直接指向 mcp_stdio.py。
-    """
+    from .mcp_stdio import serve
     agent = (args.agent or os.environ.get("ATBRAINS_AGENT") or "stdio").strip()
-    script = _mcp_script()
-    if not script.is_file():
-        _p(f"❌ 找不到 {script}")
-        return 1
-    sys.stdout.flush()
-    os.execv(sys.executable, [sys.executable, str(script), "--agent", agent])
-    return 0  # 不会走到这里
+    return serve(agent, args.config_home)
 
 
 def cmd_mcp_print(args) -> int:
-    from . import mcp_clients
-    spec = _mcp_spec(args)
-    _p(mcp_clients.snippet(args.client, spec))
+    mcp_clients = _mcp_clients_mod()
+    _p(mcp_clients.snippet(args.client, _mcp_spec(args)))
     return 0
 
 
 def cmd_mcp_install(args) -> int:
-    from . import mcp_clients
-    spec = _mcp_spec(args)
-    ok, msg = mcp_clients.install(args.client, spec, write=args.write)
+    mcp_clients = _mcp_clients_mod()
+    ok, msg = mcp_clients.install(args.client, _mcp_spec(args), write=args.write)
     _p(("✅ " if ok else "❌ ") + msg)
-    if ok and not args.write:
-        _p("\n（以上是预演；加 --write 才落盘）")
     return 0 if ok else 1
 
 
 def cmd_mcp_doctor(args) -> int:
-    """MCP 自检：进程内 selftest + 各客户端接入状态。"""
-    from . import mcp_clients
-    script = _mcp_script()
-    agent = (args.agent or "stdio").strip()
-    _p("== stdio 服务端 ==")
-    try:
-        proc = subprocess.run([sys.executable, str(script), "--selftest", "--agent", agent],
-                              capture_output=True, text=True, timeout=120)
-        _p((proc.stdout or "").strip() or "(无输出)")
-        if proc.returncode != 0:
-            _p((proc.stderr or "").strip())
-            _p(f"❌ selftest 退出码 {proc.returncode}")
-            return 1
-    except Exception as exc:  # noqa: BLE001
-        _p(f"❌ selftest 跑不起来：{type(exc).__name__}: {exc}")
-        return 1
-    _p("\n== 客户端接入 ==")
+    from .mcp_stdio import selftest
+    mcp_clients = _mcp_clients_mod()
+    rc = selftest((args.agent or "stdio").strip(), args.config_home)
     for label, state in mcp_clients.status():
         _p(f"  {label:<16} {state}")
-    _p("\n安装：hermes atbrains mcp install <client> --write")
-    _p("客户端：" + "、".join(mcp_clients.clients()))
-    return 0
+    return rc
 
 
-# ───────────────────────────── 注册 ─────────────────────────────
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="atbrains-server", description="atbrains 通用记忆服务端")
+    parser.add_argument("--config-home", default=None, help="配置目录（默认自动探测）")
+    parser.add_argument("--version", action="version", version=f"atbrains-server {__version__} (protocol {PROTOCOL_VERSION})")
+    sub = parser.add_subparsers(dest="cmd", metavar="<命令>", required=False)
 
-def setup_parser(parser: argparse.ArgumentParser) -> None:
-    sub = parser.add_subparsers(dest="atbrains_cmd", metavar="<命令>", required=False)
+    sub.add_parser("status", help="一屏总览").set_defaults(func=cmd_status)
+    sub.add_parser("migrate", help="显式执行数据库建表与迁移").set_defaults(func=cmd_migrate)
 
-    p = sub.add_parser("status", help="一屏总览(默认)")
-    p.set_defaults(func=cmd_status)
-
-    p = sub.add_parser("serve", help="启动网页控制台")
-    p.add_argument("--port", type=int, default=None, help="监听端口(默认取 config.json)")
-    p.add_argument("--background", action="store_true", help="后台运行(写 pidfile)")
+    p = sub.add_parser("serve", help="启动 HTTP /v1 + /mcp + 控制台")
+    p.add_argument("--port", type=int, default=None)
+    p.add_argument("--background", action="store_true")
     p.set_defaults(func=cmd_serve)
 
-    p = sub.add_parser("stop", help="停掉后台控制台")
-    p.set_defaults(func=cmd_stop)
+    sub.add_parser("stop", help="停止后台服务端").set_defaults(func=cmd_stop)
+    sub.add_parser("open", help="打印控制台地址与口令").set_defaults(func=cmd_open)
+    sub.add_parser("token-list", help="列出令牌").set_defaults(func=cmd_token_list)
 
-    p = sub.add_parser("open", help="打印控制台地址与口令")
-    p.set_defaults(func=cmd_open)
-
-    p = sub.add_parser("token-list", help="列出 machine 与令牌掩码")
-    p.set_defaults(func=cmd_token_list)
-
-    p = sub.add_parser("token-add", help="生成某 machine 的令牌(只显示一次)")
-    p.add_argument("machine", help="machine 名(如 x260-debian)")
+    p = sub.add_parser("token-add", help="生成令牌（建议 `<machine>|<agent>`）")
+    p.add_argument("machine", help="身份名（如 laptop|codex、qq|astrbot、server）")
+    p.add_argument("--role", choices=("agent", "admin"), default="", help="权限角色")
     p.set_defaults(func=cmd_token_add)
 
-    p = sub.add_parser("token-rm", help="删除某 machine 的令牌")
-    p.add_argument("machine", help="machine 名")
+    p = sub.add_parser("token-rm", help="删除令牌")
+    p.add_argument("machine")
     p.set_defaults(func=cmd_token_rm)
 
-    p = sub.add_parser("service", help="Memory Service(/v1)自检")
-    p.set_defaults(func=cmd_service)
+    sub.add_parser("service", help="服务自检").set_defaults(func=cmd_service)
 
-    p = sub.add_parser("drain", help="手动向量回填")
-    p.add_argument("--force", action="store_true", help="全量重嵌(默认增量)")
+    p = sub.add_parser("drain", help="向量回填")
+    p.add_argument("--force", action="store_true")
     p.set_defaults(func=cmd_drain)
 
-    p = sub.add_parser("doctor", help="系统体检")
-    p.set_defaults(func=cmd_doctor)
+    sub.add_parser("doctor", help="系统体检").set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("memories", help="列出记忆")
     p.add_argument("--limit", type=int, default=30)
-    p.add_argument("--all", action="store_true", help="含已停用")
-    p.add_argument("--q", default=None, help="按内容过滤")
+    p.add_argument("--all", action="store_true")
+    p.add_argument("--q", default=None)
     p.set_defaults(func=cmd_memories)
 
     p = sub.add_parser("turns", help="最近对话归档")
     p.add_argument("--limit", type=int, default=20)
-    p.add_argument("--offset", type=int, default=0, help="分页偏移")
-    p.add_argument("--machine", default="", help="只看某来源机")
-    p.add_argument("--q", default="", help="按内容过滤(用户/助手)")
+    p.add_argument("--offset", type=int, default=0)
+    p.add_argument("--machine", default="")
+    p.add_argument("--q", default="")
     p.set_defaults(func=cmd_turns)
 
     p = sub.add_parser("sessions", help="会话索引")
     p.add_argument("--limit", type=int, default=20)
-    p.add_argument("--machine", default="", help="只看某来源机")
+    p.add_argument("--machine", default="")
     p.set_defaults(func=cmd_sessions)
 
     p = sub.add_parser("search", help="混合检索")
@@ -532,44 +431,51 @@ def setup_parser(parser: argparse.ArgumentParser) -> None:
     p.add_argument("--importance", type=int, default=5)
     p.set_defaults(func=cmd_remember)
 
-    p = sub.add_parser("forget", help="停用一条记忆")
+    p = sub.add_parser("forget", help="停用记忆")
     p.add_argument("id", type=int)
     p.set_defaults(func=cmd_forget)
 
-    p = sub.add_parser("restore", help="恢复一条被停用的记忆")
+    p = sub.add_parser("restore", help="恢复记忆")
     p.add_argument("id", type=int)
     p.set_defaults(func=cmd_restore)
 
-    p = sub.add_parser("mcp", help="MCP 服务端(stdio)与客户端接入")
-    msub = p.add_subparsers(dest="atbrains_mcp_cmd", metavar="<子命令>", required=False)
-    msub.add_parser("serve", help="以 stdio 跑 MCP 服务端（默认）").add_argument(
-        "--agent", default=None, help="写入方身份，默认 $ATBRAINS_AGENT 或 stdio")
-    msub.choices["serve"].set_defaults(func=cmd_mcp_serve)
+    p = sub.add_parser("mcp", help="MCP 服务端与客户端接入")
+    msub = p.add_subparsers(dest="mcp_cmd", required=False)
+    ms = msub.add_parser("serve", help="stdio MCP")
+    ms.add_argument("--agent", default=None)
+    ms.set_defaults(func=cmd_mcp_serve)
 
-    q = msub.add_parser("install", help="把 atbrains 写进客户端的 MCP 配置")
-    q.add_argument("client", help="claude-code | claude-desktop | cursor | codex | generic")
-    q.add_argument("--agent", default=None, help="写入方身份（默认 stdio）")
-    q.add_argument("--transport", default="stdio", choices=("stdio", "http"))
-    q.add_argument("--url", default=None, help="http 模式地址（默认本机控制台 /mcp）")
-    q.add_argument("--token", default=None, help="http 模式服务令牌（默认查令牌表）")
-    q.add_argument("--write", action="store_true", help="真正落盘（默认只预演）")
-    q.set_defaults(func=cmd_mcp_install)
+    mi = msub.add_parser("install", help="写入 MCP 客户端配置")
+    mi.add_argument("client", help="claude-code | claude-desktop | cursor | codex | generic")
+    mi.add_argument("--agent", default=None)
+    mi.add_argument("--transport", default="stdio", choices=("stdio", "http"))
+    mi.add_argument("--url", default=None)
+    mi.add_argument("--token", default=None)
+    mi.add_argument("--write", action="store_true")
+    mi.set_defaults(func=cmd_mcp_install)
 
-    q = msub.add_parser("print", help="只打印配置片段，不写文件")
-    q.add_argument("client", help="claude-code | claude-desktop | cursor | codex | generic")
-    q.add_argument("--agent", default=None)
-    q.add_argument("--transport", default="stdio", choices=("stdio", "http"))
-    q.add_argument("--url", default=None)
-    q.add_argument("--token", default=None)
-    q.set_defaults(func=cmd_mcp_print)
+    mp = msub.add_parser("print", help="打印 MCP 配置片段")
+    mp.add_argument("client")
+    mp.add_argument("--agent", default=None)
+    mp.add_argument("--transport", default="stdio", choices=("stdio", "http"))
+    mp.add_argument("--url", default=None)
+    mp.add_argument("--token", default=None)
+    mp.set_defaults(func=cmd_mcp_print)
 
-    q = msub.add_parser("doctor", help="MCP 自检（selftest + 客户端接入状态）")
-    q.add_argument("--agent", default=None)
-    q.set_defaults(func=cmd_mcp_doctor)
+    md = msub.add_parser("doctor", help="MCP 自检")
+    md.add_argument("--agent", default=None)
+    md.set_defaults(func=cmd_mcp_doctor)
+    return parser
 
 
-def handle(args) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
+    parser = build_parser()
+    args = parser.parse_args(argv)
     fn = getattr(args, "func", None)
     if fn is None:
         return cmd_status(args)
-    return fn(args)
+    return int(fn(args) or 0)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

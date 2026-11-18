@@ -1,0 +1,309 @@
+"""atbrains-server HTTP /v1、/mcp、/api、鉴权角色与契约一致性测试（不连外部 DB）。"""
+from __future__ import annotations
+
+import json
+import re
+import sys
+import tempfile
+import threading
+import unittest
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+REPO = ROOT.parent
+SDK_DIR = REPO / "sdk" / "python"
+for p in (str(ROOT), str(SDK_DIR)):
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+from atbrains_client.schemas import TOOLS as SDK_TOOLS  # noqa: E402
+from atbrains_server.http import ServerRuntime, make_handler  # noqa: E402
+from atbrains_server.mcp import AtbrainsMCP  # noqa: E402
+from atbrains_server.service import MemoryService  # noqa: E402
+from atbrains_server.tokens import TokenStore  # noqa: E402
+from atbrains_server.tools_registry import TOOLS as SERVER_TOOLS  # noqa: E402
+
+
+class FakeStore:
+    """内存模拟存储引擎，用于验证 service / mcp / http 路由与鉴权语义。"""
+
+    def __init__(self, cfg: dict) -> None:
+        self.cfg = dict(cfg)
+        self.machine = str(cfg.get("machine") or "srv")
+        self.agent = str(cfg.get("agent") or "default")
+        self.memories: list[dict] = []
+        self.turns: list[dict] = []
+        self.claims: list[dict] = []
+        self.episodes: dict[int, dict] = {}
+        self.archives: list[dict] = []
+
+    def ping(self) -> dict:
+        return {"redis": True, "mariadb": True}
+
+    def stats(self, *, force: bool = False) -> dict:
+        return {
+            "mysql": {
+                "memories_total": len(self.memories),
+                "memories_active": sum(1 for m in self.memories if m.get("active", 1)),
+                "turns": len(self.turns),
+                "claims_active": len(self.claims),
+                "episodes": len(self.episodes),
+                "sessions": 1,
+                "size_bytes": 4096,
+            },
+            "redis": {"keys": 3, "recent_stream": len(self.turns), "hot_index": len(self.memories)},
+        }
+
+    def remember(self, content: str, *, kind: str = "note", tags: str = "",
+                 importance: int = 5, source: str = "tool",
+                 session_id: str = "", memory_type: str = "") -> dict:
+        mid = len(self.memories) + 1
+        rec = {
+            "id": mid, "kind": kind, "memory_type": memory_type or "episodic",
+            "content": content, "tags": tags, "importance": importance,
+            "source": source, "machine": self.machine, "agent": self.agent,
+            "active": 1,
+        }
+        self.memories.append(rec)
+        return {"id": mid, "kind": kind, "importance": importance,
+                "memory_type": rec["memory_type"], "hot_cache": True, "deduped": False}
+
+    def forget(self, mem_id: int) -> dict:
+        for m in self.memories:
+            if m["id"] == mem_id:
+                m["active"] = 0
+                return {"id": mem_id, "deactivated": 1}
+        return {"id": mem_id, "deactivated": 0}
+
+    def restore(self, mem_id: int) -> dict:
+        for m in self.memories:
+            if m["id"] == mem_id:
+                m["active"] = 1
+                return {"id": mem_id, "restored": 1}
+        return {"id": mem_id, "restored": 0}
+
+    def deactivate_by_content(self, content: str) -> int:
+        n = 0
+        for m in self.memories:
+            if m["content"] == content and m["active"] == 1:
+                m["active"] = 0
+                n += 1
+        return n
+
+    def search_memories_hybrid(self, query: str, *, limit: int = 5, kind=None, agent=None) -> list[dict]:
+        return [m for m in self.memories if m.get("active", 1)][:limit]
+
+    def recall_memories(self, query: str, *, limit: int = 5, kind=None, agent=None) -> list[dict]:
+        return self.search_memories_hybrid(query, limit=limit, kind=kind, agent=agent)
+
+    def top_memories(self, limit: int = 8, *, kind=None, agent=None) -> list[dict]:
+        return [m for m in self.memories if m.get("active", 1)][:limit]
+
+    def search_turns(self, query: str, *, limit: int = 3) -> list[dict]:
+        return self.turns[:limit]
+
+    def prefetch_block(self, query: str, *, session_id: str = "", with_hits: bool = False, **kw):
+        hits = [{"id": m["id"], "kind": m["kind"], "preview": m["content"]} for m in self.memories[:3]]
+        txt = "[mem]\n" + "\n".join(h["preview"] for h in hits) if hits else ""
+        if with_hits:
+            return txt, len(hits), hits
+        return txt, len(hits)
+
+    def format_hits(self, mems: list[dict], limit: int = 20) -> list[dict]:
+        return mems[:limit]
+
+    def hot_recent(self, limit: int = 5) -> list[dict]:
+        return self.memories[-limit:]
+
+    def recent_turns(self, limit: int = 10) -> list[dict]:
+        return self.turns[-limit:]
+
+    def record_turn(self, session_id: str, user_content: str, assistant_content: str, **kw) -> int:
+        tid = len(self.turns) + 1
+        self.turns.append({"id": tid, "session_id": session_id, "user": user_content,
+                           "assistant": assistant_content, "machine": self.machine})
+        return tid
+
+    def get_session_cursor(self, session_id: str) -> int:
+        return len(self.turns)
+
+    def turn_detail(self, turn_id: int = 0, *, session_id: str = "", max_chars: int = 1500) -> dict:
+        return {"found": True, "turn": {"id": turn_id or 1, "session_id": session_id}, "messages": [], "stored": 0}
+
+    def archive(self, session_id: str, kind: str, payload: str, *, platform: str = "") -> int:
+        self.archives.append({"session_id": session_id, "kind": kind, "payload": payload})
+        return len(self.archives)
+
+    def touch_session(self, session_id: str, platform: str = "") -> None:
+        pass
+
+    def claim_remember(self, subject: str, predicate: str, value: str, **kw) -> dict:
+        self.claims.append({"claim_id": len(self.claims) + 1, "subject": subject,
+                            "predicate": predicate, "value_text": value, "revision": 1})
+        return self.claims[-1]
+
+    def claim_recall(self, **kw) -> list[dict]:
+        return list(self.claims)
+
+    def claim_retire(self, claim_id: int, reason: str = "") -> dict:
+        return {"claim_id": claim_id, "retracted": 1, "reason": reason}
+
+    def episode_set(self, turn_id: int, **kw) -> dict:
+        self.episodes[turn_id] = {"turn_id": turn_id, **{k: v for k, v in kw.items() if v is not None}}
+        return {"turn_id": turn_id, "updated": True}
+
+    def episode_get(self, turn_id: int = 0, *, session_id: str = "") -> dict:
+        ep = self.episodes.get(turn_id)
+        return {"found": bool(ep), **(ep or {})}
+
+    def open_episodes(self, limit: int = 5) -> list[dict]:
+        return list(self.episodes.values())[:limit]
+
+
+class ParityTest(unittest.TestCase):
+    def test_openapi_covers_all_service_routes(self) -> None:
+        text = (REPO / "contracts" / "openapi.yaml").read_text(encoding="utf-8")
+        # 抓取 paths: 下所有缩进 2 格的路径键
+        spec_paths = set(re.findall(r"^  (/v1/[^\s:]+):", text, flags=re.M))
+        route_paths = set(MemoryService._ROUTES.keys())
+        self.assertEqual(spec_paths, route_paths)
+
+    def test_tool_schemas_parity(self) -> None:
+        self.assertEqual(SERVER_TOOLS, SDK_TOOLS)
+
+
+class TokenStoreTest(unittest.TestCase):
+    def test_legacy_and_structured_tokens(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / "tokens.json"
+            ts = TokenStore(p)
+            srv_tok = ts.load()["server"]
+            codex_tok = ts.add("laptop|codex")
+            admin_tok = ts.add("ops-bot", role="admin", machine="ops", agent="cli")
+
+            ident_srv = ts.authorize({"Authorization": f"Bearer {srv_tok}"}, channel="v1")
+            self.assertIsNotNone(ident_srv)
+            assert ident_srv
+            self.assertEqual((ident_srv.machine, ident_srv.agent, ident_srv.role), ("server", "hermes", "admin"))
+
+            ident_cdx = ts.authorize({"Authorization": f"Bearer {codex_tok}"}, channel="v1")
+            assert ident_cdx
+            self.assertEqual((ident_cdx.machine, ident_cdx.agent, ident_cdx.role), ("laptop", "codex", "agent"))
+
+            ident_mcp = ts.authorize({"Authorization": f"Bearer {codex_tok}"}, channel="mcp")
+            assert ident_mcp
+            self.assertEqual((ident_mcp.machine, ident_mcp.agent), ("", "codex"))
+
+            ident_adm = ts.authorize({"Authorization": f"Bearer {admin_tok}"}, channel="v1")
+            assert ident_adm
+            self.assertEqual((ident_adm.machine, ident_adm.agent, ident_adm.role), ("ops", "cli", "admin"))
+
+
+class HttpAndMcpServiceTest(unittest.TestCase):
+    def _req(self, port: int, method: str, path: str, body=None, headers=None) -> tuple[int, dict]:
+        data = json.dumps(body).encode() if body is not None else None
+        hdrs = dict(headers or {})
+        if data is not None:
+            hdrs.setdefault("Content-Type", "application/json")
+        req = urllib.request.Request(f"http://127.0.0.1:{port}{path}", data=data, headers=hdrs, method=method)
+        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        try:
+            with opener.open(req, timeout=5) as r:
+                return r.status, json.loads(r.read().decode() or "{}")
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read().decode() or "{}")
+
+    def test_full_v1_mcp_and_rbac(self) -> None:
+        from http.server import ThreadingHTTPServer
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            svc = MemoryService(
+                config_home=tmp,
+                tokens_path=data_dir / "service-tokens.json",
+                start_workers=False,
+                store_factory=lambda cfg: FakeStore(cfg),
+            )
+            rt = ServerRuntime(
+                config_home=tmp,
+                data_dir=data_dir,
+                start_workers=False,
+                access_log="-",
+                service=svc,
+            )
+            svc._console_token_fn = rt.console_token.get
+            srv_tok = svc.tokens.load()["server"]
+            agent_tok = svc.tokens.add("macbook|codex")
+            console_tok = rt.console_token.get()
+
+            httpd = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(rt))
+            th = threading.Thread(target=httpd.serve_forever, daemon=True)
+            th.start()
+            try:
+                p = httpd.server_port
+                # 1. health
+                code, h = self._req(p, "GET", "/v1/health")
+                self.assertEqual(code, 200)
+                self.assertTrue(h["ok"])
+                self.assertTrue(h["version"].startswith("2."))
+
+                # 2. agent token 读写 /v1 全路径
+                hdr_agent = {"Authorization": f"Bearer {agent_tok}"}
+                code, st = self._req(p, "POST", "/v1/memory/status", {"light": True}, hdr_agent)
+                self.assertEqual(code, 200)
+                self.assertEqual((st["machine"], st["agent"], st["role"]), ("macbook", "codex", "agent"))
+
+                code, rem = self._req(p, "POST", "/v1/memory/remember", {"content": "通用记忆库测试", "kind": "fact"}, hdr_agent)
+                self.assertEqual(code, 200)
+                self.assertEqual(rem["saved"]["id"], 1)
+
+                code, rec = self._req(p, "POST", "/v1/memory/recall", {"query": "通用", "include_claims": True}, hdr_agent)
+                self.assertEqual(code, 200)
+                self.assertEqual(rec["count"], 1)
+
+                code, cl = self._req(p, "POST", "/v1/claim/remember",
+                                     {"subject": "项目", "predicate": "协议", "value": "v2.1"}, hdr_agent)
+                self.assertEqual(code, 200)
+                self.assertEqual(cl["claim"]["revision"], 1)
+
+                code, ctx = self._req(p, "POST", "/v1/context", {"format": "markdown"}, hdr_agent)
+                self.assertEqual(code, 200)
+                self.assertIn("markdown", ctx)
+
+                code, ho = self._req(p, "POST", "/v1/handoff", {"note": "交接给下一个 agent"}, hdr_agent)
+                self.assertEqual(code, 200)
+
+                # 3. 权限隔离：普通 agent token 调 /v1/admin/* 必须 403；admin/console 才允许
+                code, _ = self._req(p, "GET", "/v1/admin/tokens", headers=hdr_agent)
+                self.assertEqual(code, 403)
+                code, toks = self._req(p, "GET", "/v1/admin/tokens", headers={"Authorization": f"Bearer {srv_tok}"})
+                self.assertEqual(code, 200)
+                self.assertGreaterEqual(len(toks["tokens"]), 2)
+                code, _ = self._req(p, "GET", "/v1/admin/tokens", headers={"X-Auth-Token": console_tok})
+                self.assertEqual(code, 200)
+                # 控制台令牌不能冒充 Bearer 访问 /v1/memory/*
+                code, _ = self._req(p, "POST", "/v1/memory/status", {}, {"Authorization": f"Bearer {console_tok}"})
+                self.assertEqual(code, 401)
+
+                # 4. /mcp JSON-RPC
+                code, mcp_list = self._req(p, "POST", "/mcp",
+                                           {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, hdr_agent)
+                self.assertEqual(code, 200)
+                self.assertEqual(len(mcp_list["result"]["tools"]), 12)
+                code, mcp_ctx = self._req(
+                    p, "POST", "/mcp",
+                    {"jsonrpc": "2.0", "id": 2, "method": "tools/call",
+                     "params": {"name": "atbrains_context", "arguments": {"limit": 3}}},
+                    hdr_agent,
+                )
+                self.assertEqual(code, 200)
+                self.assertFalse(mcp_ctx["result"]["isError"])
+            finally:
+                httpd.shutdown()
+                httpd.server_close()
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

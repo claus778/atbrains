@@ -15,33 +15,37 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import cli  # noqa: E402
-from core import (  # noqa: E402
-    AtbrainsStore,
+from atbrains_server.config import (  # noqa: E402
     DEFAULT_CONFIG,
+    _dotenv_get,
+    _dotenv_value,
+    resolve_config,
+)
+from atbrains_server.schema import _benign_ddl_error, _is_duplicate_error  # noqa: E402
+from atbrains_server.store import AtbrainsStore  # noqa: E402
+from atbrains_server.util import (  # noqa: E402
     _age_days,
-    _benign_ddl_error,
     _clip,
     _cosine,
     _cursor_start,
-    _window_start,
     _db_safe,
-    _dotenv_get,
-    _dotenv_value,
     _esc_like,
-    _is_duplicate_error,
     _mask_secret,
     _memory_type,
     _utc_epoch,
-    resolve_config,
+    _window_start,
     search_terms,
 )
 
 TEST_ENV = {
     "ATBRAINS_REDIS_PASSWORD": "",
     "ATBRAINS_MARIADB_PASSWORD": "",
+    "ATBRAINS_DISTILL_API_KEY": "",
+    "ATBRAINS_CONFIG": "",
+    "ATBRAINS_HOME": "",
+    "ATBRAINS_DATA_DIR": "",
     "HERMES_CUSTOM_API_COMMANDCODE_AI_API_KEY": "",
 }
 
@@ -394,14 +398,27 @@ class ClaimLayerTest(unittest.TestCase):
         self.assertEqual(json.loads(f(["a", " "])), ["a"])
 
 
-class CliTest(unittest.TestCase):
-    def test_fmt_bytes(self) -> None:
-        self.assertEqual(cli._fmt_bytes(0), "0 B")
-        self.assertEqual(cli._fmt_bytes(512), "512 B")
-        self.assertEqual(cli._fmt_bytes(1024), "1.0 KB")
-        self.assertEqual(cli._fmt_bytes(1536), "1.5 KB")
-        self.assertEqual(cli._fmt_bytes(1024 * 1024), "1.0 MB")
-        self.assertEqual(cli._fmt_bytes(1024 ** 3), "1.0 GB")
+class ServerConfigTest(unittest.TestCase):
+    def test_env_override_without_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env = {
+                **TEST_ENV,
+                "ATBRAINS_HOME": tmp,
+                "ATBRAINS_MARIADB_HOST": "db.internal",
+                "ATBRAINS_MARIADB_PORT": "3307",
+                "ATBRAINS_QDRANT_API_KEY": "qk-test",
+                "ATBRAINS_AGENT": "codex",
+            }
+            with mock.patch.dict(os.environ, env, clear=False):
+                cfg = resolve_config()
+            self.assertEqual(cfg["mariadb_host"], "db.internal")
+            self.assertEqual(cfg["mariadb_port"], 3307)
+            self.assertEqual(cfg["qdrant_api_key"], "qk-test")
+            self.assertEqual(cfg["embed_api_key"], "qk-test")
+            self.assertEqual(cfg["agent"], "codex")
+            st = AtbrainsStore(cfg)
+            self.assertEqual(st.agent, "codex")
+            self.assertEqual(st._vector_secrets(), {"qdrant": "qk-test", "embed": "qk-test"})
 
 
 if __name__ == "__main__":
