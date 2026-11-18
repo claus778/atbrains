@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
-"""atbrains 统一 HTTP 服务（/v1 API + /mcp + 网页控制台 /api/* + 静态页面）。
+"""atbrains 统一 HTTP 服务（/v1 API + /mcp + 网页控制台静态页面）。
 
 * 所有凭据与存储读写只在服务端进程内进行，绝不下发浏览器或客户端。
 * /v1/* 与 /mcp 使用 `service-tokens.json` 的 Bearer 令牌（按 `<machine>|<agent>` 识别身份）。
-* 网页控制台 `/api/*` 使用 `.token`（`X-Auth-Token` / `?token=`），可访问 `/v1/admin/*`。
+* 网页控制台通过 `X-Auth-Token` 请求头携带 `.token` 调用 `/v1/admin/*`。
 """
 from __future__ import annotations
 
-import hmac
 import json
 import os
 import secrets
@@ -24,10 +23,20 @@ if __package__ in (None, ""):
 from atbrains_server import __version__
 from atbrains_server.config import resolve_server_http_config
 from atbrains_server.mcp import AtbrainsMCP
-from atbrains_server.service import MemoryService
+from atbrains_server.service import BadRequest, MemoryService
 
 HERE = Path(__file__).resolve().parent
 CONSOLE_HTML = HERE / "console" / "index.html"
+
+
+class _PayloadTooLarge(ValueError):
+    pass
+
+
+class _AtbrainsHTTPServer(ThreadingHTTPServer):
+    daemon_threads = True
+    allow_reuse_address = True
+    request_queue_size = 64
 
 
 def jdump(obj: Any) -> bytes:
@@ -59,7 +68,7 @@ class ConsoleTokenStore:
 
 
 class ServerRuntime:
-    """把 MemoryService / AtbrainsMCP / AdminOps / ConsoleToken / AccessLog 绑定到一起。"""
+    """把 MemoryService / AtbrainsMCP / ConsoleToken / AccessLog 绑定到一起。"""
 
     def __init__(
         self,
@@ -81,6 +90,7 @@ class ServerRuntime:
             console_token_fn=self.console_token.get,
         )
         self.mcp = AtbrainsMCP(self.service)
+        self.max_body_bytes = max(1024, int(self.service.base_cfg.get("max_body_bytes") or 33554432))
         self.access_log_path = access_log if access_log is not None else str(http_cfg["access_log"])
         self._log_fh = None
 
@@ -126,20 +136,44 @@ def make_handler(runtime: ServerRuntime):
                 except BrokenPipeError:
                     pass
 
-        def _authed_console(self, q: dict) -> bool:
-            got = str(self.headers.get("X-Auth-Token") or (q.get("token", [""])[0]) or "")
-            expected = runtime.console_token.get()
-            return bool(got and expected and hmac.compare_digest(got.encode("utf-8"), expected.encode("utf-8")))
+        def _read_raw_body(self) -> str:
+            raw_len = self.headers.get("Content-Length")
+            if raw_len is None or not str(raw_len).strip():
+                return ""
+            try:
+                n = int(raw_len)
+            except ValueError:
+                raise BadRequest("invalid Content-Length") from None
+            if n < 0:
+                raise BadRequest("negative Content-Length")
+            if n > runtime.max_body_bytes:
+                raise _PayloadTooLarge(f"request body exceeds {runtime.max_body_bytes} bytes")
+            if n == 0:
+                return ""
+            return self.rfile.read(n).decode("utf-8", "replace")
 
         def _body(self) -> dict:
-            try:
-                n = int(self.headers.get("Content-Length") or 0)
-                return json.loads(self.rfile.read(n).decode("utf-8") or "{}")
-            except Exception:  # noqa: BLE001
+            raw = self._read_raw_body()
+            if not raw.strip():
                 return {}
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise BadRequest(f"invalid json: {exc.msg}") from None
+            if not isinstance(parsed, dict):
+                raise BadRequest("json body must be an object")
+            return parsed
 
-        def _v1(self, method: str, query: dict, body: dict):
+        def _v1(self, method: str, query: dict, read_body: bool = False):
             headers = dict(self.headers.items())
+            body: dict = {}
+            if read_body:
+                try:
+                    body = self._body()
+                except _PayloadTooLarge as exc:
+                    return self._send(413, jdump({"ok": False, "error": str(exc)}))
+                except BadRequest as exc:
+                    return self._send(400, jdump({"ok": False, "error": str(exc)}))
             flat = {k: v[0] for k, v in query.items()}
             code, payload = runtime.service.handle(method, urlparse(self.path).path, flat, body, headers)
             return self._send(code, jdump(payload))
@@ -153,15 +187,19 @@ def make_handler(runtime: ServerRuntime):
                     "error": {"code": -32001, "message": "unauthorized"},
                 }))
             try:
-                n = int(self.headers.get("Content-Length") or 0)
-                raw = self.rfile.read(n).decode("utf-8") if n else ""
+                raw = self._read_raw_body()
                 payload = json.loads(raw) if raw.strip() else None
+            except _PayloadTooLarge as exc:
+                return self._send(413, jdump({
+                    "jsonrpc": "2.0", "id": None,
+                    "error": {"code": -32600, "message": str(exc)},
+                }))
             except Exception:  # noqa: BLE001
                 return self._send(400, jdump({
                     "jsonrpc": "2.0", "id": None,
                     "error": {"code": -32700, "message": "parse error"},
                 }))
-            code, obj, extra = runtime.mcp.handle(ident.agent, payload)
+            code, obj, extra = runtime.mcp.handle(ident, payload)
             body = b"" if obj is None else jdump(obj)
             self.send_response(code)
             self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -186,61 +224,12 @@ def make_handler(runtime: ServerRuntime):
                     "error": {"code": -32000, "message": "use POST /mcp (streamable HTTP, JSON response)"},
                 }))
             if path.startswith("/v1/"):
-                return self._v1("GET", q, {})
+                return self._v1("GET", q, read_body=False)
             if path in ("/", "/index.html"):
                 if not CONSOLE_HTML.exists():
                     return self._send(404, b"index.html missing", "text/plain")
                 return self._send(200, CONSOLE_HTML.read_bytes(), "text/html; charset=utf-8")
-            if path == "/api/whoami":
-                return self._send(200, jdump({"ok": True}))
-            if not path.startswith("/api/"):
-                return self._send(404, jdump({"error": "not found"}))
-            if not self._authed_console(q):
-                return self._send(401, jdump({"error": "unauthorized", "hint": "在页面右上角填入 token"}))
-            ops = runtime.service.admin_ops()
-            try:
-                if path == "/api/overview":
-                    fresh = str(q.get("fresh", ["0"])[0]).strip().lower() in ("1", "true", "yes")
-                    return self._send(200, jdump(ops.overview(fresh=fresh)))
-                if path == "/api/memories":
-                    return self._send(200, jdump(ops.memories(
-                        limit=min(int(q.get("limit", ["100"])[0]), 500),
-                        offset=int(q.get("offset", ["0"])[0]),
-                        active=q.get("active", ["1"])[0],
-                        q=q.get("q", [""])[0],
-                        kind=q.get("kind", [""])[0],
-                        machine=q.get("machine", [""])[0],
-                        agent=q.get("agent", [""])[0],
-                    )))
-                if path == "/api/memory":
-                    return self._send(200, jdump(ops.memory_detail(int(q.get("id", ["0"])[0]))))
-                if path == "/api/turns":
-                    return self._send(200, jdump(ops.turns(
-                        limit=min(int(q.get("limit", ["40"])[0]), 300),
-                        offset=int(q.get("offset", ["0"])[0]),
-                        machine=q.get("machine", [""])[0],
-                        session_id=q.get("session_id", [""])[0],
-                        q=q.get("q", [""])[0],
-                    )))
-                if path == "/api/turn":
-                    return self._send(200, jdump(ops.turn_detail(int(q.get("id", ["0"])[0]))))
-                if path == "/api/sessions":
-                    return self._send(200, jdump(ops.sessions(
-                        limit=min(int(q.get("limit", ["100"])[0]), 500),
-                        offset=int(q.get("offset", ["0"])[0]),
-                        machine=q.get("machine", [""])[0],
-                        q=q.get("q", [""])[0],
-                    )))
-                if path == "/api/search":
-                    return self._send(200, jdump(ops.search(
-                        q.get("q", [""])[0], limit=min(int(q.get("limit", ["10"])[0]), 50))))
-                if path == "/api/recent":
-                    return self._send(200, jdump(ops.recent(limit=min(int(q.get("limit", ["20"])[0]), 100))))
-                if path == "/api/qdrant":
-                    return self._send(200, jdump(ops.qdrant_info()))
-                return self._send(404, jdump({"error": "unknown endpoint"}))
-            except Exception as e:  # noqa: BLE001
-                return self._send(500, jdump({"error": f"{type(e).__name__}: {e}"}))
+            return self._send(404, jdump({"error": "not found"}))
 
         def do_POST(self):
             u = urlparse(self.path)
@@ -248,37 +237,8 @@ def make_handler(runtime: ServerRuntime):
             if u.path == "/mcp":
                 return self._mcp()
             if u.path.startswith("/v1/"):
-                return self._v1("POST", q, self._body())
-            if not self._authed_console(q):
-                return self._send(401, jdump({"error": "unauthorized"}))
-            body = self._body()
-            ops = runtime.service.admin_ops()
-            try:
-                if u.path == "/api/remember":
-                    saved = ops.remember(
-                        (body.get("content") or "").strip(),
-                        kind=body.get("kind") or "note",
-                        tags=body.get("tags") or "",
-                        importance=int(body.get("importance") or 5),
-                    )
-                    return self._send(200, jdump({"ok": True, "saved": saved}))
-                if u.path == "/api/forget":
-                    return self._send(200, jdump({"ok": True, "result": ops.forget(int(body.get("id")))}))
-                if u.path == "/api/restore":
-                    try:
-                        result = ops.restore(int(body.get("id") or 0))
-                        return self._send(200, jdump({"ok": True, "result": result}))
-                    except Exception as e:  # noqa: BLE001
-                        return self._send(200, jdump({"ok": False, "error": str(e)}))
-                if u.path == "/api/drain":
-                    return self._send(200, jdump(ops.drain()))
-                if u.path == "/api/doctor":
-                    return self._send(200, jdump(ops.doctor()))
-                if u.path == "/api/prune":
-                    return self._send(200, jdump({"ok": True, "result": ops.prune(dry_run=bool(body.get("dry_run", True)))}))
-                return self._send(404, jdump({"error": "unknown endpoint"}))
-            except Exception as e:  # noqa: BLE001
-                return self._send(500, jdump({"error": f"{type(e).__name__}: {e}"}))
+                return self._v1("POST", q, read_body=True)
+            return self._send(404, jdump({"error": "not found"}))
 
         def do_DELETE(self):
             u = urlparse(self.path)
@@ -286,7 +246,7 @@ def make_handler(runtime: ServerRuntime):
             if u.path == "/mcp":
                 return self._send(200, b"", "text/plain")
             if u.path.startswith("/v1/"):
-                return self._v1("DELETE", q, self._body())
+                return self._v1("DELETE", q, read_body=True)
             return self._send(404, jdump({"error": "not found"}))
 
     return Handler
@@ -309,7 +269,7 @@ def create_http_server(
     )
     runtime.console_token.get()
     runtime.service.tokens.load()
-    server = ThreadingHTTPServer((host, int(port)), make_handler(runtime))
+    server = _AtbrainsHTTPServer((host, int(port)), make_handler(runtime))
     return server, runtime
 
 

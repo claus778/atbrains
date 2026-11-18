@@ -42,6 +42,7 @@ def _is_private_host(host: str) -> bool:
 _HTTP_TLS = threading.local()
 
 _HTTP_KEEPALIVE_MAX_HOSTS = 4
+_MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 
 class _KeepAliveBypass(Exception):
     """keep-alive 快路径处理不了的响应（3xx）：关连接，回落原 opener 逻辑。"""
@@ -178,7 +179,10 @@ class NetMixin:
                 conn.request(method, path, body=data, headers=hdrs)
                 resp = conn.getresponse()
                 status = int(resp.status)
-                body = resp.read().decode("utf-8", "replace")
+                raw = resp.read(_MAX_RESPONSE_BYTES + 1)
+                if len(raw) > _MAX_RESPONSE_BYTES:
+                    raise ValueError(f"upstream response exceeds {_MAX_RESPONSE_BYTES} bytes")
+                body = raw.decode("utf-8", "replace")
             except Exception as exc:  # noqa: BLE001 —— 一律先关连接：复用过的连接不可信
                 _close_quietly(conn)
                 pool.pop(key, None)
@@ -250,7 +254,10 @@ class NetMixin:
         try:
             with (opener.open(req, timeout=timeout) if opener is not None
                   else urllib.request.urlopen(req, timeout=timeout)) as resp:
-                body = resp.read().decode("utf-8", "replace")
+                raw = resp.read(_MAX_RESPONSE_BYTES + 1)
+                if len(raw) > _MAX_RESPONSE_BYTES:
+                    raise ValueError(f"upstream response exceeds {_MAX_RESPONSE_BYTES} bytes")
+                body = raw.decode("utf-8", "replace")
                 return int(resp.status), (json.loads(body) if body.strip() else {})
         except urllib.error.HTTPError as exc:
             body = exc.read().decode("utf-8", "replace")[:300]

@@ -9,25 +9,29 @@ from .config import (  # noqa: F401
     KEY_PREFIX,
     PROVIDER_NAME,
     SECRET_ENV_VARS,
-    hermes_home_path,
+    config_home_path,
     resolve_config,
     resolve_data_dir,
     resolve_server_http_config,
 )
+from .context import RequestContext, ScopedStore  # noqa: F401
 from .store import AtbrainsStore  # noqa: F401
-from .util import BrainError, BrainHTTPError  # noqa: F401
+from .util import BrainError, BrainForbidden, BrainHTTPError  # noqa: F401
 
 __all__ = [
     "__version__",
     "PROTOCOL_VERSION",
     "AtbrainsStore",
+    "RequestContext",
+    "ScopedStore",
     "BrainError",
+    "BrainForbidden",
     "BrainHTTPError",
     "DEFAULT_CONFIG",
     "KEY_PREFIX",
     "PROVIDER_NAME",
     "SECRET_ENV_VARS",
-    "hermes_home_path",
+    "config_home_path",
     "resolve_config",
     "resolve_data_dir",
     "resolve_server_http_config",

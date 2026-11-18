@@ -13,11 +13,16 @@ import time
 from ..config import (  # noqa: F401
     KEY_PREFIX,
 )
+from ..context import (
+    RequestContext,
+    owns_record,
+)
 from ..schema import (  # noqa: F401
     _is_duplicate_error,
 )
 from ..util import (  # noqa: F401
     BrainError,
+    BrainForbidden,
     _clip,
     _memory_type,
 )
@@ -34,14 +39,15 @@ class MemoriesMixin:
         return pfx + ":" + ":".join(str(p) for p in parts)
 
     def _hot_put(self, mem_id: int, kind: str, content: str, tags: str,
-                 importance: int, source: str) -> bool:
+                 importance: int, source: str,
+                 *, machine: str = "", agent: str = "") -> bool:
         r = self.redis()
         ttl = int(self.cfg["hot_ttl_days"]) * 86400
         payload = json.dumps({
             "id": mem_id, "kind": kind, "content": _clip(content, 1000),
             "tags": tags, "importance": importance, "source": source,
-            "machine": self.machine[:48],
-            "agent": self.agent,
+            "machine": (machine or self.machine)[:48],
+            "agent": agent or self.agent,
             "ts": int(time.time()),
         }, ensure_ascii=False)
         pipe = r.pipeline()
@@ -67,7 +73,8 @@ class MemoriesMixin:
 
     def remember(self, content: str, *, kind: str = "note", tags: str = "",
                  importance: int = 5, source: str = "tool",
-                 session_id: str = "", memory_type: str = "") -> dict[str, Any]:
+                 session_id: str = "", memory_type: str = "",
+                 ctx: Optional[RequestContext] = None) -> dict[str, Any]:
         # list/dict 直接 .strip() 会抛 AttributeError（调用方只看到模糊异常）；
         # 统一转成字符串，空值仍按 BrainError 处理。
         content = str(content or "").strip()
@@ -80,6 +87,7 @@ class MemoriesMixin:
         kind = (str(kind or "note").strip() or "note")[:32]
         mtype = _memory_type(kind, memory_type)
         tags = str(tags or "").strip()[:255]
+        mach, ag, _role = self._identity(ctx)
         self.ensure_schema()
         mem_id = None
         mem_vals: tuple = (kind, content, tags, importance)
@@ -92,7 +100,7 @@ class MemoriesMixin:
                     "source, session_id, machine, agent, expires_at) "
                     "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (kind, mtype, content, tags, importance, str(source or "")[:64],
-                     str(session_id or "")[:96], self.machine[:48], self.agent, expires_at),
+                     str(session_id or "")[:96], mach, ag, expires_at),
                 )
                 break
             except Exception as exc:  # noqa: BLE001
@@ -120,7 +128,7 @@ class MemoriesMixin:
         hot_ok = False
         try:
             hot_ok = self._hot_put(int(mem_id), mem_vals[0], mem_vals[1], mem_vals[2], mem_vals[3],
-                                   str(source or ""))
+                                   str(source or ""), machine=mach, agent=ag)
         except Exception as exc:  # noqa: BLE001
             logger.debug("atbrains: Redis 热点镜像失败: %s", exc)
         self._invalidate_caches(vec_dirty=True)
@@ -128,13 +136,20 @@ class MemoriesMixin:
         return {"id": mem_id, "kind": mem_vals[0], "importance": mem_vals[3],
                 "memory_type": mtype, "hot_cache": hot_ok, "deduped": deduped}
 
-    def deactivate_by_content(self, content: str) -> int:
+    def deactivate_by_content(self, content: str, *, ctx: Optional[RequestContext] = None) -> int:
         content = str(content or "")
         if not content.strip():
             return 0
         self.ensure_schema()
-        rows = self._exec(
-            "SELECT id FROM brain_memories WHERE active = 1 AND content = %s", (content,), fetch=True)
+        mach, ag, role = self._identity(ctx)
+        if role == "admin":
+            rows = self._exec(
+                "SELECT id FROM brain_memories WHERE active = 1 AND content = %s", (content,), fetch=True)
+        else:
+            rows = self._exec(
+                "SELECT id FROM brain_memories WHERE active = 1 AND content = %s "
+                "AND agent = %s AND (machine = %s OR machine = '' OR machine = 'server')",
+                (content, ag, mach), fetch=True)
         ids = [r["id"] for r in rows]
         if not ids:
             return 0
@@ -155,31 +170,39 @@ class MemoriesMixin:
         self._wake_drainer()
         return rowcount
 
-    def forget(self, mem_id: int) -> dict[str, Any]:
+    def forget(self, mem_id: int, *, ctx: Optional[RequestContext] = None) -> dict[str, Any]:
         self.ensure_schema()
+        mid = int(mem_id)
+        if ctx is not None and ctx.role != "admin":
+            rows = self._exec(
+                "SELECT id, machine, agent FROM brain_memories WHERE id = %s", (mid,), fetch=True)
+            if rows and not owns_record(ctx, rows[0]):
+                raise BrainForbidden("无权停用其他身份的记忆")
         rowcount, _ = self._exec(
             "UPDATE brain_memories SET active = 0, deactivated_at = CURRENT_TIMESTAMP "
-            "WHERE id = %s AND active = 1", (int(mem_id),))
+            "WHERE id = %s AND active = 1", (mid,))
         try:
             r = self.redis()
-            r.delete(self._rk("hot", mem_id))
-            r.zrem(self._rk("hot", "index"), str(mem_id))
+            r.delete(self._rk("hot", mid))
+            r.zrem(self._rk("hot", "index"), str(mid))
         except Exception:  # noqa: BLE001
             pass
         self._invalidate_caches(vec_dirty=True)
         self._wake_drainer()
-        return {"id": int(mem_id), "deactivated": rowcount}
+        return {"id": mid, "deactivated": rowcount}
 
-    def restore(self, mem_id: int) -> dict[str, Any]:
+    def restore(self, mem_id: int, *, ctx: Optional[RequestContext] = None) -> dict[str, Any]:
         """恢复一条被停用的记忆（active=0 → 1），并补回 Redis 热点镜像与唤醒向量化。"""
         self.ensure_schema()
         mid = int(mem_id)
         rows = self._exec(
-            "SELECT id, active, kind, content, tags, importance, source "
+            "SELECT id, active, kind, content, tags, importance, source, machine, agent "
             "FROM brain_memories WHERE id = %s", (mid,), fetch=True)
         if not rows:
             raise BrainError(f"记忆 #{mid} 不存在")
         row = rows[0]
+        if ctx is not None and ctx.role != "admin" and not owns_record(ctx, row):
+            raise BrainForbidden("无权恢复其他身份的记忆")
         if row["active"]:
             return {"id": mid, "restored": 0, "note": "该条已是活跃状态"}
         dup = self._exec(
@@ -192,8 +215,11 @@ class MemoriesMixin:
             (mid,))
         hot_ok = False
         try:
-            hot_ok = self._hot_put(mid, row["kind"], row["content"], row["tags"],
-                                   int(row["importance"]), str(row.get("source") or "restore"))
+            hot_ok = self._hot_put(
+                mid, row["kind"], row["content"], row["tags"],
+                int(row["importance"]), str(row.get("source") or "restore"),
+                machine=str(row.get("machine") or ""), agent=str(row.get("agent") or ""),
+            )
         except Exception:  # noqa: BLE001
             pass
         self._invalidate_caches(vec_dirty=True)

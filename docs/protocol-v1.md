@@ -11,10 +11,10 @@
   唯一例外：`GET/POST /v1/health` 免令牌。
 - 令牌决定身份，**客户端不能在 body 里伪造 `machine` / `agent`**。
   令牌名规范写法 `<主机>|<agent>`（例如 `laptop|codex`、`bot-host|astrbot`）：
-  - `/v1`：左 = `machine`，右 = `agent`
-  - `/mcp`：只取右 = `agent`，`machine` 恒为服务端主机
-  - 不含 `|` 的历史令牌名：`/v1` 名字即 `machine`、agent 默认 `hermes`；`/mcp` 名字即 `agent`
-  - 令牌角色 `role`：`agent`（常规读写/召回）| `admin`（允许调用 `/v1/admin/*` 与管理令牌）
+  - `/v1` 与 `/mcp` 统一按左 = `machine`、右 = `agent` 解析
+  - 不含 `|` 的令牌名：`machine` = 令牌名，`agent` = 令牌名（`admin` 默认为 `"admin"`）
+  - 令牌角色 `role`：`agent`（读共享记忆/主张/情节；修改/删改及原始 `turn_detail`/最近对话流仅限本身份）| `admin`（全库读写 + `/v1/admin/*` 与管理令牌）
+  - 控制台鉴权仅支持 `X-Auth-Token` 请求头（不再接受 URL `?token=` 或 `/api/*`）
 - 时间一律 UTC。字符集 utf8mb4。
 
 ## 版本
@@ -60,13 +60,17 @@
 
 | 方法 | 路径 | 用途 |
 |---|---|---|
-| GET | `/v1/admin/overview` | 存储统计 / ping / 向量覆盖 / 容器与 Qdrant 状态 |
+| GET | `/v1/admin/overview` | 存储统计 / ping / 向量覆盖 / Qdrant 状态 |
 | GET | `/v1/admin/memories` | 分页检索记忆列表 |
 | GET | `/v1/admin/memory` | 单条记忆详情 (`?id=`) |
 | GET | `/v1/admin/turns` | 分页检索对话归档 |
 | GET | `/v1/admin/turn` | 单轮归档详情 (`?id=`) |
 | GET | `/v1/admin/sessions` | 分页会话索引 |
+| GET | `/v1/admin/recent` | Redis 热点镜像与最近对话流 (`?limit=`) |
 | GET | `/v1/admin/search` | 管理侧混合检索 |
+| POST | `/v1/admin/remember` | 管理台写入长期记忆 |
+| POST | `/v1/admin/forget` | 管理台停用记忆 (`{id}`) |
+| POST | `/v1/admin/restore` | 管理台恢复记忆 (`{id}`) |
 | POST | `/v1/admin/drain` | 触发向量回填 (`{force?, max_items?}`) |
 | POST | `/v1/admin/doctor` | 服务端体检 |
 | POST | `/v1/admin/prune` | 清理过期/旧数据 (`{dry_run?}`) |
@@ -80,8 +84,9 @@
 
 | 状态 | 含义 | 客户端行为 |
 |---|---|---|
-| 400 | 参数非法 | 不重试，进 deadletter 或报错 |
+| 400 | 参数非法或 JSON 语法错误 | 不重试，进 deadletter 或报错 |
 | 401 | 令牌缺失或无效 | 不重试，检查令牌 |
-| 403 | 非 admin 令牌调 `/v1/admin/*` | 不重试 |
+| 403 | 越权访问其他身份转录/修改数据，或非 admin 调 `/v1/admin/*` | 不重试 |
 | 404 | 路径不存在 | 检查 baseUrl |
+| 413 | 请求体超过 `max_body_bytes` 上限 | 不重试 |
 | 500 / 502 / 503 | 服务端故障 | 写请求入离线队列，读请求降级无记忆 |

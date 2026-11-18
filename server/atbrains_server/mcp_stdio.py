@@ -19,8 +19,10 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from atbrains_server.config import resolve_config
+from atbrains_server.context import RequestContext, ScopedStore
 from atbrains_server.mcp import MCP_PROTOCOLS, PROMPTS, RESOURCES, SERVER_INFO, TOOLS, AtbrainsMCP
 from atbrains_server.store import AtbrainsStore
+from atbrains_server.tokens import TokenIdentity
 
 SERVER_NAME = "atbrains-mcp"
 
@@ -30,13 +32,13 @@ def _stderr(msg: str) -> None:
 
 
 class LocalService:
-    """stdio 模式下的 store 工厂：按 agent 缓存一个 store（不启重复后台线程）。"""
+    """stdio 模式下的单引擎封装（本机可信通道，按 stdio 身份生成 ScopedStore）。"""
 
     def __init__(self, config_home: Optional[str] = None, agent: str = "stdio") -> None:
         self._home = config_home
         self._default_agent = agent
         self._config: Optional[dict[str, Any]] = None
-        self._stores: dict[str, AtbrainsStore] = {}
+        self._engine: Optional[AtbrainsStore] = None
 
     @property
     def config(self) -> dict[str, Any]:
@@ -44,17 +46,19 @@ class LocalService:
             self._config = dict(resolve_config(self._home))
         return self._config
 
-    def store_for(self, machine: str = "", agent: str = "default") -> AtbrainsStore:
+    @property
+    def engine(self) -> AtbrainsStore:
+        if self._engine is None:
+            self._engine = AtbrainsStore(dict(self.config), start_workers=False)
+        return self._engine
+
+    def store_for_identity(self, ident: TokenIdentity) -> ScopedStore:
+        ctx = RequestContext(machine=ident.machine, agent=ident.agent, role=ident.role)
+        return ScopedStore(self.engine, ctx)
+
+    def store_for(self, machine: str = "", agent: str = "default") -> ScopedStore:
         who = (agent or self._default_agent or "stdio").strip().lower()[:32] or "stdio"
-        store = self._stores.get(who)
-        if store is None:
-            cfg = dict(self.config)
-            cfg["agent"] = who
-            if machine:
-                cfg["machine"] = machine
-            store = AtbrainsStore(cfg, start_workers=False)
-            self._stores[who] = store
-        return store
+        return ScopedStore(self.engine, RequestContext(machine=machine, agent=who, role="admin"))
 
 
 def _write(obj: Any) -> None:

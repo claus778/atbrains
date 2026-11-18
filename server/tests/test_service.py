@@ -19,11 +19,13 @@ for p in (str(ROOT), str(SDK_DIR)):
         sys.path.insert(0, p)
 
 from atbrains_client.schemas import TOOLS as SDK_TOOLS  # noqa: E402
+from atbrains_server.context import RequestContext, owns_record  # noqa: E402
 from atbrains_server.http import ServerRuntime, make_handler  # noqa: E402
 from atbrains_server.mcp import AtbrainsMCP  # noqa: E402
 from atbrains_server.service import MemoryService  # noqa: E402
 from atbrains_server.tokens import TokenStore  # noqa: E402
 from atbrains_server.tools_registry import TOOLS as SERVER_TOOLS  # noqa: E402
+from atbrains_server.util import BrainForbidden  # noqa: E402
 
 
 class FakeStore:
@@ -58,36 +60,43 @@ class FakeStore:
 
     def remember(self, content: str, *, kind: str = "note", tags: str = "",
                  importance: int = 5, source: str = "tool",
-                 session_id: str = "", memory_type: str = "") -> dict:
+                 session_id: str = "", memory_type: str = "",
+                 ctx: RequestContext | None = None) -> dict:
         mid = len(self.memories) + 1
         rec = {
             "id": mid, "kind": kind, "memory_type": memory_type or "episodic",
             "content": content, "tags": tags, "importance": importance,
-            "source": source, "machine": self.machine, "agent": self.agent,
+            "source": source,
+            "machine": (ctx.machine if ctx and ctx.machine else self.machine),
+            "agent": (ctx.agent if ctx else self.agent),
             "active": 1,
         }
         self.memories.append(rec)
         return {"id": mid, "kind": kind, "importance": importance,
                 "memory_type": rec["memory_type"], "hot_cache": True, "deduped": False}
 
-    def forget(self, mem_id: int) -> dict:
+    def forget(self, mem_id: int, *, ctx: RequestContext | None = None) -> dict:
         for m in self.memories:
             if m["id"] == mem_id:
+                if ctx is not None and not owns_record(ctx, m):
+                    raise BrainForbidden("无权停用其他身份的记忆")
                 m["active"] = 0
                 return {"id": mem_id, "deactivated": 1}
         return {"id": mem_id, "deactivated": 0}
 
-    def restore(self, mem_id: int) -> dict:
+    def restore(self, mem_id: int, *, ctx: RequestContext | None = None) -> dict:
         for m in self.memories:
             if m["id"] == mem_id:
+                if ctx is not None and not owns_record(ctx, m):
+                    raise BrainForbidden("无权恢复其他身份的记忆")
                 m["active"] = 1
                 return {"id": mem_id, "restored": 1}
         return {"id": mem_id, "restored": 0}
 
-    def deactivate_by_content(self, content: str) -> int:
+    def deactivate_by_content(self, content: str, *, ctx: RequestContext | None = None) -> int:
         n = 0
         for m in self.memories:
-            if m["content"] == content and m["active"] == 1:
+            if m["content"] == content and m["active"] == 1 and owns_record(ctx, m):
                 m["active"] = 0
                 n += 1
         return n
@@ -101,8 +110,8 @@ class FakeStore:
     def top_memories(self, limit: int = 8, *, kind=None, agent=None) -> list[dict]:
         return [m for m in self.memories if m.get("active", 1)][:limit]
 
-    def search_turns(self, query: str, *, limit: int = 3) -> list[dict]:
-        return self.turns[:limit]
+    def search_turns(self, query: str, *, limit: int = 3, ctx: RequestContext | None = None) -> list[dict]:
+        return [t for t in self.turns if owns_record(ctx, t)][:limit]
 
     def prefetch_block(self, query: str, *, session_id: str = "", with_hits: bool = False, **kw):
         hits = [{"id": m["id"], "kind": m["kind"], "preview": m["content"]} for m in self.memories[:3]]
@@ -117,49 +126,78 @@ class FakeStore:
     def hot_recent(self, limit: int = 5) -> list[dict]:
         return self.memories[-limit:]
 
-    def recent_turns(self, limit: int = 10) -> list[dict]:
-        return self.turns[-limit:]
+    def recent_turns(self, limit: int = 10, *, ctx: RequestContext | None = None) -> list[dict]:
+        return [t for t in self.turns if owns_record(ctx, t)][-limit:]
 
-    def record_turn(self, session_id: str, user_content: str, assistant_content: str, **kw) -> int:
+    def record_turn(self, session_id: str, user_content: str, assistant_content: str,
+                    *, ctx: RequestContext | None = None, **kw) -> int:
         tid = len(self.turns) + 1
-        self.turns.append({"id": tid, "session_id": session_id, "user": user_content,
-                           "assistant": assistant_content, "machine": self.machine})
+        self.turns.append({
+            "id": tid, "session_id": session_id, "user": user_content,
+            "assistant": assistant_content,
+            "machine": (ctx.machine if ctx and ctx.machine else self.machine),
+            "agent": (ctx.agent if ctx else self.agent),
+        })
         return tid
 
     def get_session_cursor(self, session_id: str) -> int:
         return len(self.turns)
 
-    def turn_detail(self, turn_id: int = 0, *, session_id: str = "", max_chars: int = 1500) -> dict:
-        return {"found": True, "turn": {"id": turn_id or 1, "session_id": session_id}, "messages": [], "stored": 0}
+    def turn_detail(self, turn_id: int = 0, *, session_id: str = "", max_chars: int = 1500,
+                    ctx: RequestContext | None = None) -> dict:
+        tid = turn_id or 1
+        for t in self.turns:
+            if t["id"] == tid and not owns_record(ctx, t):
+                raise BrainForbidden("无权读取其他身份的对话转录")
+        return {"found": True, "turn": {"id": tid, "session_id": session_id}, "messages": [], "stored": 0}
 
-    def archive(self, session_id: str, kind: str, payload: str, *, platform: str = "") -> int:
+    def archive(self, session_id: str, kind: str, payload: str, *, platform: str = "",
+                ctx: RequestContext | None = None) -> int:
         self.archives.append({"session_id": session_id, "kind": kind, "payload": payload})
         return len(self.archives)
 
-    def touch_session(self, session_id: str, platform: str = "") -> None:
+    def touch_session(self, session_id: str, platform: str = "", ctx: RequestContext | None = None) -> None:
         pass
 
-    def claim_remember(self, subject: str, predicate: str, value: str, **kw) -> dict:
-        self.claims.append({"claim_id": len(self.claims) + 1, "subject": subject,
-                            "predicate": predicate, "value_text": value, "revision": 1})
+    def claim_remember(self, subject: str, predicate: str, value: str,
+                       *, ctx: RequestContext | None = None, **kw) -> dict:
+        self.claims.append({
+            "claim_id": len(self.claims) + 1, "subject": subject,
+            "predicate": predicate, "value_text": value, "revision": 1,
+            "machine": (ctx.machine if ctx and ctx.machine else self.machine),
+            "agent": (ctx.agent if ctx else self.agent),
+        })
         return self.claims[-1]
 
     def claim_recall(self, **kw) -> list[dict]:
         return list(self.claims)
 
-    def claim_retire(self, claim_id: int, reason: str = "") -> dict:
+    def claim_retire(self, claim_id: int, reason: str = "", ctx: RequestContext | None = None) -> dict:
+        for c in self.claims:
+            if c["claim_id"] == claim_id and not owns_record(ctx, c, allow_shared=True):
+                raise BrainForbidden("无权撤回其他身份的主张")
         return {"claim_id": claim_id, "retracted": 1, "reason": reason}
 
-    def episode_set(self, turn_id: int, **kw) -> dict:
+    def episode_set(self, turn_id: int, *, ctx: RequestContext | None = None, **kw) -> dict:
         self.episodes[turn_id] = {"turn_id": turn_id, **{k: v for k, v in kw.items() if v is not None}}
         return {"turn_id": turn_id, "updated": True}
 
-    def episode_get(self, turn_id: int = 0, *, session_id: str = "") -> dict:
+    def episode_get(self, turn_id: int = 0, *, session_id: str = "",
+                    ctx: RequestContext | None = None) -> dict:
         ep = self.episodes.get(turn_id)
         return {"found": bool(ep), **(ep or {})}
 
-    def open_episodes(self, limit: int = 5) -> list[dict]:
+    def open_episodes(self, limit: int = 5, *, ctx: RequestContext | None = None) -> list[dict]:
         return list(self.episodes.values())[:limit]
+
+    def overview(self, *, fresh: bool = False) -> dict:
+        return {"ts": "2026-01-01 00:00:00", "version": "2.1.0", "stats": self.stats(), "ping": self.ping()}
+
+    def recent(self, limit: int = 20, *, ctx: RequestContext | None = None) -> dict:
+        return {"hot": self.hot_recent(limit), "turns": self.recent_turns(limit, ctx=ctx)}
+
+    def quick_counts(self) -> dict:
+        return {"memories_active": len(self.memories), "turns": len(self.turns)}
 
 
 class ParityTest(unittest.TestCase):
@@ -186,7 +224,7 @@ class TokenStoreTest(unittest.TestCase):
             ident_srv = ts.authorize({"Authorization": f"Bearer {srv_tok}"}, channel="v1")
             self.assertIsNotNone(ident_srv)
             assert ident_srv
-            self.assertEqual((ident_srv.machine, ident_srv.agent, ident_srv.role), ("server", "hermes", "admin"))
+            self.assertEqual((ident_srv.machine, ident_srv.agent, ident_srv.role), ("server", "admin", "admin"))
 
             ident_cdx = ts.authorize({"Authorization": f"Bearer {codex_tok}"}, channel="v1")
             assert ident_cdx
@@ -194,7 +232,7 @@ class TokenStoreTest(unittest.TestCase):
 
             ident_mcp = ts.authorize({"Authorization": f"Bearer {codex_tok}"}, channel="mcp")
             assert ident_mcp
-            self.assertEqual((ident_mcp.machine, ident_mcp.agent), ("", "codex"))
+            self.assertEqual((ident_mcp.machine, ident_mcp.agent), ("laptop", "codex"))
 
             ident_adm = ts.authorize({"Authorization": f"Bearer {admin_tok}"}, channel="v1")
             assert ident_adm
@@ -300,6 +338,63 @@ class HttpAndMcpServiceTest(unittest.TestCase):
                 )
                 self.assertEqual(code, 200)
                 self.assertFalse(mcp_ctx["result"]["isError"])
+
+                # 5. /mcp 保留 machine 身份 + 跨 agent 隔离与越权阻断 + HTTP 边界保护
+                code, mcp_rem = self._req(
+                    p, "POST", "/mcp",
+                    {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+                     "params": {"name": "atbrains_remember", "arguments": {"content": "from mcp", "kind": "fact"}}},
+                    hdr_agent,
+                )
+                self.assertEqual(code, 200)
+                self.assertEqual(svc.engine.memories[-1]["machine"], "macbook")
+
+                other_tok = svc.tokens.add("other|astrbot")
+                hdr_other = {"Authorization": f"Bearer {other_tok}"}
+                # 非 admin agent 不能停用别人的记忆 (403)
+                code, _ = self._req(p, "POST", "/v1/memory/forget", {"id": 1}, hdr_other)
+                self.assertEqual(code, 403)
+                # admin 可以停用 (200)
+                code, _ = self._req(p, "POST", "/v1/memory/forget", {"id": 1}, {"Authorization": f"Bearer {srv_tok}"})
+                self.assertEqual(code, 200)
+
+                # 废弃 /api/* 路由已下线 + 禁止 ?token= URL 参数传口令
+                code, _ = self._req(p, "GET", f"/api/overview?token={console_tok}")
+                self.assertEqual(code, 404)
+                code, _ = self._req(p, "GET", f"/v1/admin/overview?token={console_tok}")
+                self.assertEqual(code, 401)
+                code, ov = self._req(p, "GET", "/v1/admin/overview", headers={"X-Auth-Token": console_tok})
+                self.assertEqual(code, 200)
+                self.assertTrue(ov["ok"])
+
+                # 畸形 JSON 必须报 400 invalid json，而不是静默变空对象
+                req = urllib.request.Request(
+                    f"http://127.0.0.1:{p}/v1/memory/remember",
+                    data=b"{bad json",
+                    headers={**hdr_agent, "Content-Type": "application/json"},
+                    method="POST",
+                )
+                opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+                try:
+                    opener.open(req, timeout=5)
+                    self.fail("expected 400")
+                except urllib.error.HTTPError as exc:
+                    self.assertEqual(exc.code, 400)
+                    err_body = json.loads(exc.read().decode())
+                    self.assertIn("invalid json", err_body["error"])
+                # 超大 Content-Length 必须被 413 拒之门外
+                rt.max_body_bytes = 64
+                req_big = urllib.request.Request(
+                    f"http://127.0.0.1:{p}/v1/memory/remember",
+                    data=b'{"content": "' + b"x" * 128 + b'"}',
+                    headers={**hdr_agent, "Content-Type": "application/json"},
+                    method="POST",
+                )
+                try:
+                    opener.open(req_big, timeout=5)
+                    self.fail("expected 413")
+                except urllib.error.HTTPError as exc:
+                    self.assertEqual(exc.code, 413)
             finally:
                 httpd.shutdown()
                 httpd.server_close()

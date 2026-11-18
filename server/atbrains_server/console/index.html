@@ -305,14 +305,6 @@ let lastTick = Date.now();
 /* ── token ── */
 let TOK = '';
 try { TOK = localStorage.getItem('atbrains_token') || ''; } catch (e) {}
-try {
-  const um = location.search.match(/[?&]token=([^&]+)/);
-  if (um) {
-    TOK = decodeURIComponent(um[1]).trim();
-    try { localStorage.setItem('atbrains_token', TOK); } catch (e) {}
-    history.replaceState(null, '', location.pathname);
-  }
-} catch (e) {}
 if (TOK) $('#tok').value = TOK;
 
 function saveTok() {
@@ -327,9 +319,7 @@ function toast(msg, ms = 4200) { const t = $('#toast'); t.textContent = msg; t.c
   clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), ms); }
 
 async function api(path, opts = {}) {
-  const sep = path.includes('?') ? '&' : '?';
-  const r = await fetch(path + (path.startsWith('/api') ? sep + 'token=' + encodeURIComponent(TOK) : ''),
-                        {headers: {'X-Auth-Token': TOK, ...(opts.headers || {})}, ...opts});
+  const r = await fetch(path, {headers: {'X-Auth-Token': TOK, ...(opts.headers || {})}, ...opts});
   if (!r.ok) throw new Error((await r.text()).slice(0, 300));
   return r.json();
 }
@@ -354,7 +344,7 @@ function enterQuick(e) { if (e.key === 'Enter') { e.preventDefault(); quick('det
 async function refresh(manual) {
   if (!TOK) { $('#conn').innerHTML = '<span class="dot warn"></span>请输入 token'; return; }
   try {
-    const d = await api('/api/overview');
+    const d = await api('/v1/admin/overview');
     $('#conn').innerHTML = '<span class="dot ok"></span>已连接 · ' + esc(d.ts);
     $('#ver').textContent = d.version ? ('v' + d.version) : '';
     collapseTok();
@@ -366,55 +356,47 @@ async function refresh(manual) {
     if (manual) toast('刷新失败:' + cut(msg, 160));
   }
 }
-function contLine(name, list) {
-  const c = (list || []).find(x => x.name === name);
-  if (!c) return `<div class="kv"><span>容器</span><b style="color:var(--bad)">未运行</b></div>`;
-  return `<div class="kv"><span>容器</span><b style="color:${c.up ? 'var(--ok)' : 'var(--bad)'}">
-    ${c.up ? '运行中' : '已停止'}${c.restarts !== '0' && c.restarts !== '?' ? ` · 重启 ${c.restarts} 次` : ''}</b></div>`;
-}
 function renderCards(d) {
   const st = (d.stats && d.stats.mysql) || {}, rd = (d.stats && d.stats.redis) || {};
-  const q = d.qdrant || {}, v = d.vector || {}, tm = d.timer || {};
+  const q = d.qdrant || {}, v = d.vector || {}, ping = d.ping || {};
   const cov = q.coverage || {};
   const cards = [];
 
   cards.push(`<div class="card"><h3>长期层 · MariaDB</h3>
     <div class="big">${st.memories_active ?? '?'}<span class="sub"> / ${st.memories_total ?? '?'} 条记忆</span></div>
+    <div class="kv"><span>连通状态</span><b style="color:${ping.mariadb ? 'var(--ok)' : 'var(--bad)'}">${ping.mariadb ? '正常' : '异常'}</b></div>
     <div class="kv"><span>对话轮次</span><b>${st.turns ?? '?'}</b></div>
     <div class="kv"><span>会话</span><b>${st.sessions ?? '?'}</b></div>
-    <div class="kv"><span>库大小</span><b>${((st.size_bytes || 0) / 1048576).toFixed(2)} MB</b></div>
-    ${contLine('mariadb', d.containers)}</div>`);
+    <div class="kv"><span>库大小</span><b>${((st.size_bytes || 0) / 1048576).toFixed(2)} MB</b></div></div>`);
 
   cards.push(`<div class="card"><h3>短期层 · Redis</h3>
     <div class="big">${rd.keys ?? '?'}<span class="sub"> keys</span></div>
+    <div class="kv"><span>连通状态</span><b style="color:${ping.redis ? 'var(--ok)' : 'var(--bad)'}">${ping.redis ? '正常' : '异常'}</b></div>
     <div class="kv"><span>对话流</span><b>${rd.recent_stream ?? '?'}</b></div>
     <div class="kv"><span>热点索引</span><b>${rd.hot_index ?? '?'}</b></div>
-    <div class="kv"><span>内存占用</span><b>${esc(normMem(rd.used_memory))}</b></div>
-    ${contLine('redis', d.containers)}</div>`);
+    <div class="kv"><span>内存占用</span><b>${esc(normMem(rd.used_memory))}</b></div></div>`);
 
   let covBar = '';
   if (cov.active_memories != null && cov.with_vector != null) {
     const pct = cov.active_memories === 0 ? 100 : Math.round(100 * cov.with_vector / cov.active_memories);
+    const missN = cov.missing_count != null ? cov.missing_count : (cov.missing || []).length;
     covBar = `<div class="bar"><i style="width:${pct}%;background:${pct >= 100 ? 'var(--ok)' : 'var(--warn)'}"></i></div>
-      <div class="sub" style="color:${pct >= 100 ? 'var(--ok)' : 'var(--warn)'}">${pct >= 100 ? '全部已向量化' : '缺 ' + (cov.missing || []).length + ' 条待回填'}</div>`;
+      <div class="sub" style="color:${pct >= 100 ? 'var(--ok)' : 'var(--warn)'}">${pct >= 100 ? '全部已向量化' : '缺 ' + missN + ' 条待回填'}</div>`;
   }
   cards.push(`<div class="card"><h3>向量层 · Qdrant</h3>
     <div class="big">${q.points ?? '?'}<span class="sub"> 个向量</span></div>
     <div class="kv"><span>维度 / 距离</span><b>${q.dim ?? '?'} / ${esc(q.distance || '?')}</b></div>
     <div class="kv"><span>集合状态</span><b>${esc(q.status || q.error || '?')}</b></div>
     <div class="kv"><span>覆盖率</span><b>${cov.with_vector ?? '?'} / ${cov.active_memories ?? '?'}</b></div>
-    ${covBar}
-    ${contLine('qdrant', d.containers)}</div>`);
+    ${covBar}</div>`);
 
-  const next = tm.nextRun ? shortTS(tm.nextRun)
-    : (tm.NextElapseUSecRealtime ? shortTS(tm.NextElapseUSecRealtime) : '?');
-  cards.push(`<div class="card"><h3>自动化</h3>
+  cards.push(`<div class="card"><h3>服务端</h3>
     <div class="big" style="font-size:17px">
-      <span class="pill ${tm.ActiveState === 'active' ? 'on' : 'off'}">${esc(tm.ActiveState || '?')}</span>
-      <span class="sub">${tm.UnitFileState === 'enabled' ? '开机自启' : '未自启'}</span></div>
-    <div class="kv"><span>上次运行</span><b>${esc(shortTS(tm.lastRun))}</b></div>
-    <div class="kv"><span>下次运行</span><b>${esc(next)}</b></div>
-    <div class="kv"><span>上次退出码</span><b class="${tm.lastExit === '0' ? '' : 'warnc'}">${esc(tm.lastExit ?? '?')}</b></div>
+      <span class="pill ${v.enabled ? 'on' : 'off'}">${v.enabled ? '向量启用' : '向量关闭'}</span>
+      <span class="sub">${esc(d.server_version || '')}</span></div>
+    <div class="kv"><span>协议版本</span><b>${esc(d.version || '?')}</b></div>
+    <div class="kv"><span>活跃主张</span><b>${st.claims_active ?? '?'}</b></div>
+    <div class="kv"><span>情节 / 图谱边</span><b>${st.episodes ?? '?'} / ${st.graph_edges ?? '?'}</b></div>
     <div class="kv"><span>嵌入模型</span><b>${esc(String(v.embed_model || '?').split('/').pop())}</b></div></div>`);
 
   $('#cards').innerHTML = cards.join('');
@@ -464,7 +446,7 @@ async function loadMem() {
   try {
     const q = encodeURIComponent($('#mq').value.trim());
     S.mem.limit = +$('#mlimit').value;
-    const d = await api(`/api/memories?limit=${S.mem.limit}&offset=${S.mem.offset}` +
+    const d = await api(`/v1/admin/memories?limit=${S.mem.limit}&offset=${S.mem.offset}` +
       `&active=${$('#mactive').value}&kind=${encodeURIComponent($('#mkind').value)}&q=${q}` +
       `&agent=${encodeURIComponent($('#magent').value.trim())}`);
     S.mem.total = d.total;
@@ -498,7 +480,7 @@ async function loadTurns() {
   $('#tcnt').textContent = '加载中…';
   try {
     S.turn.limit = +$('#tlimit').value;
-    const d = await api(`/api/turns?limit=${S.turn.limit}&offset=${S.turn.offset}` +
+    const d = await api(`/v1/admin/turns?limit=${S.turn.limit}&offset=${S.turn.offset}` +
       `&machine=${encodeURIComponent($('#tmachine').value.trim())}` +
       `&session_id=${encodeURIComponent(S.turn.session_id)}` +
       `&q=${encodeURIComponent($('#tq').value.trim())}`);
@@ -536,7 +518,7 @@ async function loadSess() {
   $('#scnt').textContent = '加载中…';
   try {
     S.sess.limit = +$('#slimit').value;
-    const d = await api(`/api/sessions?limit=${S.sess.limit}&offset=${S.sess.offset}` +
+    const d = await api(`/v1/admin/sessions?limit=${S.sess.limit}&offset=${S.sess.offset}` +
       `&machine=${encodeURIComponent($('#smachine').value.trim())}` +
       `&q=${encodeURIComponent($('#sq2').value.trim())}`);
     S.sess.total = d.total; S.sess.items = d.items;
@@ -558,7 +540,7 @@ async function loadSess() {
 async function loadRecent(manual) {
   if (!TOK) return;
   try {
-    const d = await api('/api/recent?limit=20');
+    const d = await api('/v1/admin/recent?limit=20');
     const hot = d.hot || [], trn = d.turns || [];
     $('#rcnt').textContent = `热点 ${hot.length} 条 · 流 ${trn.length} 条`;
     $('#rhot').innerHTML = hot.map(h => `<div class="litem">
@@ -581,7 +563,7 @@ async function doSearch() {
   if (!q) return;
   $('#sres').innerHTML = '<div class="muted">检索中…(向量嵌入可能需要几秒)</div>';
   try {
-    const d = await api('/api/search?limit=12&q=' + encodeURIComponent(q));
+    const d = await api('/v1/admin/search?limit=12&q=' + encodeURIComponent(q));
     const mem = d.memories || [], trn = d.turns || [];
     $('#sres').innerHTML = `
       <div class="card"><h3>命中记忆 (${mem.length})</h3>
@@ -603,26 +585,26 @@ async function doSearch() {
 function setActout(t) { const el = $('#actout'); el.style.display = 'block'; el.textContent = t; }
 async function doDrain() {
   setActout('$ 立即回填向量\n⏳ 回填中…(可能数秒到数分钟,请稍候)');
-  const d = await post('/api/drain');
-  setActout('$ 立即回填向量\n' + ((d.out || d.err || '(无输出)') + (d.ok ? '\n✅ 完成' : '\n❌ 失败(退出码 ' + d.code + ')')));
+  const d = await post('/v1/admin/drain');
+  setActout('$ 立即回填向量\n' + JSON.stringify(d, null, 2));
   toast(d.ok ? '向量回填完成' : '向量回填异常'); refresh();
 }
 async function doDoctor() {
   setActout('$ 系统体检\n⏳ 执行中…');
-  const d = await post('/api/doctor');
-  setActout('$ 系统体检\n' + ((d.out || '') + (d.err || '') || '(无输出)'));
+  const d = await post('/v1/admin/doctor');
+  setActout('$ 系统体检\n' + JSON.stringify(d, null, 2).slice(0, 4000));
   toast(d.ok ? '体检完成' : '体检有异常'); refresh();
 }
 async function doPrune() {
   setActout('$ 归档清理预演\n⏳ 执行中…');
-  const d = await post('/api/prune', {dry_run: true});
+  const d = await post('/v1/admin/prune', {dry_run: true});
   setActout('$ 归档清理预演(不写库)\n' + JSON.stringify(d.result ?? d, null, 2).slice(0, 4000));
   toast('预演完成');
 }
 async function doRemember() {
   const content = $('#newc').value.trim();
   if (!content) { toast('内容不能为空'); return; }
-  const d = await post('/api/remember', {content, kind: $('#newk').value,
+  const d = await post('/v1/admin/remember', {content, kind: $('#newk').value,
     importance: +$('#newi').value, tags: $('#newt').value});
   toast(`已保存 id=${d.saved && d.saved.id} · 向量将在 3 分钟内自动补齐`);
   $('#newc').value = ''; $('#newt').value = '';
@@ -630,12 +612,12 @@ async function doRemember() {
 }
 async function doForget(id) {
   if (!confirm('停用记忆 #' + id + '?(软删除,记录保留,可随时恢复)')) return;
-  await post('/api/forget', {id});
+  await post('/v1/admin/forget', {id});
   toast('已停用 #' + id + ' · 软删除,记录保留');
   closeModal(); loadMem(); refresh();
 }
 async function doRestore(id) {
-  const d = await post('/api/restore', {id});
+  const d = await post('/v1/admin/restore', {id});
   if (d.ok === false) { toast('恢复失败:' + (d.error || '')); return; }
   toast('已恢复 #' + id + (d.result && d.result.note ? ' · ' + d.result.note : ''));
   closeModal(); loadMem(); refresh();
@@ -662,7 +644,7 @@ function copyText(t) {
 }
 async function showMem(id) {
   try {
-    const d = await api('/api/memory?id=' + id);
+    const d = await api('/v1/admin/memory?id=' + id);
     const m = d.item; if (!m) { toast('记忆 #' + id + ' 不存在'); return; }
     curMemContent = m.content || '';
     const tags = (m.tags || '').split(/[,\s]+/).filter(Boolean).map(t => `<span class="tag">${esc(t)}</span>`).join('') || '<span class="muted">—</span>';
@@ -686,7 +668,7 @@ async function showMem(id) {
 }
 async function showTurn(id) {
   try {
-    const d = await api('/api/turn?id=' + id);
+    const d = await api('/v1/admin/turn?id=' + id);
     const t = d.item; if (!t) { toast('对话 #' + id + ' 不存在'); return; }
     curTurnU = t.user_content || ''; curTurnA = t.assistant_content || '';
     openModal('对话 #' + t.id, `

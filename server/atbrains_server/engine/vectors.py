@@ -162,9 +162,9 @@ class VectorsMixin:
             rows = self._exec("SELECT GET_LOCK('brain_vector_drain', 0) AS got", fetch=True)
             got = bool(rows and rows[0].get("got"))
             if not got:
-                # 锁被另一路 drain 占用（可能正卡在一次慢速 embed 上）：不再硬跳过，
-                # 直接继续——本管线幂等（同 id 覆盖写），最坏只是重复一次嵌入。
-                logger.info("atbrains: drain 锁被占用，仍然继续（幂等处理）")
+                logger.info("atbrains: 另一路 drain 正持有锁，本轮跳过")
+                stats["skipped_locked"] = True
+                return stats
             if not self._qdrant_ready:
                 self.qdrant_ensure_collection()
                 self._qdrant_ready = True
@@ -492,16 +492,27 @@ class VectorsMixin:
                 "dim": params.get("size"),
                 "distance": params.get("distance"),
             })
-            scroll = self._qdrant(
-                "POST", f"/collections/{name}/points/scroll",
-                {"limit": 10000, "with_payload": False, "with_vector": False}, timeout=20)
-            ids = {int(p["id"]) for p in (scroll.get("result") or {}).get("points") or []}
+            ids: set[int] = set()
+            offset: Any = None
+            while True:
+                body: dict[str, Any] = {"limit": 2000, "with_payload": False, "with_vector": False}
+                if offset is not None:
+                    body["offset"] = offset
+                scroll = self._qdrant("POST", f"/collections/{name}/points/scroll", body, timeout=20)
+                sr = scroll.get("result") or {}
+                pts = sr.get("points") or []
+                for p in pts:
+                    ids.add(int(p["id"]))
+                offset = sr.get("next_page_offset")
+                if offset is None or not pts:
+                    break
             self.ensure_schema()
             rows = self._exec("SELECT id FROM brain_memories WHERE active = 1", fetch=True)
             active = {int(x["id"]) for x in rows}
             res["coverage"] = {
                 "active_memories": len(active),
                 "with_vector": len(active & ids),
+                "missing_count": len(active - ids),
                 "missing": sorted(active - ids)[:50],
                 "stale_vectors": sorted(ids - active)[:50],
             }

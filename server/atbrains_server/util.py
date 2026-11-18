@@ -98,16 +98,12 @@ def _mask_secret(value: str) -> str:
         return ""
     return v[:4] + "…" if len(v) > 8 else "…"
 
-# 词表：hermes-cli / hermes-desktop / weixin / telegram / discord / slack / email /
-#       cron / oneshot / subagent / unknown（新入口小写透传，别名先归并）
-# Hermes 自己的两个本机入口带 hermes- 前缀，与别的 agent（如 dsh 写 'dsh'）区分。
+# 常见通用入口别名归并；其余平台名（hermes-cli / qq / discord / dsh 等）小写透传。
 _PLATFORM_ALIASES = {
-    "cli": "hermes-cli",
-    "tool": "hermes-cli",        # 工具触发的会话按命令行入口算（对齐 Hermes session_policy）
-    "desktop": "hermes-desktop",
-    "local": "hermes-desktop",   # 本机控制套接字的桌面/TUI 会话
-    "tui": "hermes-desktop",
-    "gui": "hermes-desktop",
+    "tool": "cli",
+    "local": "desktop",
+    "tui": "desktop",
+    "gui": "desktop",
 }
 
 def normalize_platform(value: Any) -> str:
@@ -184,6 +180,11 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 class BrainError(RuntimeError):
     pass
+
+
+class BrainForbidden(PermissionError):
+    """跨身份越权访问或修改 → HTTP 403。"""
+
 
 class BrainHTTPError(BrainError):
     """带 HTTP 状态码的错误（用于 401 重读 key / 404 建集合 等分支）。"""

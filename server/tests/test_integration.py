@@ -308,7 +308,19 @@ class EndToEndIntegrationTest(unittest.TestCase):
                 self.assertTrue(ctx["ok"])
                 self.assertIn("醒来包", ctx["markdown"])
 
-                # 停用 + 恢复
+                # 单引擎共享状态：hermes 写入会直接把唯一 engine._vec_dirty 标脏
+                self.assertTrue(getattr(runtime.service.engine, "_vec_dirty", False))
+
+                # 跨 agent 隔离：astrbot 不能读取 codex 的敏感转录，也不能停用 codex 的记忆
+                from atbrains_client import AtbrainsClientError
+                with self.assertRaises(AtbrainsClientError) as ctx_err:
+                    astrbot_cli.turn_detail(t1["id"])
+                self.assertEqual(ctx_err.exception.status, 403)
+                with self.assertRaises(AtbrainsClientError) as ctx_fg:
+                    astrbot_cli.forget(r2["saved"]["id"], allow_spool=False)
+                self.assertEqual(ctx_fg.exception.status, 403)
+
+                # 停用 + 恢复（admin 权限放行）
                 mid = r2["saved"]["id"]
                 fg = admin_cli.forget(mid)
                 self.assertEqual(fg["result"]["deactivated"], 1)

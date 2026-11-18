@@ -11,6 +11,7 @@ import uuid
 from typing import Any, Optional
 
 from . import __version__
+from .tokens import TokenIdentity
 from .tools_registry import (
     INSTRUCTIONS,
     TOOLS,
@@ -77,25 +78,32 @@ class AtbrainsMCP:
     def __init__(self, service: Any) -> None:
         self.service = service
 
-    def handle(self, agent: str, payload: Any) -> tuple[int, Any, dict[str, str]]:
+    def _resolve_store(self, who: Any) -> tuple[str, Any]:
+        if isinstance(who, TokenIdentity):
+            return who.agent, self.service.store_for_identity(who)
+        agent = str(who or "default").strip().lower() or "default"
+        return agent, self.service.store_for("", agent=agent)
+
+    def handle(self, who: Any, payload: Any) -> tuple[int, Any, dict[str, str]]:
         headers = {"Mcp-Session-Id": uuid.uuid4().hex}
         if isinstance(payload, list):
             out = []
             for item in payload:
-                resp = self._one(agent, item)
+                resp = self._one(who, item)
                 if resp is not None:
                     out.append(resp)
             if not out:
                 return 202, None, headers
             return 200, out, headers
-        resp = self._one(agent, payload)
+        resp = self._one(who, payload)
         if resp is None:
             return 202, None, headers
         return 200, resp, headers
 
-    def _one(self, agent: str, msg: Any) -> Optional[dict[str, Any]]:
+    def _one(self, who: Any, msg: Any) -> Optional[dict[str, Any]]:
         if not isinstance(msg, dict) or msg.get("jsonrpc") != "2.0":
             return _error(None, -32600, "invalid request: expected JSON-RPC 2.0 object")
+        agent = who.agent if isinstance(who, TokenIdentity) else str(who or "default")
         method = str(msg.get("method") or "")
         msg_id = msg.get("id", None)
         is_notification = "id" not in msg
@@ -131,7 +139,7 @@ class AtbrainsMCP:
         if method == "resources/read":
             uri = str(params.get("uri") or "")
             try:
-                contents = self.read_resource(agent, uri)
+                contents = self.read_resource(who, uri)
             except Exception as exc:  # noqa: BLE001
                 return _error(msg_id, -32603, f"resource read failed: {type(exc).__name__}: {exc}"[:300])
             if contents is None:
@@ -142,7 +150,7 @@ class AtbrainsMCP:
         if method == "prompts/get":
             raw_prompt_args = params.get("arguments")
             prompt_args: dict[str, Any] = raw_prompt_args if isinstance(raw_prompt_args, dict) else {}
-            got = self.get_prompt(agent, str(params.get("name") or ""), prompt_args)
+            got = self.get_prompt(who, str(params.get("name") or ""), prompt_args)
             if got is None:
                 return _error(msg_id, -32602, f"unknown prompt: {params.get('name')}")
             return {"jsonrpc": "2.0", "id": msg_id, "result": got}
@@ -153,7 +161,7 @@ class AtbrainsMCP:
             if not any(t["name"] == name for t in TOOLS):
                 return _error(msg_id, -32602, f"unknown tool: {name}")
             try:
-                data = self.call(agent, name, args)
+                data = self.call(who, name, args)
                 text = json.dumps(data, ensure_ascii=False, default=str)
                 is_error = isinstance(data, dict) and data.get("ok") is False
             except Exception as exc:  # noqa: BLE001
@@ -169,27 +177,27 @@ class AtbrainsMCP:
             return None
         return _error(msg_id, -32601, f"method not found: {method}")
 
-    def read_resource(self, agent: str, uri: str) -> Optional[dict[str, Any]]:
-        store = self.service.store_for("", agent=agent)
+    def read_resource(self, who: Any, uri: str) -> Optional[dict[str, Any]]:
+        agent, store = self._resolve_store(who)
         if uri == "atbrains://context":
             packet = context_packet(store, agent)
             return {"uri": uri, "mimeType": "text/markdown", "text": context_markdown(packet)}
         if uri == "atbrains://stats":
-            data = self.call(agent, "atbrains_stats", {})
+            data = self.call(who, "atbrains_stats", {})
             return {"uri": uri, "mimeType": "application/json",
                     "text": json.dumps(data, ensure_ascii=False, default=str)}
         if uri == "atbrains://recent/memories":
-            data = self.call(agent, "atbrains_recent", {"n": 20, "what": "memories"})
+            data = self.call(who, "atbrains_recent", {"n": 20, "what": "memories"})
             return {"uri": uri, "mimeType": "application/json",
                     "text": json.dumps(data, ensure_ascii=False, default=str)}
         if uri == "atbrains://recent/turns":
-            data = self.call(agent, "atbrains_recent", {"n": 20, "what": "turns"})
+            data = self.call(who, "atbrains_recent", {"n": 20, "what": "turns"})
             return {"uri": uri, "mimeType": "application/json",
                     "text": json.dumps(data, ensure_ascii=False, default=str)}
         return None
 
-    def get_prompt(self, agent: str, name: str, args: dict[str, Any]) -> Optional[dict[str, Any]]:
-        store = self.service.store_for("", agent=agent)
+    def get_prompt(self, who: Any, name: str, args: dict[str, Any]) -> Optional[dict[str, Any]]:
+        agent, store = self._resolve_store(who)
         if name == "wake-up":
             focus = str(args.get("focus") or "")
             packet = context_packet(store, agent, focus=focus)
@@ -210,13 +218,10 @@ class AtbrainsMCP:
             }
         return None
 
-    def call(self, agent: str, name: str, args: dict[str, Any]) -> dict[str, Any]:
-        store = self.service.store_for("", agent=agent)
+    def call(self, who: Any, name: str, args: dict[str, Any]) -> dict[str, Any]:
+        agent, store = self._resolve_store(who)
         return execute_tool(store, agent, name, args, source="mcp")
 
 
 def _error(msg_id: Any, code: int, message: str) -> dict[str, Any]:
     return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}}
-
-
-BrainMCP = AtbrainsMCP

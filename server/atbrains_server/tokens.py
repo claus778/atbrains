@@ -1,14 +1,16 @@
 """atbrains 令牌管理：Bearer 令牌与多 Agent 身份解析（machine | agent + role）。"""
 from __future__ import annotations
 
+from contextlib import contextmanager
+from dataclasses import dataclass
+import fcntl
 import hmac
 import json
 import os
 import secrets
 import threading
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterator, Optional
 
 from .config import resolve_data_dir
 
@@ -142,12 +144,27 @@ class TokenStore:
         """兼容视图：{name: token_str}。"""
         return {k: v["token"] for k, v in self.entries().items()}
 
+    @contextmanager
+    def _file_lock(self) -> Iterator[None]:
+        p = self.path
+        p.parent.mkdir(parents=True, exist_ok=True)
+        lock_path = p.with_name(p.name + ".lock")
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
     def add(self, name: str, *, role: str = "", machine: str = "", agent: str = "") -> str:
         key = str(name or "").strip()
         if not key:
             raise ValueError("令牌名称不能为空")
         tok = secrets.token_urlsafe(32)
-        with self._lock:
+        with self._lock, self._file_lock():
             raw = self._read_raw()
             if role or machine or agent:
                 entry: dict[str, Any] = {"token": tok}
@@ -165,7 +182,7 @@ class TokenStore:
 
     def remove(self, name: str) -> bool:
         key = str(name or "").strip()
-        with self._lock:
+        with self._lock, self._file_lock():
             raw = self._read_raw()
             if key not in raw:
                 return False
@@ -175,7 +192,7 @@ class TokenStore:
             return True
 
     def authorize(self, headers: Any, *, channel: str = "v1") -> Optional[TokenIdentity]:
-        """验证请求头并解析身份；失败返回 None。"""
+        """验证请求头并解析统一身份（/v1 与 /mcp 遵循同一套 <machine>|<agent> 规则）；失败返回 None。"""
         got = extract_bearer_token(headers)
         if not got:
             return None
@@ -183,22 +200,18 @@ class TokenStore:
         for name, entry in self.entries().items():
             known = entry.get("token") or ""
             if known and hmac.compare_digest(enc, known.encode("utf-8", "replace")):
+                role = entry.get("role") or "agent"
                 if entry.get("machine") or entry.get("agent"):
-                    mach = entry.get("machine") or ("" if channel == "mcp" else split_identity(name)[0])
-                    ag = entry.get("agent") or split_identity(name)[1]
+                    mach = entry.get("machine") or (split_identity(name)[0] if "|" in name else name)
+                    ag = entry.get("agent") or (split_identity(name)[1] if "|" in name else name)
                 elif "|" in name:
                     mach, ag = split_identity(name)
-                    if channel == "mcp":
-                        mach = ""
                 else:
-                    if channel == "mcp":
-                        mach, ag = "", name
-                    else:
-                        mach, ag = name, "hermes"
+                    mach, ag = name, ("admin" if role == "admin" else name)
                 return TokenIdentity(
                     name=name,
                     machine=mach,
                     agent=ag,
-                    role=entry.get("role") or "agent",
+                    role=role,
                 )
         return None

@@ -124,10 +124,11 @@ class CurationMixin:
             th = float(threshold)
         except (TypeError, ValueError):
             th = 0.90
+        capped_limit = max(2, min(500, int(limit)))
         rows = [dict(r) for r in self._exec(
             "SELECT id, kind, memory_type, content, created_at, updated_at FROM brain_memories "
             "WHERE active = 1 AND superseded_by IS NULL ORDER BY created_at ASC, id ASC LIMIT %s",
-            (max(1, int(limit)),), fetch=True)]
+            (capped_limit,), fetch=True)]
         out: dict[str, Any] = {"pairs": [], "applied": 0, "skipped": 0, "dry_run": bool(dry_run)}
         if len(rows) < 2:
             return out
@@ -251,10 +252,11 @@ class CurationMixin:
         if lo > hi:
             lo, hi = hi, lo
         win_sec = float(window_hours) * 3600.0 if window_hours else 0.0
+        capped_limit = max(2, min(500, int(limit)))
         rows = [dict(r) for r in self._exec(
             "SELECT id, kind, memory_type, content, importance, created_at FROM brain_memories "
             "WHERE active = 1 AND superseded_by IS NULL ORDER BY created_at DESC, id DESC LIMIT %s",
-            (max(2, int(limit)),), fetch=True)]
+            (capped_limit,), fetch=True)]
         out: dict[str, Any] = {"dry_run": bool(dry_run), "scanned": len(rows), "low": lo, "high": hi,
                                "window_hours": window_hours, "use_llm": bool(use_llm),
                                "auto": [], "review": [], "superseded": 0, "merged": 0,

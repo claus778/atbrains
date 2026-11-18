@@ -26,7 +26,6 @@ from pathlib import Path
 from typing import Optional
 
 from . import PROTOCOL_VERSION, __version__
-from .admin import AdminOps
 from .config import resolve_config, resolve_data_dir, resolve_server_http_config
 from .store import AtbrainsStore
 from .tokens import TokenStore, mask
@@ -58,13 +57,13 @@ def _tokens(config_home: Optional[str] = None) -> TokenStore:
     return TokenStore(Path(str(cfg["data_dir"])) / "service-tokens.json")
 
 
-def _ops(config_home: Optional[str] = None) -> AdminOps:
-    return AdminOps(config_home=config_home)
+def _store(config_home: Optional[str] = None) -> AtbrainsStore:
+    return AtbrainsStore(resolve_config(config_home), start_workers=False)
 
 
 def cmd_status(args) -> int:
     try:
-        d = _ops(args.config_home).overview()
+        d = _store(args.config_home).overview()
     except Exception as e:  # noqa: BLE001
         _p(f"❌ 无法读取记忆系统: {e}")
         return 1
@@ -173,8 +172,7 @@ def cmd_open(args) -> int:
     tok_file = Path(http_cfg["data_dir"]) / ".token"
     tok = tok_file.read_text(encoding="utf-8").strip() if tok_file.exists() else "(首次启动时生成)"
     _p(f"网页控制台: http://127.0.0.1:{port}/")
-    _p(f"口令:       {tok}")
-    _p(f"直连 URL:   http://127.0.0.1:{port}/?token={tok}")
+    _p(f"口令:       {tok}  (在页面右上角或 X-Auth-Token 头填入，勿写入 URL)")
     return 0
 
 
@@ -235,7 +233,7 @@ def cmd_service(args) -> int:
     else:
         _p(f"  健康     ❌ HTTP {code or '连接被拒'}")
     try:
-        ping = _ops(args.config_home).store.ping()
+        ping = _store(args.config_home).ping()
         _p(f"  存储     Redis {_ok(ping.get('redis'))} · MariaDB {_ok(ping.get('mariadb'))}")
     except Exception as e:  # noqa: BLE001
         _p(f"  存储     ❌ {e}")
@@ -245,20 +243,20 @@ def cmd_service(args) -> int:
 
 def cmd_drain(args) -> int:
     force = bool(getattr(args, "force", False))
-    r = _ops(args.config_home).drain(force=force)
+    r = _store(args.config_home).drain_vectors(force=force)
     _p(json.dumps(r, ensure_ascii=False, indent=2))
     return 0
 
 
 def cmd_doctor(args) -> int:
-    r = _ops(args.config_home).doctor()
+    r = _store(args.config_home).doctor()
     _p(json.dumps(r, ensure_ascii=False, indent=2, default=str))
     return 0 if r.get("ok") else 1
 
 
 def cmd_memories(args) -> int:
     active = "all" if args.all else "1"
-    d = _ops(args.config_home).memories(limit=args.limit, active=active, q=args.q or "")
+    d = _store(args.config_home).list_memories(limit=args.limit, active=active, q=args.q or "")
     _p(f"共 {d['total']} 条,显示 {len(d['items'])} 条 (active={active})")
     for m in d["items"]:
         flag = "●" if m.get("active") else "○"
@@ -268,7 +266,7 @@ def cmd_memories(args) -> int:
 
 
 def cmd_turns(args) -> int:
-    d = _ops(args.config_home).turns(
+    d = _store(args.config_home).list_turns(
         limit=args.limit, offset=getattr(args, "offset", 0),
         machine=getattr(args, "machine", "") or "", q=getattr(args, "q", "") or "")
     _p(f"共 {d['total']} 轮,显示 {len(d['items'])} 轮")
@@ -278,7 +276,7 @@ def cmd_turns(args) -> int:
 
 
 def cmd_sessions(args) -> int:
-    d = _ops(args.config_home).sessions(limit=args.limit, machine=getattr(args, "machine", "") or "")
+    d = _store(args.config_home).list_sessions(limit=args.limit, machine=getattr(args, "machine", "") or "")
     _p(f"共 {d['total']} 个会话,显示 {len(d['items'])} 个")
     for s in d["items"]:
         _p(f" [{_short(s.get('session_id',''),32):<32}] {s.get('machine') or '-':<16} "
@@ -288,28 +286,33 @@ def cmd_sessions(args) -> int:
 
 def cmd_search(args) -> int:
     q = " ".join(args.query)
-    d = _ops(args.config_home).search(q, limit=args.limit)
-    _p(f"🔍 「{q}」→ 记忆 {len(d['memories'])} 条 / 对话 {len(d['turns'])} 条")
-    for i, m in enumerate(d["memories"], 1):
+    st = _store(args.config_home)
+    try:
+        mems = st.search_memories_hybrid(q, limit=args.limit)
+    except Exception:  # noqa: BLE001
+        mems = st.search_memories(q, limit=args.limit)
+    turns = st.search_turns(q, limit=min(args.limit, 10))
+    _p(f"🔍 「{q}」→ 记忆 {len(mems)} 条 / 对话 {len(turns)} 条")
+    for i, m in enumerate(mems, 1):
         _p(f" {i}. [{m['id']}] ({m.get('agent','')}) {_short(m.get('content') or '', 110)}")
     return 0
 
 
 def cmd_remember(args) -> int:
-    r = _ops(args.config_home).remember(
+    r = _store(args.config_home).remember(
         args.content, kind=args.kind, tags=args.tags or "", importance=args.importance)
     _p(f"✅ 已保存: {r}")
     return 0
 
 
 def cmd_forget(args) -> int:
-    r = _ops(args.config_home).forget(args.id)
+    r = _store(args.config_home).forget(args.id)
     _p(f"✅ 已停用 {args.id}: {r}")
     return 0
 
 
 def cmd_restore(args) -> int:
-    r = _ops(args.config_home).restore(args.id)
+    r = _store(args.config_home).restore(args.id)
     _p(f"✅ 已恢复 {args.id}: {r}")
     return 0
 

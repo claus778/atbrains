@@ -23,6 +23,7 @@ from atbrains_server.config import (  # noqa: E402
     _dotenv_value,
     resolve_config,
 )
+from atbrains_server.context import RequestContext, ScopedStore, owns_record  # noqa: E402
 from atbrains_server.schema import _benign_ddl_error, _is_duplicate_error  # noqa: E402
 from atbrains_server.store import AtbrainsStore  # noqa: E402
 from atbrains_server.util import (  # noqa: E402
@@ -209,8 +210,9 @@ class ResolveConfigTest(unittest.TestCase):
             self.assertEqual(cfg["redis_password"], "r3d#is")
             self.assertEqual(cfg["mariadb_password"], "maria")
             self.assertEqual(cfg["distill_api_key"], "dk")
-            self.assertEqual(cfg["hermes_home"], str(home))
+            self.assertEqual(cfg["config_home"], str(home))
             self.assertEqual(cfg["turn_messages_enabled"], 1)
+            self.assertEqual(cfg["projection_tables_enabled"], 0)
 
     @mock.patch.dict(os.environ, TEST_ENV, clear=False)
     def test_invalid_json_and_bad_int(self) -> None:
@@ -419,6 +421,18 @@ class ServerConfigTest(unittest.TestCase):
             st = AtbrainsStore(cfg)
             self.assertEqual(st.agent, "codex")
             self.assertEqual(st._vector_secrets(), {"qdrant": "qk-test", "embed": "qk-test"})
+
+    def test_request_context_and_ownership(self) -> None:
+        eng = AtbrainsStore(dict(DEFAULT_CONFIG))
+        ctx = RequestContext(machine="laptop", agent="codex", role="agent")
+        scoped = ScopedStore(eng, ctx)
+        self.assertEqual(scoped.machine, "laptop")
+        self.assertEqual(scoped.agent, "codex")
+        self.assertEqual(scoped.role, "agent")
+        self.assertTrue(owns_record(ctx, {"machine": "laptop", "agent": "codex"}))
+        self.assertFalse(owns_record(ctx, {"machine": "laptop", "agent": "hermes"}))
+        self.assertFalse(owns_record(ctx, {"machine": "other", "agent": "codex"}))
+        self.assertTrue(owns_record(RequestContext(role="admin"), {"machine": "other", "agent": "hermes"}))
 
 
 if __name__ == "__main__":

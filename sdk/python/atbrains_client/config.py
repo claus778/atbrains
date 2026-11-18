@@ -151,11 +151,6 @@ def resolve_client_config(
             if str(raw.get(k) or "").strip():
                 url = str(raw[k]).strip()
                 break
-    if not url:
-        # 兼容从旧配置 mariadb_host 推断（仅非回环地址）
-        host = str(raw.get("mariadb_host") or "").strip()
-        if host and host not in ("127.0.0.1", "localhost", "::1"):
-            url = f"http://{host}:8787"
     url = normalize_base_url(url)
 
     tok = token or _first_env_or_dotenv(

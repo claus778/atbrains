@@ -11,6 +11,9 @@ import threading
 import time
 
 
+from .. import PROTOCOL_VERSION, __version__
+from ..context import RequestContext
+
 logger = logging.getLogger("atbrains")
 
 class MaintenanceMixin:
@@ -372,3 +375,47 @@ class MaintenanceMixin:
         except Exception as exc:  # noqa: BLE001
             checks["vector"] = {"error": str(exc)[:200]}
         return checks
+
+    def overview(self, *, fresh: bool = False) -> dict[str, Any]:
+        """管理台与 CLI 总览（直读引擎与缓存，不再强起 docker/systemctl 子进程）。"""
+        out: dict[str, Any] = {
+            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "version": PROTOCOL_VERSION,
+            "server_version": __version__,
+        }
+        for key, fn in (
+            ("stats", lambda: self.stats(force=fresh)),
+            ("ping", lambda: self.ping()),
+            ("vector", lambda: self.vector_status(force=fresh)),
+            ("qdrant", lambda: self.qdrant_info()),
+        ):
+            try:
+                out[key] = fn()
+            except Exception as exc:  # noqa: BLE001
+                out[key] = {"error": f"{type(exc).__name__}: {exc}"}
+        return out
+
+    def recent(self, limit: int = 20, *, ctx: Optional[RequestContext] = None) -> dict[str, Any]:
+        eff = max(1, min(int(limit), 100))
+        return {"hot": self.hot_recent(eff), "turns": self.recent_turns(eff, ctx=ctx)}
+
+    def quick_counts(self) -> dict[str, int]:
+        """醒来包专用轻量计数：命中暖 stats 缓存则零 SQL；冷时只跑 5 个单列 COUNT。"""
+        now = time.monotonic()
+        if self._stats_cache and now - self._stats_cache[0] < self._cache_ttl:
+            mysql = dict((self._stats_cache[1] or {}).get("mysql") or {})
+            return {
+                k: int(mysql.get(k) or 0)
+                for k in ("memories_active", "turns", "claims_active", "episodes", "sessions")
+                if k in mysql
+            }
+        self.ensure_schema()
+        row = self._exec(
+            "SELECT (SELECT COUNT(*) FROM brain_memories WHERE active = 1) AS memories_active, "
+            "(SELECT COUNT(*) FROM brain_turns) AS turns, "
+            "(SELECT COUNT(*) FROM brain_claims WHERE state = 'active') AS claims_active, "
+            "(SELECT COUNT(*) FROM brain_episodes) AS episodes, "
+            "(SELECT COUNT(*) FROM brain_sessions) AS sessions",
+            fetch=True,
+        )[0]
+        return {k: int(v or 0) for k, v in row.items()}

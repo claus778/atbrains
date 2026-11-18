@@ -19,10 +19,10 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import PROTOCOL_VERSION, __version__
-from .admin import AdminOps
 from .config import resolve_config
+from .context import RequestContext, ScopedStore
 from .store import AtbrainsStore
-from .tokens import TokenIdentity, TokenStore, mask, split_identity
+from .tokens import TokenIdentity, TokenStore, mask
 from .tools_registry import as_bool, as_int, as_list, clean_rows, context_markdown, context_packet
 
 # 异常消息脱敏:即便某个驱动把连接串塞进了报错里,也不能把口令下发
@@ -104,7 +104,11 @@ class MemoryService:
         "/v1/admin/turns": (("GET",), "_admin_turns"),
         "/v1/admin/turn": (("GET",), "_admin_turn"),
         "/v1/admin/sessions": (("GET",), "_admin_sessions"),
+        "/v1/admin/recent": (("GET",), "_admin_recent"),
         "/v1/admin/search": (("GET",), "_admin_search"),
+        "/v1/admin/remember": (("POST",), "_admin_remember"),
+        "/v1/admin/forget": (("POST",), "_admin_forget"),
+        "/v1/admin/restore": (("POST",), "_admin_restore"),
         "/v1/admin/drain": (("POST",), "_admin_drain"),
         "/v1/admin/doctor": (("POST",), "_admin_doctor"),
         "/v1/admin/prune": (("POST",), "_admin_prune"),
@@ -130,13 +134,25 @@ class MemoryService:
         ))
         self._console_token_fn = console_token_fn
         self._store_factory = store_factory
-        self._stores: dict[str, Any] = {}
+        self._engine: Optional[Any] = None
         self._lock = threading.Lock()
         self._vec_wake = threading.Event()
         self._workers_started = False
-        self._admin_ops: Optional[AdminOps] = None
         if start_workers:
             self.start_workers()
+
+    @property
+    def engine(self) -> Any:
+        if self._engine is None:
+            with self._lock:
+                if self._engine is None:
+                    if self._store_factory is not None:
+                        self._engine = self._store_factory(dict(self.base_cfg))
+                    else:
+                        self._engine = AtbrainsStore(
+                            dict(self.base_cfg), start_workers=False, vec_wake=self._vec_wake
+                        )
+        return self._engine
 
     # ---------------------------------------------------------- 鉴权
 
@@ -148,7 +164,7 @@ class MemoryService:
         ident = _DEFAULT_TOKENS.authorize(headers, channel="v1")
         return ident.name if ident else None
 
-    def _authorize_admin(self, headers: Any, query: dict) -> Optional[TokenIdentity]:
+    def _authorize_admin(self, headers: Any) -> Optional[TokenIdentity]:
         ident = self.authorize_identity(headers, channel="v1")
         if ident is not None:
             if ident.role != "admin":
@@ -161,56 +177,32 @@ class MemoryService:
                 if str(k).lower() == "x-auth-token":
                     got = str(v or "")
                     break
-            if not got:
-                got = _qparam(query, "token", "")
             if expected and got and hmac.compare_digest(got.encode("utf-8"), expected.encode("utf-8")):
                 return TokenIdentity(name="console", machine="", agent="console", role="admin")
         return None
 
     # ---------------------------------------------------------- store 与 worker
 
-    def _make_store(self, machine: str, agent: str, *, start_workers: bool = False) -> Any:
-        cfg = dict(self.base_cfg)
-        if machine:
-            cfg["machine"] = machine
-        cfg["agent"] = agent
-        if self._store_factory is not None:
-            return self._store_factory(cfg)
-        return AtbrainsStore(cfg, start_workers=start_workers, vec_wake=self._vec_wake)
-
     def start_workers(self) -> None:
         with self._lock:
             if self._workers_started:
                 return
             self._workers_started = True
-        worker_store = self.store_for("", "system")
-        if hasattr(worker_store, "start_workers"):
-            worker_store.start_workers()
+        eng = self.engine
+        if hasattr(eng, "start_workers"):
+            eng.start_workers()
 
-    def store_for_identity(self, ident: TokenIdentity) -> Any:
-        return self.store_for(ident.machine, ident.agent)
+    def store_for_identity(self, ident: TokenIdentity) -> ScopedStore:
+        ctx = RequestContext(machine=ident.machine, agent=ident.agent, role=ident.role)
+        return ScopedStore(self.engine, ctx)
 
-    def store_who(self, who: str) -> Any:
-        if "|" in str(who or ""):
-            machine, agent = split_identity(who)
-            return self.store_for(machine, agent)
-        return self.store_for(who, "hermes")
-
-    def store_for(self, machine: str, agent: str = "default") -> Any:
+    def store_for(self, machine: str, agent: str = "default", *, role: str = "agent") -> ScopedStore:
         ag = (str(agent or "default").strip().lower() or "default")[:32]
         mach = str(machine or "").strip()[:48]
-        key = f"{ag}\x00{mach}"
-        with self._lock:
-            st = self._stores.get(key)
-            if st is None:
-                st = self._make_store(mach, ag, start_workers=False)
-                self._stores[key] = st
-            return st
+        return ScopedStore(self.engine, RequestContext(machine=mach, agent=ag, role=role))
 
-    def admin_ops(self) -> AdminOps:
-        if self._admin_ops is None:
-            self._admin_ops = AdminOps(self.store_for("", "admin"), config_home=self.config_home)
-        return self._admin_ops
+    def _admin_store(self) -> ScopedStore:
+        return self.store_for("", "admin", role="admin")
 
     # ---------------------------------------------------------- 入口
 
@@ -227,7 +219,7 @@ class MemoryService:
                 return 200, getattr(self, handler)()
             payload = body if isinstance(body, dict) else {}
             if path.startswith(self._ADMIN_PREFIX):
-                ident = self._authorize_admin(headers, query)
+                ident = self._authorize_admin(headers)
                 if ident is None:
                     return 401, {"ok": False, "error": "unauthorized"}
                 return 200, getattr(self, handler)(method, ident, payload, query)
@@ -237,7 +229,7 @@ class MemoryService:
             return 200, getattr(self, handler)(ident, payload, query)
         except BadRequest as e:
             return 400, {"ok": False, "error": str(e)}
-        except Forbidden as e:
+        except PermissionError as e:
             return 403, {"ok": False, "error": str(e)}
         except Exception as e:  # noqa: BLE001
             return 500, {"ok": False, "error": _safe_error(e)}
@@ -561,10 +553,10 @@ class MemoryService:
 
     def _admin_overview(self, method: str, ident: TokenIdentity, body: dict, query: dict) -> dict:
         fresh = _qparam(query, "fresh", "0").strip().lower() in ("1", "true", "yes")
-        return {"ok": True, **self.admin_ops().overview(fresh=fresh)}
+        return {"ok": True, **self._admin_store().overview(fresh=fresh)}
 
     def _admin_memories(self, method: str, ident: TokenIdentity, body: dict, query: dict) -> dict:
-        return {"ok": True, **self.admin_ops().memories(
+        return {"ok": True, **self._admin_store().list_memories(
             limit=min(_qint(query, body, "limit", 100), 500),
             offset=_qint(query, body, "offset", 0),
             active=_qparam(query, "active", "1"),
@@ -575,10 +567,10 @@ class MemoryService:
         )}
 
     def _admin_memory(self, method: str, ident: TokenIdentity, body: dict, query: dict) -> dict:
-        return {"ok": True, **self.admin_ops().memory_detail(_qint(query, body, "id", 0))}
+        return {"ok": True, "item": self._admin_store().get_memory(_qint(query, body, "id", 0))}
 
     def _admin_turns(self, method: str, ident: TokenIdentity, body: dict, query: dict) -> dict:
-        return {"ok": True, **self.admin_ops().turns(
+        return {"ok": True, **self._admin_store().list_turns(
             limit=min(_qint(query, body, "limit", 40), 300),
             offset=_qint(query, body, "offset", 0),
             machine=_qparam(query, "machine", ""),
@@ -587,33 +579,80 @@ class MemoryService:
         )}
 
     def _admin_turn(self, method: str, ident: TokenIdentity, body: dict, query: dict) -> dict:
-        return {"ok": True, **self.admin_ops().turn_detail(_qint(query, body, "id", 0))}
+        return {"ok": True, "item": self._admin_store().get_turn(_qint(query, body, "id", 0))}
 
     def _admin_sessions(self, method: str, ident: TokenIdentity, body: dict, query: dict) -> dict:
-        return {"ok": True, **self.admin_ops().sessions(
+        return {"ok": True, **self._admin_store().list_sessions(
             limit=min(_qint(query, body, "limit", 100), 500),
             offset=_qint(query, body, "offset", 0),
             machine=_qparam(query, "machine", ""),
             q=_qparam(query, "q", ""),
         )}
 
+    def _admin_recent(self, method: str, ident: TokenIdentity, body: dict, query: dict) -> dict:
+        limit = max(1, min(_qint(query, body, "limit", 20), 100))
+        return {"ok": True, **self._admin_store().recent(limit)}
+
     def _admin_search(self, method: str, ident: TokenIdentity, body: dict, query: dict) -> dict:
-        return {"ok": True, **self.admin_ops().search(
-            _qparam(query, "q", ""),
-            limit=min(_qint(query, body, "limit", 10), 50),
-        )}
+        q = _qparam(query, "q", "")
+        limit = min(_qint(query, body, "limit", 10), 50)
+        if not q.strip():
+            return {"ok": True, "query": q, "memories": [], "turns": []}
+        st = self._admin_store()
+        try:
+            mem = st.search_memories_hybrid(q, limit=limit)
+        except Exception:  # noqa: BLE001
+            mem = st.search_memories(q, limit=limit)
+        return {
+            "ok": True,
+            "query": q,
+            "memories": clean_rows(mem),
+            "turns": clean_rows(st.search_turns(q, limit=min(limit, 10))),
+        }
+
+    def _admin_remember(self, method: str, ident: TokenIdentity, body: dict, query: dict) -> dict:
+        content = str(body.get("content") or "").strip()
+        if not content:
+            raise BadRequest("content 不能为空")
+        try:
+            importance = int(body.get("importance") if body.get("importance") is not None else 5)
+        except (TypeError, ValueError):
+            raise BadRequest("importance 必须是整数") from None
+        saved = self._admin_store().remember(
+            content,
+            kind=str(body.get("kind") or "note"),
+            tags=str(body.get("tags") or ""),
+            importance=importance,
+            source=str(body.get("source") or "console"),
+        )
+        return {"ok": True, "saved": saved}
+
+    def _admin_forget(self, method: str, ident: TokenIdentity, body: dict, query: dict) -> dict:
+        try:
+            mem_id = int(body.get("id"))
+        except (TypeError, ValueError):
+            raise BadRequest("id 必须是整数") from None
+        return {"ok": True, "result": self._admin_store().forget(mem_id)}
+
+    def _admin_restore(self, method: str, ident: TokenIdentity, body: dict, query: dict) -> dict:
+        try:
+            mem_id = int(body.get("id"))
+        except (TypeError, ValueError):
+            raise BadRequest("id 必须是整数") from None
+        return {"ok": True, "result": self._admin_store().restore(mem_id)}
 
     def _admin_drain(self, method: str, ident: TokenIdentity, body: dict, query: dict) -> dict:
-        return self.admin_ops().drain(
-            force=bool(body.get("force", False)),
+        res = self._admin_store().drain_vectors(
             max_items=as_int(body.get("max_items"), 0),
+            force=bool(body.get("force", False)),
         )
+        return {"ok": True, **res}
 
     def _admin_doctor(self, method: str, ident: TokenIdentity, body: dict, query: dict) -> dict:
-        return self.admin_ops().doctor()
+        return self._admin_store().doctor()
 
     def _admin_prune(self, method: str, ident: TokenIdentity, body: dict, query: dict) -> dict:
-        return {"ok": True, "result": self.admin_ops().prune(dry_run=bool(body.get("dry_run", True)))}
+        return {"ok": True, "result": self._admin_store().prune(dry_run=bool(body.get("dry_run", True)))}
 
     def _admin_tokens(self, method: str, ident: TokenIdentity, body: dict, query: dict) -> dict:
         if method == "GET":

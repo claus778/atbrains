@@ -48,8 +48,10 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "search_regexp_enabled": 1,
     "turns_keep_days": 0,
     "turn_messages_enabled": 1,
+    "projection_tables_enabled": 0,
     "turn_msg_max_bytes": 1048576,
     "turn_total_max_bytes": 16777216,
+    "max_body_bytes": 33554432,
     "archive_keep_days": 365,
     "inactive_keep_days": 365,
     "sessions_keep_days": 365,
@@ -148,8 +150,8 @@ SECRET_ENV_VARS: dict[str, str] = {
     "mariadb_password": "ATBRAINS_MARIADB_PASSWORD",
     "qdrant_api_key": "ATBRAINS_QDRANT_API_KEY",
     "embed_api_key": "ATBRAINS_EMBED_API_KEY",
-    "distill_api_key": "HERMES_CUSTOM_API_COMMANDCODE_AI_API_KEY",
-    "distill_api_key_fallbacks": "COMMANDCODE_API_KEY",
+    "distill_api_key": "ATBRAINS_DISTILL_API_KEY",
+    "distill_api_key_fallbacks": "ATBRAINS_DISTILL_API_KEY_FALLBACKS",
 }
 
 # 非密配置项的环境变量覆盖（12-factor / Docker / systemd 友好）
@@ -183,6 +185,8 @@ NON_SECRET_ENV_VARS: dict[str, tuple[str, ...]] = {
     "distill_enabled": ("ATBRAINS_DISTILL_ENABLED",),
     "distill_api_base_url": ("ATBRAINS_DISTILL_API_BASE_URL",),
     "distill_api_model": ("ATBRAINS_DISTILL_API_MODEL",),
+    "projection_tables_enabled": ("ATBRAINS_PROJECTION_TABLES_ENABLED",),
+    "max_body_bytes": ("ATBRAINS_MAX_BODY_BYTES",),
     "access_log": ("ATBRAINS_ACCESS_LOG",),
     "data_dir": ("ATBRAINS_DATA_DIR",),
 }
@@ -221,11 +225,6 @@ def config_home_path(config_home: Optional[str] = None) -> Path:
     if _has_config_files(legacy):
         return legacy
     return xdg
-
-
-def hermes_home_path(hermes_home: Optional[str] = None) -> Path:
-    """向后兼容别名；新代码请使用 `config_home_path()`。"""
-    return config_home_path(hermes_home)
 
 
 def resolve_data_dir(config_home: Optional[str] = None) -> Path:
@@ -386,7 +385,6 @@ def resolve_config(config_home: Optional[str] = None) -> dict[str, Any]:
                 cfg[k] = default
 
     cfg["config_home"] = str(home)
-    cfg["hermes_home"] = str(home)  # 兼容旧测试与调用方
     if not cfg.get("data_dir"):
         cfg["data_dir"] = str(resolve_data_dir(config_home if config_home and not explicit_file else None))
     return cfg

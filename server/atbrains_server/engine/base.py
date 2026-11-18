@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import logging
+from contextlib import contextmanager
 from typing import Any
+from typing import Iterator
 from typing import Optional
 import socket
 import threading
@@ -10,6 +12,11 @@ import time
 
 from ..config import (  # noqa: F401
     resolve_config,
+)
+from ..context import (
+    RequestContext,
+    normalize_agent,
+    normalize_machine,
 )
 from ..schema import (  # noqa: F401
     SCHEMA_VERSION,
@@ -151,6 +158,37 @@ class BaseMixin:
         assert last_exc is not None
         raise last_exc
 
+    def _identity(self, ctx: Optional[RequestContext] = None) -> tuple[str, str, str]:
+        """解析本次调用的有效 (machine, agent, role)；直连调用未传 ctx 时按本机 admin 处理。"""
+        if ctx is None:
+            return self.machine[:48], self.agent, "admin"
+        mach = normalize_machine(ctx.machine, self.machine)
+        ag = normalize_agent(ctx.agent, self.agent)
+        role = "admin" if ctx.role == "admin" else "agent"
+        return mach, ag, role
+
+    @contextmanager
+    def transaction(self) -> Iterator[Any]:
+        """在单个 MariaDB 连接上运行显式事务（带探活与失败回滚）。"""
+        conn = self._conn()
+        try:
+            conn.ping()
+            self._tls.pinged_at = time.monotonic()
+        except Exception:  # noqa: BLE001
+            self._tls.conn = None
+            conn = self._conn()
+        try:
+            conn.begin()
+            with conn.cursor() as cur:
+                yield cur
+            conn.commit()
+        except BaseException:
+            try:
+                conn.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+
     def _invalidate_caches(self, *, vec_dirty: bool = False) -> None:
         """写路径后让 stats/vector_status 的 TTL 缓存立即失效。
 
@@ -173,10 +211,14 @@ class BaseMixin:
         return self.ensure_schema(force_migrate=True)
 
     def ensure_schema(self, *, force_migrate: bool = False) -> int:
+        if self._schema_ready and not force_migrate:
+            if self._workers_wanted:
+                self.start_workers()
+            return SCHEMA_VERSION
         ready_key = (str(self.cfg.get("mariadb_host") or ""), int(self.cfg.get("mariadb_port") or 0),
                      str(self.cfg.get("mariadb_db") or ""), SCHEMA_VERSION)
         with self._schema_lock:
-            if self._schema_ready or ready_key in _SCHEMA_READY:
+            if not force_migrate and (self._schema_ready or ready_key in _SCHEMA_READY):
                 self._schema_ready = True
                 if self._workers_wanted:
                     self.start_workers()

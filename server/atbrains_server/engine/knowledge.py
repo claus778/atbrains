@@ -9,9 +9,18 @@ import hashlib
 import json
 import time
 
+from ..context import (
+    RequestContext,
+    owns_record,
+)
+from ..schema import (
+    _is_duplicate_error,
+)
 from ..util import (  # noqa: F401
     BrainError,
+    BrainForbidden,
     _cfg_flag,
+    _db_safe,
     _regexp_pattern,
     _regexp_target,
     normalize_platform,
@@ -52,7 +61,8 @@ class KnowledgeMixin:
                        valid_from: Optional[str] = None, valid_to: Optional[str] = None,
                        turn_id: Optional[int] = None, seq: Optional[int] = None,
                        quote: str = "", confidence: int = 80, importance: int = 5,
-                       machine: str = "") -> dict[str, Any]:
+                       machine: str = "",
+                       ctx: Optional[RequestContext] = None) -> dict[str, Any]:
         """记一条结构化主张（subject/predicate/value），老版本自动封版。
 
         与 brain_memories 的区别：这里是「一个槽位的当前值 + 历史版本」，
@@ -65,7 +75,8 @@ class KnowledgeMixin:
             raise BrainError("subject / predicate / value 都不能为空")
         kind = (str(kind or "fact").strip() or "fact")[:24]
         basis = (str(basis or "direct_report").strip() or "direct_report")[:16]
-        mach = str(machine or self.machine or "")[:48]
+        ctx_mach, ag, _role = self._identity(ctx)
+        mach = "shared" if machine == "shared" else (str(machine or ctx_mach)[:48])
         slot = self.claim_slot_key(mach, subject, predicate, kind)
         try:
             importance = max(1, min(10, int(importance)))
@@ -73,37 +84,77 @@ class KnowledgeMixin:
         except (TypeError, ValueError):
             importance, confidence = 5, 80
         self.ensure_schema()
-        row = self._exec(
-            "SELECT id, current_revision FROM brain_claims WHERE slot_key = %s", (slot,), fetch=True)
-        if row:
-            claim_id = int(row[0]["id"])
-            revision = int(row[0]["current_revision"] or 0) + 1
-            self._exec(
-                "UPDATE brain_claims SET current_revision = %s, state = 'active', importance = %s, "
-                "agent = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
-                (revision, importance, self.agent, claim_id))
-            self._exec(
-                "UPDATE brain_claim_versions SET recorded_to = CURRENT_TIMESTAMP "
-                "WHERE claim_id = %s AND recorded_to IS NULL AND revision < %s", (claim_id, revision))
-            created = False
-        else:
-            _, claim_id = self._exec(
-                "INSERT INTO brain_claims (machine, agent, subject, predicate, kind, slot_key, "
-                "current_revision, state, importance) VALUES (%s, %s, %s, %s, %s, %s, 1, 'active', %s)",
-                (mach, self.agent, subject, predicate, kind, slot, importance))
-            claim_id, revision, created = int(claim_id), 1, True
-        self._exec(
-            "INSERT INTO brain_claim_versions (claim_id, revision, agent, value_text, basis, valid_from, "
-            "valid_to, replaces_revision, source_turn_id, source_seq, quote, confidence) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-            (claim_id, revision, self.agent, value[:16000], basis, valid_from or None, valid_to or None,
-             revision - 1 if revision > 1 else None, int(turn_id) if turn_id else None,
-             int(seq) if seq is not None else None, str(quote or "")[:2000], confidence))
-        if turn_id:
-            self._exec(
-                "INSERT IGNORE INTO brain_claim_evidence (claim_id, revision, turn_id, seq, relation, quote) "
-                "VALUES (%s, %s, %s, %s, 'supports', %s)",
-                (claim_id, revision, int(turn_id), int(seq or 0), str(quote or "")[:2000]))
+        val_safe = _db_safe(value[:16000])
+        quote_safe = _db_safe(str(quote or "")[:2000])
+        subj_safe = _db_safe(subject)
+        pred_safe = _db_safe(predicate)
+        with self.transaction() as cur:
+            cur.execute(
+                "SELECT id, current_revision FROM brain_claims WHERE slot_key = %s FOR UPDATE",
+                (slot,),
+            )
+            row = cur.fetchone()
+            if row:
+                claim_id = int(row["id"])
+                revision = int(row["current_revision"] or 0) + 1
+                cur.execute(
+                    "UPDATE brain_claims SET current_revision = %s, state = 'active', importance = %s, "
+                    "agent = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                    (revision, importance, ag, claim_id),
+                )
+                cur.execute(
+                    "UPDATE brain_claim_versions SET recorded_to = CURRENT_TIMESTAMP "
+                    "WHERE claim_id = %s AND recorded_to IS NULL AND revision < %s",
+                    (claim_id, revision),
+                )
+                created = False
+            else:
+                try:
+                    cur.execute(
+                        "INSERT INTO brain_claims (machine, agent, subject, predicate, kind, slot_key, "
+                        "current_revision, state, importance) VALUES (%s, %s, %s, %s, %s, %s, 1, 'active', %s)",
+                        (mach, ag, subj_safe, pred_safe, kind, slot, importance),
+                    )
+                    claim_id, revision, created = int(cur.lastrowid), 1, True
+                except Exception as exc:  # noqa: BLE001
+                    if not _is_duplicate_error(exc):
+                        raise
+                    cur.execute(
+                        "SELECT id, current_revision FROM brain_claims WHERE slot_key = %s FOR UPDATE",
+                        (slot,),
+                    )
+                    row = cur.fetchone()
+                    if not row:
+                        raise
+                    claim_id = int(row["id"])
+                    revision = int(row["current_revision"] or 0) + 1
+                    cur.execute(
+                        "UPDATE brain_claims SET current_revision = %s, state = 'active', importance = %s, "
+                        "agent = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                        (revision, importance, ag, claim_id),
+                    )
+                    cur.execute(
+                        "UPDATE brain_claim_versions SET recorded_to = CURRENT_TIMESTAMP "
+                        "WHERE claim_id = %s AND recorded_to IS NULL AND revision < %s",
+                        (claim_id, revision),
+                    )
+                    created = False
+            cur.execute(
+                "INSERT INTO brain_claim_versions (claim_id, revision, agent, value_text, basis, valid_from, "
+                "valid_to, replaces_revision, source_turn_id, source_seq, quote, confidence) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (
+                    claim_id, revision, ag, val_safe, basis, valid_from or None, valid_to or None,
+                    revision - 1 if revision > 1 else None, int(turn_id) if turn_id else None,
+                    int(seq) if seq is not None else None, quote_safe, confidence,
+                ),
+            )
+            if turn_id:
+                cur.execute(
+                    "INSERT IGNORE INTO brain_claim_evidence (claim_id, revision, turn_id, seq, relation, quote) "
+                    "VALUES (%s, %s, %s, %s, 'supports', %s)",
+                    (claim_id, revision, int(turn_id), int(seq or 0), quote_safe),
+                )
         return {"claim_id": claim_id, "revision": revision, "slot_key": slot,
                 "subject": subject, "predicate": predicate, "kind": kind, "created": created}
 
@@ -154,24 +205,39 @@ class KnowledgeMixin:
                     r[k] = v.isoformat(sep=" ", timespec="seconds")
         return rows
 
-    def claim_retire(self, claim_id: int, reason: str = "") -> dict[str, Any]:
+    def claim_retire(self, claim_id: int, reason: str = "",
+                     *, ctx: Optional[RequestContext] = None) -> dict[str, Any]:
         """撤回一条主张（保留版本与证据，只是不再算当前值）。"""
         self.ensure_schema()
+        cid = int(claim_id)
+        if ctx is not None and ctx.role != "admin":
+            rows = self._exec("SELECT id, machine, agent FROM brain_claims WHERE id = %s", (cid,), fetch=True)
+            if rows and not owns_record(ctx, rows[0], allow_shared=True):
+                raise BrainForbidden("无权撤回其他身份的主张")
         rowcount, _ = self._exec(
             "UPDATE brain_claims SET state = 'retracted', updated_at = CURRENT_TIMESTAMP "
-            "WHERE id = %s AND state <> 'retracted'", (int(claim_id),))
+            "WHERE id = %s AND state <> 'retracted'", (cid,))
         self._exec(
             "UPDATE brain_claim_versions SET recorded_to = CURRENT_TIMESTAMP "
-            "WHERE claim_id = %s AND recorded_to IS NULL", (int(claim_id),))
-        return {"claim_id": int(claim_id), "retracted": rowcount, "reason": str(reason or "")[:200]}
+            "WHERE claim_id = %s AND recorded_to IS NULL", (cid,))
+        return {"claim_id": cid, "retracted": rowcount, "reason": str(reason or "")[:200]}
 
     def episode_set(self, turn_id: int, *, goal: Optional[str] = None,
                     decisions: Any = None, open_items: Any = None, blockers: Any = None,
                     next_step: Optional[str] = None, status: Optional[str] = None,
-                    session_id: str = "") -> dict[str, Any]:
+                    session_id: str = "",
+                    ctx: Optional[RequestContext] = None) -> dict[str, Any]:
         """给某一轮挂一个情节头（目标/决策/未完成/阻碍/下一步）；只更新传入的字段。"""
         tid = int(turn_id)
         self.ensure_schema()
+        mach, ag, role = self._identity(ctx)
+        if role != "admin":
+            existing = self._exec("SELECT machine, agent FROM brain_episodes WHERE turn_id = %s", (tid,), fetch=True)
+            if existing and not owns_record(ctx, existing[0]):
+                raise BrainForbidden("无权修改其他身份的情节")
+            trow = self._exec("SELECT machine, agent FROM brain_turns WHERE id = %s", (tid,), fetch=True)
+            if trow and not owns_record(ctx, trow[0]):
+                raise BrainForbidden("无权为其他身份的轮次挂情节")
         vals = {
             "goal": None if goal is None else str(goal)[:4000],
             "decisions": None if decisions is None else self._json_list(decisions),
@@ -187,15 +253,16 @@ class KnowledgeMixin:
             "ON DUPLICATE KEY UPDATE goal = COALESCE(%s, goal), decisions = COALESCE(%s, decisions), "
             "open_items = COALESCE(%s, open_items), blockers = COALESCE(%s, blockers), "
             "next_step = COALESCE(%s, next_step), status = COALESCE(%s, status), agent = VALUES(agent)",
-            (tid, str(session_id or "")[:96], self.machine[:48], self.agent,
+            (tid, str(session_id or "")[:96], mach, ag,
              vals["goal"], vals["decisions"], vals["open_items"], vals["blockers"],
              vals["next_step"], vals["status"],
              vals["goal"], vals["decisions"], vals["open_items"], vals["blockers"],
              vals["next_step"], vals["status"]))
         return {"turn_id": tid, "updated": True}
 
-    def episode_get(self, turn_id: int = 0, *, session_id: str = "") -> dict[str, Any]:
-        """读某一轮的情节头；不传 turn_id 时取该会话最后一轮。"""
+    def episode_get(self, turn_id: int = 0, *, session_id: str = "",
+                    ctx: Optional[RequestContext] = None) -> dict[str, Any]:
+        """读某一轮的情节头（共享协作用只读接口）；不传 turn_id 时取该会话最后一轮。"""
         self.ensure_schema()
         tid = int(turn_id or 0)
         if not tid and session_id:
@@ -222,7 +289,7 @@ class KnowledgeMixin:
         out["found"] = True
         return out
 
-    def _resolve_author(self, author: str, platform: str) -> str:
+    def _resolve_author(self, author: str, platform: str, *, machine: str = "") -> str:
         """规范化/回填 author，不依赖 MariaDB 触发器也能保持统一口径。"""
         a = str(author or "").strip()
         if a.endswith("@im.wechat"):
@@ -232,11 +299,12 @@ class KnowledgeMixin:
         p = str(platform or "").strip().lower()
         if p in ("cron", "oneshot", "subagent"):
             return f"sys:{p}"[:64]
+        mach = (machine or self.machine)[:48]
         try:
             rows = self._exec(
                 "SELECT machine, platform, author FROM brain_author_defaults "
                 "WHERE (machine = %s OR machine = '*') AND (platform = %s OR platform = '*')",
-                (self.machine[:48], p[:32]), fetch=True)
+                (mach, p[:32]), fetch=True)
             best_score, best_author = -1, ""
             for r in rows:
                 sc = (2 if r.get("machine") != "*" else 0) + (1 if r.get("platform") != "*" else 0)
@@ -248,8 +316,8 @@ class KnowledgeMixin:
             pass
         return "unknown"
 
-    def open_episodes(self, limit: int = 5) -> list[dict[str, Any]]:
-        """未完成情节（status=open），最近的在前。"""
+    def open_episodes(self, limit: int = 5, *, ctx: Optional[RequestContext] = None) -> list[dict[str, Any]]:
+        """未完成情节（status=open），跨 agent 交接可见，最近的在前。"""
         self.ensure_schema()
         try:
             rows = self._exec(
@@ -264,33 +332,35 @@ class KnowledgeMixin:
     def record_turn(self, session_id: str, user_content: str, assistant_content: str,
                     *, platform: str = "", author: str = "",
                     messages: Optional[list[dict[str, Any]]] = None,
-                    total_messages: Optional[int] = None) -> int:
+                    total_messages: Optional[int] = None,
+                    ctx: Optional[RequestContext] = None) -> int:
         platform = normalize_platform(platform)
         session_id = str(session_id or "")[:96]
         platform = platform[:48]
+        mach, ag, _role = self._identity(ctx)
         u_raw, a_raw = str(user_content or ""), str(assistant_content or "")
         u, a = u_raw[:16000], a_raw[:16000]
         truncated = 1 if (len(u_raw) > 16000 or len(a_raw) > 16000) else 0
         self.ensure_schema()
-        resolved_author = self._resolve_author(author, platform)
+        resolved_author = self._resolve_author(author, platform, machine=mach)
         _, turn_id = self._exec(
             "INSERT INTO brain_turns (session_id, platform, author, machine, agent, truncated, "
             "user_content, assistant_content) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            (session_id, platform, resolved_author, self.machine[:48], self.agent, truncated, u, a),
+            (session_id, platform, resolved_author, mach, ag, truncated, u, a),
         )
         self._exec(
             "INSERT INTO brain_sessions (session_id, platform, machine, started_at, last_active, turn_count) "
             "VALUES (%s, %s, %s, NOW(), NOW(), 1) "
             "ON DUPLICATE KEY UPDATE last_active = NOW(), turn_count = turn_count + 1, "
             "platform = VALUES(platform), machine = VALUES(machine)",
-            (session_id, platform, self.machine[:48]),
+            (session_id, platform, mach),
         )
         # 全量转录层（可关）：工具调用/工具输出/推理按 zlib 增量落库
         stored = stored_bytes = 0
         if messages:
             try:
                 stored, stored_bytes = self.store_turn_messages(
-                    turn_id, session_id, messages, total_messages)
+                    turn_id, session_id, messages, total_messages, ctx=ctx)
             except Exception as exc:  # noqa: BLE001
                 logger.warning("atbrains: 转录层写入失败（正文已存）: %s", str(exc)[:200])
             if stored:
@@ -305,8 +375,8 @@ class KnowledgeMixin:
             stream = self._rk("recent")
             r.xadd(
                 stream,
-                {"sid": session_id, "platform": platform, "author": author, "machine": self.machine[:48],
-                 "user": u[:600], "assistant": a[:600], "ts": f"{time.time():.3f}"},
+                {"sid": session_id, "platform": platform, "author": author, "machine": mach,
+                 "agent": ag, "user": u[:600], "assistant": a[:600], "ts": f"{time.time():.3f}"},
                 maxlen=int(self.cfg["stream_maxlen"]), approximate=True,
             )
             r.expire(stream, int(self.cfg["short_term_ttl_days"]) * 86400)

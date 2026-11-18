@@ -8,6 +8,10 @@ import hashlib
 import json
 import re
 
+from ..context import (
+    RequestContext,
+    owns_record,
+)
 from ..util import (  # noqa: F401
     _cfg_flag,
     _clip,
@@ -59,15 +63,20 @@ class RecallMixin:
         self.ensure_schema()
         return list(self._exec(sql, tuple(params), fetch=True))
 
-    def search_turns(self, query: str, *, limit: int = 3) -> list[dict[str, Any]]:
+    def search_turns(self, query: str, *, limit: int = 3,
+                     ctx: Optional[RequestContext] = None) -> list[dict[str, Any]]:
         terms = search_terms(query)
         if not terms:
             return []
         where, params = self._search_where(("user_content", "assistant_content"), terms)
         sql = (
-            "SELECT id, session_id, platform, machine, user_content, assistant_content, ts "
+            "SELECT id, session_id, platform, machine, agent, user_content, assistant_content, ts "
             f"FROM brain_turns WHERE ({where}) "
         )
+        mach, ag, role = self._identity(ctx)
+        if role != "admin":
+            sql += "AND (agent = %s OR (agent = '' AND machine = %s)) "
+            params.extend([ag, mach])
         window_days = int(self.cfg.get("search_turns_days") or 0)
         if window_days > 0:
             sql += "AND ts >= (NOW() - INTERVAL %s DAY) "
@@ -77,33 +86,49 @@ class RecallMixin:
         self.ensure_schema()
         return list(self._exec(sql, tuple(params), fetch=True))
 
-    def recent_turns(self, limit: int = 10, *, source: str = "redis") -> list[dict[str, Any]]:
+    def recent_turns(self, limit: int = 10, *, source: str = "redis",
+                     ctx: Optional[RequestContext] = None) -> list[dict[str, Any]]:
+        mach, ag, role = self._identity(ctx)
+        want_limit = max(1, int(limit))
         if source == "redis":
             try:
-                entries = self.redis().xrevrange(self._rk("recent"), count=int(limit))
+                fetch_n = want_limit if role == "admin" else min(200, max(want_limit * 4, 40))
+                entries = self.redis().xrevrange(self._rk("recent"), count=fetch_n)
                 out = []
                 for entry_id, f in entries:
+                    if role != "admin" and not owns_record(ctx, f):
+                        continue
                     out.append({
                         "stream_id": entry_id,
                         "session": f.get("sid", ""),
                         "platform": f.get("platform", ""),
                         "author": f.get("author", ""),
                         "machine": f.get("machine", ""),
+                        "agent": f.get("agent", ""),
                         "user": f.get("user", ""),
                         "assistant": f.get("assistant", ""),
                         "ts": float(f.get("ts") or 0),
                     })
+                    if len(out) >= want_limit:
+                        break
                 return out
             except Exception as exc:  # noqa: BLE001
                 logger.debug("atbrains: Redis 最近对话读取失败，回退 MariaDB: %s", exc)
                 source = "db"
         self.ensure_schema()
-        rows = self._exec(
-            "SELECT id, session_id, platform, author, machine, user_content, assistant_content, ts "
-            "FROM brain_turns ORDER BY ts DESC LIMIT %s", (int(limit),), fetch=True)
+        if role == "admin":
+            rows = self._exec(
+                "SELECT id, session_id, platform, author, machine, agent, user_content, assistant_content, ts "
+                "FROM brain_turns ORDER BY ts DESC LIMIT %s", (want_limit,), fetch=True)
+        else:
+            rows = self._exec(
+                "SELECT id, session_id, platform, author, machine, agent, user_content, assistant_content, ts "
+                "FROM brain_turns WHERE (agent = %s OR (agent = '' AND machine = %s)) "
+                "ORDER BY ts DESC LIMIT %s", (ag, mach, want_limit), fetch=True)
         return [{
             "stream_id": str(r["id"]), "session": r["session_id"], "platform": r["platform"],
-            "author": r.get("author", ""), "machine": r.get("machine", ""), "user": r["user_content"],
+            "author": r.get("author", ""), "machine": r.get("machine", ""),
+            "agent": r.get("agent", ""), "user": r["user_content"],
             # 库内 DATETIME 是 UTC 口径；naive .timestamp() 会按本机时区解释
             "assistant": r["assistant_content"], "ts": _utc_epoch(r["ts"]) or 0,
         } for r in rows]
@@ -210,7 +235,7 @@ class RecallMixin:
 
     def exact_memories(self, query: str, *, limit: int = 5,
                        kind: Optional[str] = None, agent: Optional[str] = None) -> list[dict[str, Any]]:
-        """整句/去空白后精确子串直查（强信号优先，不被 importance 挤掉）。"""
+        """整句精确子串直查（强信号优先，避免每行 REPLACE 全表 CPU 开销）。"""
         q = " ".join(str(query or "").split())
         if len(q) < 4:
             return []
@@ -218,8 +243,8 @@ class RecallMixin:
         cols = ("id, kind, memory_type, content, tags, importance, source, session_id, "
                 "machine, agent, created_at, updated_at")
         sql = (f"SELECT {cols} FROM brain_memories WHERE active = 1 AND superseded_by IS NULL "
-               "AND (content LIKE %s OR REPLACE(REPLACE(content, ' ', ''), '\\n', '') LIKE %s)")
-        params: list[Any] = [f"%{_esc_like(q)}%", f"%{_esc_like(''.join(q.split()))}%"]
+               "AND content LIKE %s")
+        params: list[Any] = [f"%{_esc_like(q)}%"]
         if kind:
             sql += " AND kind = %s"
             params.append(kind)

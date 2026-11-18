@@ -27,9 +27,7 @@ class AtbrainsStore(
     MaintenanceMixin,
     DistillMixin,
 ):
-    """Redis + MariaDB + Qdrant 三层记忆存储引擎（线程安全，连接按线程持有）。"""
+    """Redis + MariaDB + Qdrant 三层记忆存储引擎（单引擎共享连接与缓存，按 RequestContext 隔离调用方身份）。"""
 
 
-BrainStore = AtbrainsStore
-
-__all__ = ["AtbrainsStore", "BrainStore"]
+__all__ = ["AtbrainsStore"]

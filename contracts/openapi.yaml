@@ -162,11 +162,31 @@ paths:
       summary: Admin paginated session listing
       responses:
         "200": { description: Session page }
+  /v1/admin/recent:
+    get:
+      summary: Admin recent Redis hot items and turn stream
+      responses:
+        "200": { description: Recent items }
   /v1/admin/search:
     get:
       summary: Admin hybrid memory + turn search
       responses:
         "200": { description: Search results }
+  /v1/admin/remember:
+    post:
+      summary: Admin save a memory item
+      responses:
+        "200": { description: Saved memory }
+  /v1/admin/forget:
+    post:
+      summary: Admin deactivate a memory item
+      responses:
+        "200": { description: Deactivation result }
+  /v1/admin/restore:
+    post:
+      summary: Admin restore a memory item
+      responses:
+        "200": { description: Restoration result }
   /v1/admin/drain:
     post:
       summary: Trigger vector backfill drain

@@ -358,12 +358,15 @@ def context_packet(store: Any, agent_label: str, *, focus: str = "", limit: int 
                 "assistant": clip_text(t.get("assistant_content") or t.get("assistant"), 160),
             })
     try:
-        mysql = dict(store.stats().get("mysql") or {})
-        packet["counts"] = {
-            k: mysql.get(k)
-            for k in ("memories_active", "turns", "claims_active", "episodes", "sessions")
-            if k in mysql
-        }
+        if hasattr(store, "quick_counts"):
+            packet["counts"] = dict(store.quick_counts())
+        else:
+            mysql = dict(store.stats().get("mysql") or {})
+            packet["counts"] = {
+                k: mysql.get(k)
+                for k in ("memories_active", "turns", "claims_active", "episodes", "sessions")
+                if k in mysql
+            }
     except Exception:  # noqa: BLE001
         pass
     return packet
