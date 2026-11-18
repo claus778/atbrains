@@ -320,6 +320,24 @@ class EndToEndIntegrationTest(unittest.TestCase):
                     astrbot_cli.forget(r2["saved"]["id"], allow_spool=False)
                 self.assertEqual(ctx_fg.exception.status, 403)
 
+                # 写入后查询缓存 (qcache) 立即通过 qver 失效，跨端立刻能召回到新内容
+                before = astrbot_cli.recall("缓存即时失效测试词9981", use_cache=False)
+                self.assertNotIn("9981", before["text"])
+                hermes_cli.remember("缓存即时失效测试词9981已写入", kind="fact", importance=8)
+                hit_after = astrbot_cli.recall("缓存即时失效测试词9981", use_cache=False)
+                self.assertIn("9981", hit_after["text"])
+
+                # overview 走 vector_status 计数而不做全量 scroll
+                req_ov = urllib.request.Request(
+                    f"http://127.0.0.1:{port}/v1/admin/overview",
+                    headers={"Authorization": f"Bearer {admin_tok}"},
+                    method="GET",
+                )
+                with opener.open(req_ov, timeout=10) as resp:
+                    ov = json.loads(resp.read().decode())
+                self.assertTrue(ov["ok"])
+                self.assertGreaterEqual(ov["qdrant"]["coverage"]["active_memories"], 3)
+
                 # 停用 + 恢复（admin 权限放行）
                 mid = r2["saved"]["id"]
                 fg = admin_cli.forget(mid)

@@ -170,11 +170,18 @@ class GraphMixin:
                 "VALUES (%s, %s, %s, 1.000, %s, %s) "
                 "ON DUPLICATE KEY UPDATE weight = GREATEST(weight, VALUES(weight))",
                 (sid, did, kind, self.machine[:48], self.agent))
-        for eid in id_map.values():
+        eids = sorted(set(id_map.values()))
+        for i in range(0, len(eids), 200):
+            chunk_ids = eids[i:i + 200]
+            marks = ", ".join(["%s"] * len(chunk_ids))
             self._exec(
-                "UPDATE brain_entities SET mention_count = (SELECT COUNT(*) FROM brain_entity_mentions "
-                "WHERE entity_id = %s) WHERE id = %s", (eid, eid))
-        self._invalidate_caches()
+                f"UPDATE brain_entities e "
+                f"JOIN (SELECT entity_id, COUNT(*) AS c FROM brain_entity_mentions "
+                f"WHERE entity_id IN ({marks}) GROUP BY entity_id) m ON m.entity_id = e.id "
+                f"SET e.mention_count = m.c, e.updated_at = e.updated_at",
+                tuple(chunk_ids),
+            )
+        self._invalidate_caches(bump_qver=False)
         return out
 
     def graph_search_memories(self, query: str, *, limit: int = 12) -> list[dict[str, Any]]:

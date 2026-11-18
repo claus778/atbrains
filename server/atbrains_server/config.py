@@ -31,6 +31,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "mariadb_port": 57306,
     "mariadb_user": "agent",
     "mariadb_db": "agent_memory",
+    "db_pool_size": 8,
     "machine": "",
     # 写入方身份（brain_memories/brain_claims/brain_episodes.agent）：空由调用方/令牌决定。
     "agent": "",
@@ -64,9 +65,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "embed_model": "Qwen/Qwen3-Embedding-4B",
     "embed_dim": 2560,
     "embed_timeout": 60,
-    "vector_query_timeout": 20,
-    "http_keepalive_enabled": 1,
-    "http_keepalive_idle_s": 60,
+    "vector_query_timeout": 0.8,
     "http_user_agent": "atbrains-server/3.0",
     "qdrant_url": "http://127.0.0.1:6333",
     "qdrant_collection": "brain_memories",
@@ -166,11 +165,13 @@ NON_SECRET_ENV_VARS: dict[str, tuple[str, ...]] = {
     "mariadb_port": ("ATBRAINS_MARIADB_PORT",),
     "mariadb_user": ("ATBRAINS_MARIADB_USER",),
     "mariadb_db": ("ATBRAINS_MARIADB_DB",),
+    "db_pool_size": ("ATBRAINS_DB_POOL_SIZE",),
     "machine": ("ATBRAINS_MACHINE",),
     "agent": ("ATBRAINS_AGENT",),
     "auto_migrate": ("ATBRAINS_AUTO_MIGRATE",),
     "background_workers": ("ATBRAINS_BACKGROUND_WORKERS",),
     "vector_enabled": ("ATBRAINS_VECTOR_ENABLED",),
+    "vector_query_timeout": ("ATBRAINS_VECTOR_QUERY_TIMEOUT",),
     "embed_base_url": ("ATBRAINS_EMBED_BASE_URL",),
     "embed_model": ("ATBRAINS_EMBED_MODEL",),
     "embed_dim": ("ATBRAINS_EMBED_DIM",),
@@ -376,11 +377,18 @@ def resolve_config(config_home: Optional[str] = None) -> dict[str, Any]:
         if val is not None:
             cfg[key] = val
 
-    # 整数配置归一化
+    # 数值配置归一化
     for k, default in DEFAULT_CONFIG.items():
+        if isinstance(default, bool):
+            continue
         if isinstance(default, int):
             try:
                 cfg[k] = int(cfg[k])
+            except (TypeError, ValueError):
+                cfg[k] = default
+        elif isinstance(default, float):
+            try:
+                cfg[k] = float(cfg[k])
             except (TypeError, ValueError):
                 cfg[k] = default
 

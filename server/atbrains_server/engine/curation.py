@@ -36,7 +36,7 @@ class CurationMixin:
             logger.debug("atbrains: 访问计数失败（忽略）: %s", str(exc)[:160])
 
     def _flush_access(self) -> int:
-        """把 Redis 里的访问计数批量回写 MariaDB（维护线程调用；幂等）。"""
+        """把 Redis 里的访问计数批量回写 MariaDB（CASE 合并写 + HINCRBY 扣减防丢增量）。"""
         if not int(self.cfg.get("access_boost_enabled") or 0):
             return 0
         try:
@@ -46,26 +46,38 @@ class CurationMixin:
             if not members:
                 return 0
             counts = {str(k): int(v or 0) for k, v in (r.hgetall(key) or {}).items()}
-            n = 0
+            updates: list[tuple[int, int]] = []
             for mid in members:
                 c = counts.get(mid, 0)
-                if c <= 0:
-                    continue
-                # ⚠️ 必须显式 updated_at = updated_at：否则列上的 ON UPDATE CURRENT_TIMESTAMP
-                # 会把“最后更新时间”冲到当下，直接污染召回排序（历史踩过一次）。
-                self._exec(
-                    "UPDATE brain_memories SET access_count = access_count + %s, "
-                    "last_accessed_at = UTC_TIMESTAMP(), updated_at = updated_at "
-                    "WHERE id = %s AND active = 1", (c, int(mid)))
-                n += 1
+                if c > 0:
+                    try:
+                        updates.append((int(mid), int(c)))
+                    except ValueError:
+                        continue
+            if updates:
+                for i in range(0, len(updates), 100):
+                    chunk = updates[i:i + 100]
+                    cases = " ".join("WHEN %s THEN %s" for _ in chunk)
+                    marks = ", ".join("%s" for _ in chunk)
+                    params: list[int] = []
+                    for mid_i, cnt_i in chunk:
+                        params.extend((mid_i, cnt_i))
+                    params.extend(mid_i for mid_i, _ in chunk)
+                    # 必须显式 updated_at = updated_at，避免触发 ON UPDATE 污染召回年龄
+                    self._exec(
+                        f"UPDATE brain_memories SET access_count = access_count + CASE id {cases} ELSE 0 END, "
+                        f"last_accessed_at = UTC_TIMESTAMP(), updated_at = updated_at "
+                        f"WHERE id IN ({marks}) AND active = 1",
+                        tuple(params),
+                    )
             pipe = r.pipeline()
-            if counts:
-                pipe.hdel(key, *list(counts.keys()))
+            for mid_i, cnt_i in updates:
+                pipe.hincrby(key, str(mid_i), -cnt_i)
             pipe.zrem(dirty, *members)
             pipe.execute()
-            if n:
-                self._invalidate_caches()
-            return n
+            if updates:
+                self._invalidate_caches(bump_qver=False)
+            return len(updates)
         except Exception as exc:  # noqa: BLE001
             logger.warning("atbrains: 访问计数回写失败（下轮重试）: %s", str(exc)[:200])
             return 0

@@ -333,8 +333,18 @@ class MaintenanceMixin:
             if dry_run:
                 out[name] = int(self._exec(count_sql, params, fetch=True)[0]["c"] or 0)
             else:
-                rowcount, _ = self._exec(delete_sql, params)
-                out[name] = int(rowcount)
+                if name == "expired":
+                    rowcount, _ = self._exec(delete_sql, params)
+                    out[name] = int(rowcount)
+                else:
+                    total_deleted = 0
+                    batch_sql = f"{delete_sql} LIMIT 5000"
+                    while True:
+                        rowcount, _ = self._exec(batch_sql, params)
+                        total_deleted += int(rowcount or 0)
+                        if not rowcount or int(rowcount) < 5000:
+                            break
+                    out[name] = total_deleted
         out["skipped"] = [name for name, days in (("turns", t_days), ("archives", a_days),
                                                   ("inactive_memories", i_days), ("sessions", s_days))
                           if days <= 0]
@@ -377,7 +387,7 @@ class MaintenanceMixin:
         return checks
 
     def overview(self, *, fresh: bool = False) -> dict[str, Any]:
-        """管理台与 CLI 总览（直读引擎与缓存，不再强起 docker/systemctl 子进程）。"""
+        """管理台与 CLI 总览（复用 vector_status SQL 计数，不在轮询路径做 Qdrant 全量 scroll）。"""
         out: dict[str, Any] = {
             "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
             "version": PROTOCOL_VERSION,
@@ -387,35 +397,35 @@ class MaintenanceMixin:
             ("stats", lambda: self.stats(force=fresh)),
             ("ping", lambda: self.ping()),
             ("vector", lambda: self.vector_status(force=fresh)),
-            ("qdrant", lambda: self.qdrant_info()),
         ):
             try:
                 out[key] = fn()
             except Exception as exc:  # noqa: BLE001
                 out[key] = {"error": f"{type(exc).__name__}: {exc}"}
+        v = out.get("vector") if isinstance(out.get("vector"), dict) else {}
+        qstate = v.get("qdrant_state") if isinstance(v.get("qdrant_state"), dict) else {}
+        vmems = v.get("memories") if isinstance(v.get("memories"), dict) else {}
+        active_n = int(vmems.get("active") or 0)
+        ok_n = int(vmems.get("ok") or 0)
+        miss_n = max(0, active_n - ok_n)
+        q_info: dict[str, Any] = {
+            "url": str(self.cfg.get("qdrant_url") or ""),
+            "collection": str(self.cfg.get("qdrant_collection") or ""),
+            "status": qstate.get("status"),
+            "points": qstate.get("points"),
+            "dim": v.get("embed_dim"),
+            "distance": "Cosine",
+            "coverage": {
+                "active_memories": active_n,
+                "with_vector": ok_n,
+                "missing_count": miss_n,
+            },
+        }
+        if "error" in qstate:
+            q_info["error"] = qstate["error"]
+        out["qdrant"] = q_info
         return out
 
     def recent(self, limit: int = 20, *, ctx: Optional[RequestContext] = None) -> dict[str, Any]:
         eff = max(1, min(int(limit), 100))
         return {"hot": self.hot_recent(eff), "turns": self.recent_turns(eff, ctx=ctx)}
-
-    def quick_counts(self) -> dict[str, int]:
-        """醒来包专用轻量计数：命中暖 stats 缓存则零 SQL；冷时只跑 5 个单列 COUNT。"""
-        now = time.monotonic()
-        if self._stats_cache and now - self._stats_cache[0] < self._cache_ttl:
-            mysql = dict((self._stats_cache[1] or {}).get("mysql") or {})
-            return {
-                k: int(mysql.get(k) or 0)
-                for k in ("memories_active", "turns", "claims_active", "episodes", "sessions")
-                if k in mysql
-            }
-        self.ensure_schema()
-        row = self._exec(
-            "SELECT (SELECT COUNT(*) FROM brain_memories WHERE active = 1) AS memories_active, "
-            "(SELECT COUNT(*) FROM brain_turns) AS turns, "
-            "(SELECT COUNT(*) FROM brain_claims WHERE state = 'active') AS claims_active, "
-            "(SELECT COUNT(*) FROM brain_episodes) AS episodes, "
-            "(SELECT COUNT(*) FROM brain_sessions) AS sessions",
-            fetch=True,
-        )[0]
-        return {k: int(v or 0) for k, v in row.items()}

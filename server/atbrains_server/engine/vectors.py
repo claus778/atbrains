@@ -84,11 +84,19 @@ class VectorsMixin:
         self._qdrant("POST", f"/collections/{name}/points/delete?wait=true",
                      {"points": [int(i) for i in ids]}, timeout=30)
 
-    def qdrant_query(self, vector: list[float], topk: int) -> list[dict]:
+    def qdrant_query(self, vector: list[float], topk: int,
+                     *, kind: Optional[str] = None,
+                     agent: Optional[str] = None) -> list[dict]:
         name = str(self.cfg["qdrant_collection"])
-        data = self._qdrant("POST", f"/collections/{name}/points/query",
-                            {"query": vector, "limit": int(topk), "with_payload": False},
-                            timeout=20)
+        must: list[dict[str, Any]] = []
+        if kind:
+            must.append({"key": "kind", "match": {"value": str(kind)}})
+        if agent:
+            must.append({"key": "agent", "match": {"value": str(agent).strip().lower()[:32]}})
+        body: dict[str, Any] = {"query": vector, "limit": int(topk), "with_payload": False}
+        if must:
+            body["filter"] = {"must": must}
+        data = self._qdrant("POST", f"/collections/{name}/points/query", body, timeout=20)
         pts = ((data.get("result") or {}).get("points")) or []
         return [{"id": int(p["id"]), "score": float(p.get("score") or 0.0)} for p in pts]
 
@@ -115,12 +123,12 @@ class VectorsMixin:
         base = ("SELECT m.id, m.content, m.kind, m.tags, m.importance, m.machine, m.agent, m.content_hash "
                 "FROM brain_memories m ")
         if force:
-            sql = base + ("WHERE m.active = 1 AND m.id > %s "
+            sql = base + ("WHERE m.active = 1 AND m.superseded_by IS NULL AND m.id > %s "
                           "ORDER BY m.id ASC LIMIT %s")
             return list(self._exec(sql, (int(cursor), int(limit)), fetch=True))
         sql = (base +
                "LEFT JOIN brain_vector_index v ON v.mem_id = m.id "
-               "WHERE m.active = 1 AND ("
+               "WHERE m.active = 1 AND m.superseded_by IS NULL AND ("
                "v.mem_id IS NULL "
                "OR (v.status = 'ok' AND (v.model <> %s OR v.content_hash IS NULL "
                "OR v.content_hash <> m.content_hash)) "
@@ -224,10 +232,11 @@ class VectorsMixin:
                             len(pending), stats["embedded"], stats["errors"])
                 if len(pending) < batch_n:
                     break
-            # 清理已失活记忆的向量
+            # 清理已失活或已被取代记忆的向量
             gone = self._exec(
                 "SELECT v.mem_id FROM brain_vector_index v "
-                "JOIN brain_memories m ON m.id = v.mem_id WHERE m.active = 0 LIMIT 50", fetch=True)
+                "JOIN brain_memories m ON m.id = v.mem_id "
+                "WHERE m.active = 0 OR m.superseded_by IS NOT NULL LIMIT 50", fetch=True)
             if gone:
                 ids = [int(g["mem_id"]) for g in gone]
                 try:
@@ -242,7 +251,8 @@ class VectorsMixin:
                     or time.monotonic() - self._drain_remaining_ts > 60):
                 row = self._exec(
                     "SELECT COUNT(*) AS c FROM brain_memories m LEFT JOIN brain_vector_index v "
-                    "ON v.mem_id = m.id WHERE m.active = 1 AND (v.mem_id IS NULL OR v.status <> 'ok' "
+                    "ON v.mem_id = m.id WHERE m.active = 1 AND m.superseded_by IS NULL "
+                    "AND (v.mem_id IS NULL OR v.status <> 'ok' "
                     "OR v.model <> %s OR (v.content_hash IS NULL OR v.content_hash <> m.content_hash))",
                     (model[:64],), fetch=True)
                 stats["remaining"] = int(row[0]["c"] or 0)
@@ -285,7 +295,7 @@ class VectorsMixin:
         if not int(self.cfg.get("vector_enabled") or 0) or not (query or "").strip():
             return []
         vec = self._query_embedding(query)
-        hits = self.qdrant_query(vec, int(self.cfg.get("vector_topk") or 12))
+        hits = self.qdrant_query(vec, int(self.cfg.get("vector_topk") or 12), kind=kind, agent=agent)
         cutoff = float(self.cfg.get("vector_min_score") or 0.0)
         hits = [h for h in hits if h["score"] >= cutoff]
         if not hits:

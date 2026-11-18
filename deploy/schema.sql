@@ -1,4 +1,4 @@
--- atbrains 记忆库结构 v12（由 tools/export-schema.py --from-code 生成）
+-- atbrains 记忆库结构 v13（由 tools/export-schema.py --from-code 生成）
 SET NAMES utf8mb4;
 CREATE DATABASE IF NOT EXISTS `agent_memory` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 USE `agent_memory`;
@@ -33,13 +33,16 @@ CREATE TABLE IF NOT EXISTS brain_turns (
         platform VARCHAR(48) NOT NULL DEFAULT '',
         author VARCHAR(64) NOT NULL DEFAULT '',
         machine VARCHAR(48) NOT NULL DEFAULT '',
+        agent VARCHAR(32) NOT NULL DEFAULT '',
         truncated TINYINT NOT NULL DEFAULT 0,
         user_content MEDIUMTEXT NOT NULL,
         assistant_content MEDIUMTEXT NOT NULL,
         ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (id),
         KEY idx_ts (ts),
-        KEY idx_session_ts (session_id, ts)
+        KEY idx_session_ts (session_id, ts),
+        KEY idx_turn_agent_ts (agent, ts),
+        KEY idx_turn_machine_ts (machine, ts)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS brain_turn_messages (
@@ -193,6 +196,7 @@ CREATE TABLE IF NOT EXISTS brain_episodes (
         turn_id BIGINT UNSIGNED NOT NULL,
         session_id VARCHAR(96) NOT NULL DEFAULT '',
         machine VARCHAR(48) NOT NULL DEFAULT '',
+        agent VARCHAR(32) NOT NULL DEFAULT 'hermes',
         goal TEXT NULL,
         decisions MEDIUMTEXT NULL,
         open_items MEDIUMTEXT NULL,
@@ -203,7 +207,8 @@ CREATE TABLE IF NOT EXISTS brain_episodes (
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (turn_id),
         KEY idx_episode_session (session_id, turn_id),
-        KEY idx_episode_status (status, updated_at)
+        KEY idx_episode_status (status, updated_at),
+        KEY idx_episode_agent (agent, turn_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS brain_author_defaults (
@@ -285,4 +290,9 @@ CREATE TABLE IF NOT EXISTS brain_entity_mentions (entity_id BIGINT UNSIGNED NOT 
 CREATE TABLE IF NOT EXISTS brain_author_defaults (machine VARCHAR(48) NOT NULL DEFAULT '*', platform VARCHAR(32) NOT NULL DEFAULT '*', author VARCHAR(64) NOT NULL, note VARCHAR(160) NOT NULL DEFAULT '', PRIMARY KEY (machine, platform)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 ALTER TABLE brain_turns ADD COLUMN IF NOT EXISTS agent VARCHAR(32) NOT NULL DEFAULT '' AFTER machine;
 
-INSERT INTO brain_meta (meta_key, meta_value) VALUES ('schema_version', '12') ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value);
+-- v13: 轮次与情节按身份隔离索引（idx_turn_agent_ts / idx_turn_machine_ts / idx_episode_agent）
+ALTER TABLE brain_turns ADD INDEX IF NOT EXISTS idx_turn_agent_ts (agent, ts);
+ALTER TABLE brain_turns ADD INDEX IF NOT EXISTS idx_turn_machine_ts (machine, ts);
+ALTER TABLE brain_episodes ADD INDEX IF NOT EXISTS idx_episode_agent (agent, turn_id);
+
+INSERT INTO brain_meta (meta_key, meta_value) VALUES ('schema_version', '13') ON DUPLICATE KEY UPDATE meta_value = VALUES(meta_value);

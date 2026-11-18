@@ -29,6 +29,64 @@ logger = logging.getLogger("atbrains")
 class TranscriptMixin:
     """对话归档与全量转录层（brain_turns / brain_turn_messages / sessions / archive）。"""
 
+    def _store_turn_messages_in_tx(
+        self,
+        cur: Any,
+        turn_id: int,
+        sid: str,
+        messages: list[dict[str, Any]],
+        total_messages: Optional[int] = None,
+    ) -> tuple[int, int, list[dict[str, Any]]]:
+        msgs = [m for m in (messages or []) if isinstance(m, dict)]
+        if not msgs or not int(self.cfg.get("turn_messages_enabled") or 0):
+            return 0, 0, []
+        max_msg = int(self.cfg.get("turn_msg_max_bytes") or 1048576)
+        max_total = int(self.cfg.get("turn_total_max_bytes") or 16777216)
+        cur.execute(
+            "SELECT archived_messages FROM brain_sessions WHERE session_id = %s FOR UPDATE",
+            (sid,),
+        )
+        row = cur.fetchone()
+        start, cursor = _window_start(
+            msgs, int(row["archived_messages"] or 0) if row else 0, total_messages
+        )
+        delta = msgs[start:]
+        rows: list[tuple] = []
+        total = 0
+        for seq, m in enumerate(delta):
+            role = _db_safe(str(m.get("role") or ""))[:16]
+            tool_name = _db_safe(str(m.get("tool_name") or m.get("name") or ""))[:64]
+            tool_call_id = _db_safe(str(m.get("tool_call_id") or ""))[:128]
+            payload = {k: v for k, v in m.items()
+                       if k not in ("role", "tool_name", "name", "tool_call_id")}
+            try:
+                raw = json.dumps(payload, ensure_ascii=False,
+                                 default=str).encode("utf-8", "replace")
+            except Exception:  # noqa: BLE001
+                raw = json.dumps({"_unserializable": str(payload)[:4096]},
+                                 ensure_ascii=False).encode("utf-8", "replace")
+            if len(raw) > max_msg:
+                content = payload.get("content")
+                payload = {"_truncated_bytes": len(raw),
+                           "content": str(content if content is not None else "")[:max_msg // 4]}
+                raw = json.dumps(payload, ensure_ascii=False).encode("utf-8", "replace")
+            if total + len(raw) > max_total:
+                logger.warning("atbrains: 单轮转录超过 %s 字节上限，剩余 %s 条将在下一轮续存",
+                               max_total, len(delta) - seq)
+                break
+            total += len(raw)
+            rows.append((turn_id, seq, role, tool_name, tool_call_id, len(raw),
+                         zlib.compress(raw, 1)))
+        if rows:
+            cur.executemany(
+                "INSERT INTO brain_turn_messages (turn_id, seq, role, tool_name, "
+                "tool_call_id, raw_bytes, body) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)", rows)
+            cur.execute(
+                "UPDATE brain_sessions SET archived_messages = %s WHERE session_id = %s",
+                (cursor + len(rows), sid))
+        return len(rows), total, delta
+
     def store_turn_messages(self, turn_id: int, session_id: str,
                             messages: list[dict[str, Any]],
                             total_messages: Optional[int] = None,
@@ -39,62 +97,21 @@ class TranscriptMixin:
             return 0, 0
         sid = _db_safe(str(session_id or ""))[:96]
         mach, _ag, _role = self._identity(ctx)
-        max_msg = int(self.cfg.get("turn_msg_max_bytes") or 1048576)
-        max_total = int(self.cfg.get("turn_total_max_bytes") or 16777216)
-        rows: list[tuple] = []
-        delta: list[dict[str, Any]] = []
-        total = 0
         with self.transaction() as cur:
             cur.execute(
                 "INSERT INTO brain_sessions (session_id, platform, machine, started_at, "
                 "last_active, turn_count) VALUES (%s, '', %s, NOW(), NOW(), 0) "
                 "ON DUPLICATE KEY UPDATE session_id = VALUES(session_id)",
                 (sid, mach))
-            cur.execute(
-                "SELECT archived_messages FROM brain_sessions WHERE session_id = %s FOR UPDATE",
-                (sid,))
-            row = cur.fetchone()
-            start, cursor = _window_start(
-                msgs, int(row["archived_messages"] or 0) if row else 0, total_messages)
-            delta = msgs[start:]
-            for seq, m in enumerate(delta):
-                role = _db_safe(str(m.get("role") or ""))[:16]
-                tool_name = _db_safe(str(m.get("tool_name") or m.get("name") or ""))[:64]
-                tool_call_id = _db_safe(str(m.get("tool_call_id") or ""))[:128]
-                payload = {k: v for k, v in m.items()
-                           if k not in ("role", "tool_name", "name", "tool_call_id")}
-                try:
-                    raw = json.dumps(payload, ensure_ascii=False,
-                                     default=str).encode("utf-8", "replace")
-                except Exception:  # noqa: BLE001
-                    raw = json.dumps({"_unserializable": str(payload)[:4096]},
-                                     ensure_ascii=False).encode("utf-8", "replace")
-                if len(raw) > max_msg:
-                    content = payload.get("content")
-                    payload = {"_truncated_bytes": len(raw),
-                               "content": str(content if content is not None else "")[:max_msg // 4]}
-                    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8", "replace")
-                if total + len(raw) > max_total:
-                    logger.warning("atbrains: 单轮转录超过 %s 字节上限，剩余 %s 条将在下一轮续存",
-                                   max_total, len(delta) - seq)
-                    break
-                total += len(raw)
-                rows.append((turn_id, seq, role, tool_name, tool_call_id, len(raw),
-                             zlib.compress(raw, 1)))
-            if rows:
-                cur.executemany(
-                    "INSERT INTO brain_turn_messages (turn_id, seq, role, tool_name, "
-                    "tool_call_id, raw_bytes, body) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s)", rows)
-                cur.execute(
-                    "UPDATE brain_sessions SET archived_messages = %s WHERE session_id = %s",
-                    (cursor + len(rows), sid))
-        if rows and _cfg_flag(self.cfg, "projection_tables_enabled", 0):
+            count, total, delta = self._store_turn_messages_in_tx(
+                cur, turn_id, sid, msgs, total_messages
+            )
+        if count and _cfg_flag(self.cfg, "projection_tables_enabled", 0):
             try:
                 self._index_turn_details(turn_id, delta)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("atbrains: 思考/工具调用索引失败（原文已存）: %s", str(exc)[:200])
-        return len(rows), total
+        return count, total
 
     def _detail_cap(self, key: str, default: int) -> int:
         try:

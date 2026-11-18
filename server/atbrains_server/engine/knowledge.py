@@ -290,7 +290,7 @@ class KnowledgeMixin:
         return out
 
     def _resolve_author(self, author: str, platform: str, *, machine: str = "") -> str:
-        """规范化/回填 author，不依赖 MariaDB 触发器也能保持统一口径。"""
+        """规范化/回填 author，brain_author_defaults 走 60 秒进程内缓存，避免每轮查询。"""
         a = str(author or "").strip()
         if a.endswith("@im.wechat"):
             return ("wx:" + a[:-10])[:64]
@@ -301,13 +301,21 @@ class KnowledgeMixin:
             return f"sys:{p}"[:64]
         mach = (machine or self.machine)[:48]
         try:
-            rows = self._exec(
-                "SELECT machine, platform, author FROM brain_author_defaults "
-                "WHERE (machine = %s OR machine = '*') AND (platform = %s OR platform = '*')",
-                (mach, p[:32]), fetch=True)
+            now = time.monotonic()
+            cached = self._author_defaults_cache
+            if cached is not None and now - cached[0] < 60.0:
+                rows = cached[1]
+            else:
+                rows = list(self._exec(
+                    "SELECT machine, platform, author FROM brain_author_defaults", fetch=True))
+                self._author_defaults_cache = (now, rows)
             best_score, best_author = -1, ""
+            p_short = p[:32]
             for r in rows:
-                sc = (2 if r.get("machine") != "*" else 0) + (1 if r.get("platform") != "*" else 0)
+                rm, rp = r.get("machine"), r.get("platform")
+                if rm not in (mach, "*") or rp not in (p_short, "*"):
+                    continue
+                sc = (2 if rm != "*" else 0) + (1 if rp != "*" else 0)
                 if sc > best_score and r.get("author"):
                     best_score, best_author = sc, str(r["author"])
             if best_author:
@@ -334,59 +342,67 @@ class KnowledgeMixin:
                     messages: Optional[list[dict[str, Any]]] = None,
                     total_messages: Optional[int] = None,
                     ctx: Optional[RequestContext] = None) -> int:
-        platform = normalize_platform(platform)
-        session_id = str(session_id or "")[:96]
-        platform = platform[:48]
+        platform = normalize_platform(platform)[:48]
+        sid = _db_safe(str(session_id or ""))[:96]
         mach, ag, _role = self._identity(ctx)
         u_raw, a_raw = str(user_content or ""), str(assistant_content or "")
-        u, a = u_raw[:16000], a_raw[:16000]
+        u, a = _db_safe(u_raw[:16000]), _db_safe(a_raw[:16000])
         truncated = 1 if (len(u_raw) > 16000 or len(a_raw) > 16000) else 0
         self.ensure_schema()
-        resolved_author = self._resolve_author(author, platform, machine=mach)
-        _, turn_id = self._exec(
-            "INSERT INTO brain_turns (session_id, platform, author, machine, agent, truncated, "
-            "user_content, assistant_content) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            (session_id, platform, resolved_author, mach, ag, truncated, u, a),
-        )
-        self._exec(
-            "INSERT INTO brain_sessions (session_id, platform, machine, started_at, last_active, turn_count) "
-            "VALUES (%s, %s, %s, NOW(), NOW(), 1) "
-            "ON DUPLICATE KEY UPDATE last_active = NOW(), turn_count = turn_count + 1, "
-            "platform = VALUES(platform), machine = VALUES(machine)",
-            (session_id, platform, mach),
-        )
-        # 全量转录层（可关）：工具调用/工具输出/推理按 zlib 增量落库
-        stored = stored_bytes = 0
-        if messages:
-            try:
-                stored, stored_bytes = self.store_turn_messages(
-                    turn_id, session_id, messages, total_messages, ctx=ctx)
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("atbrains: 转录层写入失败（正文已存）: %s", str(exc)[:200])
-            if stored:
+        resolved_author = _db_safe(self._resolve_author(author, platform, machine=mach))
+        delta: list[dict[str, Any]] = []
+        with self.transaction() as cur:
+            cur.execute(
+                "INSERT INTO brain_turns (session_id, platform, author, machine, agent, truncated, "
+                "user_content, assistant_content) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (sid, platform, resolved_author, mach, ag, truncated, u, a),
+            )
+            turn_id = int(cur.lastrowid)
+            cur.execute(
+                "INSERT INTO brain_sessions (session_id, platform, machine, started_at, last_active, turn_count) "
+                "VALUES (%s, %s, %s, NOW(), NOW(), 1) "
+                "ON DUPLICATE KEY UPDATE last_active = NOW(), turn_count = turn_count + 1, "
+                "platform = VALUES(platform), machine = VALUES(machine)",
+                (sid, platform, mach),
+            )
+            if messages:
                 try:
-                    self._exec(
-                        "UPDATE brain_turns SET message_count = %s, message_bytes = %s WHERE id = %s",
-                        (min(stored, 65535), min(stored_bytes, 4294967295), turn_id))
+                    stored, stored_bytes, delta = self._store_turn_messages_in_tx(
+                        cur, turn_id, sid, messages, total_messages
+                    )
+                    if stored:
+                        cur.execute(
+                            "UPDATE brain_turns SET message_count = %s, message_bytes = %s WHERE id = %s",
+                            (min(stored, 65535), min(stored_bytes, 4294967295), turn_id),
+                        )
                 except Exception as exc:  # noqa: BLE001
-                    logger.debug("atbrains: 转录计数更新失败: %s", exc)
+                    logger.warning("atbrains: 转录层写入失败（正文已存）: %s", str(exc)[:200])
+        if delta and _cfg_flag(self.cfg, "projection_tables_enabled", 0):
+            try:
+                self._index_turn_details(turn_id, delta)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("atbrains: 思考/工具调用索引失败（原文已存）: %s", str(exc)[:200])
         try:
             r = self.redis()
             stream = self._rk("recent")
-            r.xadd(
+            skey = self._rk("session", sid)
+            ttl = int(self.cfg["short_term_ttl_days"]) * 86400
+            now_s = time.time()
+            pipe = r.pipeline()
+            pipe.xadd(
                 stream,
-                {"sid": session_id, "platform": platform, "author": author, "machine": mach,
-                 "agent": ag, "user": u[:600], "assistant": a[:600], "ts": f"{time.time():.3f}"},
+                {"sid": sid, "platform": platform, "author": author, "machine": mach,
+                 "agent": ag, "user": u[:600], "assistant": a[:600], "ts": f"{now_s:.3f}"},
                 maxlen=int(self.cfg["stream_maxlen"]), approximate=True,
             )
-            r.expire(stream, int(self.cfg["short_term_ttl_days"]) * 86400)
-            skey = self._rk("session", session_id)
-            pipe = r.pipeline()
-            pipe.hset(skey, mapping={"platform": platform,
-                                     "last_active": str(int(time.time()))})
+            pipe.expire(stream, ttl)
+            pipe.hset(skey, mapping={"platform": platform, "last_active": str(int(now_s))})
             pipe.hincrby(skey, "turns", 1)
-            pipe.expire(skey, int(self.cfg["short_term_ttl_days"]) * 86400)
+            pipe.expire(skey, ttl)
+            pipe.incr(self._rk("qver"))
             pipe.execute()
+            self._invalidate_caches(bump_qver=False)
         except Exception as exc:  # noqa: BLE001
+            self._invalidate_caches(bump_qver=True)
             logger.debug("atbrains: Redis 回合写入失败: %s", exc)
         return turn_id

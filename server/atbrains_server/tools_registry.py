@@ -346,7 +346,6 @@ def context_packet(store: Any, agent_label: str, *, focus: str = "", limit: int 
         "claims": claims,
         "open_episodes": episodes,
         "recent_turns": [],
-        "counts": {},
     }
     if include_turns:
         for t in store.recent_turns(5):
@@ -357,28 +356,12 @@ def context_packet(store: Any, agent_label: str, *, focus: str = "", limit: int 
                 "user": clip_text(t.get("user_content") or t.get("user"), 120),
                 "assistant": clip_text(t.get("assistant_content") or t.get("assistant"), 160),
             })
-    try:
-        if hasattr(store, "quick_counts"):
-            packet["counts"] = dict(store.quick_counts())
-        else:
-            mysql = dict(store.stats().get("mysql") or {})
-            packet["counts"] = {
-                k: mysql.get(k)
-                for k in ("memories_active", "turns", "claims_active", "episodes", "sessions")
-                if k in mysql
-            }
-    except Exception:  # noqa: BLE001
-        pass
     return packet
 
 
 def context_markdown(packet: dict[str, Any]) -> str:
     """醒来包的 markdown 形式。"""
     lines = [f"# atbrains 醒来包（agent={packet.get('agent') or '-'}）", ""]
-    counts = packet.get("counts") or {}
-    if counts:
-        lines.append("库：" + " · ".join(f"{k}={v}" for k, v in counts.items()))
-        lines.append("")
     if packet.get("focus"):
         lines += [f"焦点：{packet['focus']}", ""]
     mems = packet.get("memories") or []

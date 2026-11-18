@@ -55,6 +55,7 @@ class MemoriesMixin:
         pipe.zadd(self._rk("hot", "index"), {str(mem_id): time.time()})
         pipe.zremrangebyrank(self._rk("hot", "index"), 0, -501)
         pipe.expire(self._rk("hot", "index"), ttl)
+        pipe.incr(self._rk("qver"))
         pipe.execute()
         return True
 
@@ -89,51 +90,30 @@ class MemoriesMixin:
         tags = str(tags or "").strip()[:255]
         mach, ag, _role = self._identity(ctx)
         self.ensure_schema()
-        mem_id = None
-        mem_vals: tuple = (kind, content, tags, importance)
-        deduped = False
         expires_at = self._expires_at_for(kind, mtype)
-        for attempt in (0, 1):
-            try:
-                _, mem_id = self._exec(
-                    "INSERT INTO brain_memories (kind, memory_type, content, tags, importance, "
-                    "source, session_id, machine, agent, expires_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                    (kind, mtype, content, tags, importance, str(source or "")[:64],
-                     str(session_id or "")[:96], mach, ag, expires_at),
-                )
-                break
-            except Exception as exc:  # noqa: BLE001
-                if attempt or not _is_duplicate_error(exc):
-                    raise
-                # 与某条活跃记忆内容完全相同（跨机器镜像/回填/手工重复）：
-                # 不新建行，改为刷新既有行（重要度取大、时间前移、空分层补全）。
-                row = self._exec(
-                    "SELECT id FROM brain_memories WHERE active = 1 AND content_hash = MD5(%s) LIMIT 1",
-                    (content,), fetch=True)
-                if not row:
-                    continue  # 竞态：恰被停用；重试一次插入
-                mem_id = int(row[0]["id"])
-                deduped = True
-                self._exec(
-                    "UPDATE brain_memories SET importance = GREATEST(importance, %s), "
-                    "memory_type = IF(memory_type = '', %s, memory_type), "
-                    "updated_at = CURRENT_TIMESTAMP WHERE id = %s AND active = 1",
-                    (importance, mtype, mem_id))
-                row2 = self._exec(
-                    "SELECT kind, content, tags, importance FROM brain_memories WHERE id = %s",
-                    (mem_id,), fetch=True)[0]
-                mem_vals = (row2["kind"], row2["content"], row2["tags"], row2["importance"])
-                break
+        rowcount, lastrowid = self._exec(
+            "INSERT INTO brain_memories (kind, memory_type, content, tags, importance, "
+            "source, session_id, machine, agent, expires_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+            "ON DUPLICATE KEY UPDATE "
+            "id = LAST_INSERT_ID(id), "
+            "importance = GREATEST(importance, VALUES(importance)), "
+            "memory_type = IF(memory_type = '', VALUES(memory_type), memory_type), "
+            "updated_at = CURRENT_TIMESTAMP",
+            (kind, mtype, content, tags, importance, str(source or "")[:64],
+             str(session_id or "")[:96], mach, ag, expires_at),
+        )
+        mem_id = int(lastrowid)
+        deduped = int(rowcount or 0) != 1
         hot_ok = False
         try:
-            hot_ok = self._hot_put(int(mem_id), mem_vals[0], mem_vals[1], mem_vals[2], mem_vals[3],
+            hot_ok = self._hot_put(mem_id, kind, content, tags, importance,
                                    str(source or ""), machine=mach, agent=ag)
         except Exception as exc:  # noqa: BLE001
             logger.debug("atbrains: Redis 热点镜像失败: %s", exc)
-        self._invalidate_caches(vec_dirty=True)
+        self._invalidate_caches(vec_dirty=True, bump_qver=not hot_ok)
         self._wake_drainer()
-        return {"id": mem_id, "kind": mem_vals[0], "importance": mem_vals[3],
+        return {"id": mem_id, "kind": kind, "importance": importance,
                 "memory_type": mtype, "hot_cache": hot_ok, "deduped": deduped}
 
     def deactivate_by_content(self, content: str, *, ctx: Optional[RequestContext] = None) -> int:
@@ -157,16 +137,19 @@ class MemoriesMixin:
         rowcount, _ = self._exec(
             f"UPDATE brain_memories SET active = 0, deactivated_at = CURRENT_TIMESTAMP "
             f"WHERE id IN ({marks})", tuple(ids))
+        bumped = False
         try:
             r = self.redis()
             pipe = r.pipeline()
             for mid in ids:
                 pipe.delete(self._rk("hot", mid))
                 pipe.zrem(self._rk("hot", "index"), str(mid))
+            pipe.incr(self._rk("qver"))
             pipe.execute()
+            bumped = True
         except Exception:  # noqa: BLE001
             pass
-        self._invalidate_caches(vec_dirty=True)
+        self._invalidate_caches(vec_dirty=True, bump_qver=not bumped)
         self._wake_drainer()
         return rowcount
 
@@ -181,13 +164,18 @@ class MemoriesMixin:
         rowcount, _ = self._exec(
             "UPDATE brain_memories SET active = 0, deactivated_at = CURRENT_TIMESTAMP "
             "WHERE id = %s AND active = 1", (mid,))
+        bumped = False
         try:
             r = self.redis()
-            r.delete(self._rk("hot", mid))
-            r.zrem(self._rk("hot", "index"), str(mid))
+            pipe = r.pipeline()
+            pipe.delete(self._rk("hot", mid))
+            pipe.zrem(self._rk("hot", "index"), str(mid))
+            pipe.incr(self._rk("qver"))
+            pipe.execute()
+            bumped = True
         except Exception:  # noqa: BLE001
             pass
-        self._invalidate_caches(vec_dirty=True)
+        self._invalidate_caches(vec_dirty=True, bump_qver=not bumped)
         self._wake_drainer()
         return {"id": mid, "deactivated": rowcount}
 
@@ -222,7 +210,7 @@ class MemoriesMixin:
             )
         except Exception:  # noqa: BLE001
             pass
-        self._invalidate_caches(vec_dirty=True)
+        self._invalidate_caches(vec_dirty=True, bump_qver=not hot_ok)
         self._wake_drainer()
         return {"id": mid, "restored": rowcount, "hot_cache": hot_ok,
                 "note": "向量将自动补回"}

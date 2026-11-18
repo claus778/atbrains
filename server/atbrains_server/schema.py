@@ -31,13 +31,16 @@ _DDL = (
         platform VARCHAR(48) NOT NULL DEFAULT '',
         author VARCHAR(64) NOT NULL DEFAULT '',
         machine VARCHAR(48) NOT NULL DEFAULT '',
+        agent VARCHAR(32) NOT NULL DEFAULT '',
         truncated TINYINT NOT NULL DEFAULT 0,
         user_content MEDIUMTEXT NOT NULL,
         assistant_content MEDIUMTEXT NOT NULL,
         ts DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
         PRIMARY KEY (id),
         KEY idx_ts (ts),
-        KEY idx_session_ts (session_id, ts)
+        KEY idx_session_ts (session_id, ts),
+        KEY idx_turn_agent_ts (agent, ts),
+        KEY idx_turn_machine_ts (machine, ts)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
     # 全量转录层：一行一条消息（含 tool 调用/工具输出/推理），body = zlib(JSON)
     """CREATE TABLE IF NOT EXISTS brain_turn_messages (
@@ -183,6 +186,7 @@ _DDL = (
         turn_id BIGINT UNSIGNED NOT NULL,
         session_id VARCHAR(96) NOT NULL DEFAULT '',
         machine VARCHAR(48) NOT NULL DEFAULT '',
+        agent VARCHAR(32) NOT NULL DEFAULT 'hermes',
         goal TEXT NULL,
         decisions MEDIUMTEXT NULL,
         open_items MEDIUMTEXT NULL,
@@ -193,7 +197,8 @@ _DDL = (
         updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
         PRIMARY KEY (turn_id),
         KEY idx_episode_session (session_id, turn_id),
-        KEY idx_episode_status (status, updated_at)
+        KEY idx_episode_status (status, updated_at),
+        KEY idx_episode_agent (agent, turn_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci""",
     """CREATE TABLE IF NOT EXISTS brain_author_defaults (
         machine VARCHAR(48) NOT NULL DEFAULT '*',
@@ -205,7 +210,7 @@ _DDL = (
 )
 
 # 模式版本与迁移（幂等；多进程/多机并发用 GET_LOCK 串行化）
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 _MIGRATIONS: dict[int, tuple[str, tuple[str, ...]]] = {
     1: ("machine 列（多设备归属）", (
@@ -385,6 +390,11 @@ _MIGRATIONS: dict[int, tuple[str, tuple[str, ...]]] = {
         "author VARCHAR(64) NOT NULL, note VARCHAR(160) NOT NULL DEFAULT '', "
         "PRIMARY KEY (machine, platform)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
         "ALTER TABLE brain_turns ADD COLUMN IF NOT EXISTS agent VARCHAR(32) NOT NULL DEFAULT '' AFTER machine",
+    )),
+    13: ("轮次与情节按身份隔离索引（idx_turn_agent_ts / idx_turn_machine_ts / idx_episode_agent）", (
+        "ALTER TABLE brain_turns ADD INDEX IF NOT EXISTS idx_turn_agent_ts (agent, ts)",
+        "ALTER TABLE brain_turns ADD INDEX IF NOT EXISTS idx_turn_machine_ts (machine, ts)",
+        "ALTER TABLE brain_episodes ADD INDEX IF NOT EXISTS idx_episode_agent (agent, turn_id)",
     )),
 }
 

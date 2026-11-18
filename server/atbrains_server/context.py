@@ -63,6 +63,7 @@ _SCOPED_METHODS = frozenset({
     "touch_session",
     "search_turns",
     "recent_turns",
+    "prefetch_block",
 })
 
 

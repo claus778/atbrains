@@ -261,36 +261,32 @@ class MemoryService:
         include_turns = as_bool(body.get("include_turns"), True)
         include_claims = as_bool(body.get("include_claims"), False)
 
+        want_turn_items = bool(body.get("include_turn_items"))
         st = self.store_for_identity(ident)
-        text, count, hits = st.prefetch_block(
+        res = st.prefetch_block(
             q,
             session_id=session_id,
             with_hits=True,
+            with_turns=want_turn_items,
             limit=eff_limit,
             kind=kind,
             agent=want_agent,
-            include_turns=include_turns,
+            include_turns=include_turns or want_turn_items,
         )
-        if not hits and text:
-            hits = self._hits(st, q, limit=eff_limit, kind=kind, agent=want_agent)
+        if want_turn_items and len(res) == 4:
+            text, count, hits, turn_rows = res
+        else:
+            text, count, hits = res[0], res[1], res[2]
+            turn_rows = []
         out: dict[str, Any] = {"ok": True, "text": text, "count": int(count), "items": hits}
         if include_claims:
             try:
                 out["claims"] = st.claim_recall(query=q, limit=min(eff_limit or 5, 10))
             except Exception:  # noqa: BLE001
                 out["claims"] = []
-        if body.get("include_turn_items"):
-            try:
-                out["turns"] = clean_rows(st.search_turns(q, limit=min(eff_limit or 5, 5)))
-            except Exception:  # noqa: BLE001
-                out["turns"] = []
+        if want_turn_items:
+            out["turns"] = clean_rows(turn_rows)
         return out
-
-    @staticmethod
-    def _hits(st: Any, q: str, *, limit: Optional[int] = None,
-              kind: Optional[str] = None, agent: Optional[str] = None) -> list[dict]:
-        eff = max(1, min(int(limit or st.cfg.get("prefetch_memories") or 5), 20))
-        return st.format_hits(st.search_memories_hybrid(q, limit=eff, kind=kind, agent=agent), eff)
 
     def _remember(self, ident: TokenIdentity, body: dict, query: dict) -> dict:
         content = str(body.get("content") or "").strip()

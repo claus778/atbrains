@@ -44,9 +44,10 @@ class RecallMixin:
                         kind: Optional[str] = None,
                         agent: Optional[str] = None) -> list[dict[str, Any]]:
         terms = search_terms(query)
-        if not terms:
+        q_clean = " ".join(str(query or "").split())
+        if not terms and len(q_clean) < 4:
             return []
-        where, params = self._search_where(("content", "tags"), terms)
+        where, params = self._search_where(("content", "tags"), terms or [q_clean])
         sql = (
             "SELECT id, kind, memory_type, content, tags, importance, source, session_id, machine, agent, "
             "created_at, updated_at, access_count, last_accessed_at, expires_at "
@@ -58,7 +59,11 @@ class RecallMixin:
         if agent:
             sql += "AND agent = %s "
             params.append(str(agent).strip().lower()[:32])
-        sql += "ORDER BY importance DESC, updated_at DESC, id DESC LIMIT %s"
+        if len(q_clean) >= 4:
+            sql += "ORDER BY (content LIKE %s) DESC, importance DESC, updated_at DESC, id DESC LIMIT %s"
+            params.append(f"%{_esc_like(q_clean)}%")
+        else:
+            sql += "ORDER BY importance DESC, updated_at DESC, id DESC LIMIT %s"
         params.append(int(limit))
         self.ensure_schema()
         return list(self._exec(sql, tuple(params), fetch=True))
@@ -181,37 +186,55 @@ class RecallMixin:
     def prefetch_block(self, query: str, *, session_id: str = "",
                        use_cache: bool = True,
                        with_hits: bool = False,
+                       with_turns: bool = False,
                        limit: Optional[int] = None,
                        kind: Optional[str] = None,
                        agent: Optional[str] = None,
-                       include_turns: bool = True):
-        """组装本轮注入文本；结果按查询哈希缓存进 Redis。"""
+                       include_turns: bool = True,
+                       ctx: Optional[RequestContext] = None):
+        """组装本轮注入文本；结果带版本号 (qver) 缓存进 Redis，写入后 O(1) 自动失效。"""
         query = (query or "").strip()
         if not query:
+            if with_turns:
+                return "", 0, [], []
             return ("", 0, []) if with_hits else ("", 0)
         eff_limit = max(1, min(int(limit or self.cfg["prefetch_memories"]), 20))
         norm = re.sub(r"[\s\W_]+", "", query.lower(), flags=re.UNICODE)
         raw_key = ("n:" + norm) if (norm and norm != query) else query
-        cache_scope = f"{raw_key}\x00{eff_limit}\x00{kind or ''}\x00{agent or ''}\x00{int(bool(include_turns))}"
+        mach, ag, role = self._identity(ctx)
+        turn_scope = "admin" if role == "admin" else f"{ag}|{mach}"
+        cache_scope = (
+            f"{self._qcache_ver}\x00{raw_key}\x00{eff_limit}\x00{kind or ''}\x00"
+            f"{agent or ''}\x00{int(bool(include_turns))}\x00{turn_scope}"
+        )
         cache_key = self._rk("qcache", hashlib.sha1(cache_scope.encode("utf-8")).hexdigest())
+        qver = 0
         if use_cache:
             try:
-                raw = self.redis().get(cache_key)
+                ver_raw, raw = self.redis().mget([self._rk("qver"), cache_key])
+                qver = int(ver_raw or 0)
                 if raw:
                     data = json.loads(raw)
-                    text, count = str(data.get("text", "")), int(data.get("count", 0))
-                    if with_hits:
-                        return text, count, list(data.get("hits") or [])
-                    return text, count
+                    if int(data.get("qver") or 0) == qver:
+                        text, count = str(data.get("text", "")), int(data.get("count", 0))
+                        hits = list(data.get("hits") or [])
+                        turns_cached = list(data.get("turns") or [])
+                        if with_turns:
+                            return text, count, hits, turns_cached
+                        if with_hits:
+                            return text, count, hits
+                        return text, count
             except Exception:  # noqa: BLE001
                 pass
         mems = self.search_memories_hybrid(query, limit=eff_limit, kind=kind, agent=agent)
-        turns = self.search_turns(query, limit=int(self.cfg["prefetch_turns"])) if include_turns else []
+        turns = self.search_turns(query, limit=int(self.cfg["prefetch_turns"]), ctx=ctx) if include_turns else []
         text = self._compose(mems, turns)
         count = len(mems) + len(turns)
         hits = self.format_hits(mems, eff_limit)
         self._bump_access([int(m["id"]) for m in mems if m.get("id")])
-        self._write_qcache(cache_key, text, count, hits)
+        self._write_qcache(cache_key, text, count, hits, turns=turns, qver=qver)
+        if with_turns:
+            return text, count, hits, turns
         if with_hits:
             return text, count, hits
         return text, count
@@ -233,44 +256,13 @@ class RecallMixin:
         params.append(max(1, int(limit)))
         return [dict(r) for r in self._exec(sql, tuple(params), fetch=True)]
 
-    def exact_memories(self, query: str, *, limit: int = 5,
-                       kind: Optional[str] = None, agent: Optional[str] = None) -> list[dict[str, Any]]:
-        """整句精确子串直查（强信号优先，避免每行 REPLACE 全表 CPU 开销）。"""
-        q = " ".join(str(query or "").split())
-        if len(q) < 4:
-            return []
-        self.ensure_schema()
-        cols = ("id, kind, memory_type, content, tags, importance, source, session_id, "
-                "machine, agent, created_at, updated_at")
-        sql = (f"SELECT {cols} FROM brain_memories WHERE active = 1 AND superseded_by IS NULL "
-               "AND content LIKE %s")
-        params: list[Any] = [f"%{_esc_like(q)}%"]
-        if kind:
-            sql += " AND kind = %s"
-            params.append(kind)
-        if agent:
-            sql += " AND agent = %s"
-            params.append(str(agent).strip().lower()[:32])
-        sql += " ORDER BY importance DESC, updated_at DESC, id DESC LIMIT %s"
-        params.append(max(1, int(limit)))
-        try:
-            return [dict(r) for r in self._exec(sql, tuple(params), fetch=True)]
-        except Exception:  # noqa: BLE001
-            return []
-
     def recall_memories(self, query: str, *, limit: int = 5,
                         kind: Optional[str] = None, agent: Optional[str] = None) -> list[dict[str, Any]]:
-        """混合召回 + 整句精确命中置顶提升（供工具/MCP/context 使用）。"""
-        pool_limit = max(int(limit) * 2, 8)
-        pool = self.search_memories_hybrid(query, limit=pool_limit, kind=kind, agent=agent)
-        exact = self.exact_memories(query, limit=limit, kind=kind, agent=agent)
-        if not exact:
-            return pool[:limit]
-        seen = {int(m["id"]) for m in exact if m.get("id") is not None}
-        merged = exact + [m for m in pool if int(m.get("id") or 0) not in seen]
-        return merged[:limit]
+        """混合召回（整句精确子串已在 search_memories 排序置顶，不再二次扫表）。"""
+        return self.search_memories_hybrid(query, limit=int(limit), kind=kind, agent=agent)[:int(limit)]
 
     def _write_qcache(self, cache_key: str, text: str, count: int, hits: list,
+                      *, turns: Optional[list] = None, qver: int = 0,
                       ttl: Optional[int] = None) -> None:
         """写查询缓存；空结果也写（短 TTL）。"""
         ex = int(ttl if ttl is not None else self.cfg["search_cache_ttl"])
@@ -279,7 +271,11 @@ class RecallMixin:
         try:
             self.redis().set(
                 cache_key,
-                json.dumps({"text": text, "count": count, "hits": hits}, ensure_ascii=False),
+                json.dumps(
+                    {"qver": int(qver), "text": text, "count": count, "hits": hits, "turns": turns or []},
+                    ensure_ascii=False,
+                    default=str,
+                ),
                 ex=ex,
             )
         except Exception:  # noqa: BLE001

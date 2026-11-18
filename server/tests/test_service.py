@@ -113,9 +113,12 @@ class FakeStore:
     def search_turns(self, query: str, *, limit: int = 3, ctx: RequestContext | None = None) -> list[dict]:
         return [t for t in self.turns if owns_record(ctx, t)][:limit]
 
-    def prefetch_block(self, query: str, *, session_id: str = "", with_hits: bool = False, **kw):
+    def prefetch_block(self, query: str, *, session_id: str = "", with_hits: bool = False,
+                       with_turns: bool = False, ctx: RequestContext | None = None, **kw):
         hits = [{"id": m["id"], "kind": m["kind"], "preview": m["content"]} for m in self.memories[:3]]
         txt = "[mem]\n" + "\n".join(h["preview"] for h in hits) if hits else ""
+        if with_turns:
+            return txt, len(hits), hits, self.search_turns(query, limit=3, ctx=ctx)
         if with_hits:
             return txt, len(hits), hits
         return txt, len(hits)
@@ -195,9 +198,6 @@ class FakeStore:
 
     def recent(self, limit: int = 20, *, ctx: RequestContext | None = None) -> dict:
         return {"hot": self.hot_recent(limit), "turns": self.recent_turns(limit, ctx=ctx)}
-
-    def quick_counts(self) -> dict:
-        return {"memories_active": len(self.memories), "turns": len(self.turns)}
 
 
 class ParityTest(unittest.TestCase):
