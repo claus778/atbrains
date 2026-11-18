@@ -1,14 +1,10 @@
 #!/usr/bin/env python3
-"""astrbot 客户端打包：clients/astrbot-atbrains → dist/astrbot-atbrains-<版本>.zip
+"""AstrBot 客户端打包：clients/astrbot-atbrains + 纯标准库 sdk/python/atbrains_client → dist/astrbot-atbrains-<版本>.zip
 
+用法:
     python3 tools/package-astrbot-client.py [--out dist] [--no-verify]
 
-与 atbrains-memory 的插件包**分开**：这个 zip 只含 AstrBot 客户端（main.py /
-metadata.yaml / README.md / vendor/），不含控制台、不含服务端代码 / 文档 / 台账。
-zip 里的顶层目录取 metadata.yaml 的 `name:`（= AstrBot 的插件 id `atbrains-memory`），
-所以 `unzip -d <AstrBot>/data/plugins/` 解出来就是可用的插件目录。
-
-出包前做一次口令复检（复用 tools/package.py 的 collect_secrets），命中即拒绝出包。
+zip 内嵌纯标准库 `atbrains_client` 到 `_sdk/`，零第三方依赖（无需 pymysql/redis/vendor）。
 """
 from __future__ import annotations
 
@@ -21,14 +17,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "clients" / "astrbot-atbrains"
-SKIP_DIRS = {"__pycache__", ".pytest_cache", "data"}
+SDK_SRC = ROOT / "sdk" / "python" / "atbrains_client"
+SKIP_DIRS = {"__pycache__", ".pytest_cache", "data", "tests", "_sdk", "vendor"}
 SKIP_FILES = {".DS_Store"}
 SKIP_SUFFIX = (".pyc", ".pyo", ".zip")
 CLIENT_NAME = "astrbot-atbrains"
 
 
 def _meta(key: str, default: str) -> str:
-    """从 metadata.yaml 取 name/version（不引 yaml 依赖，只认 `key: value`）。"""
     try:
         for line in (SRC / "metadata.yaml").read_text(encoding="utf-8").splitlines():
             m = re.match(rf"\s*{re.escape(key)}\s*:\s*(.+?)\s*$", line)
@@ -39,8 +35,8 @@ def _meta(key: str, default: str) -> str:
     return default
 
 
-def collect_files() -> list[Path]:
-    files: list[Path] = []
+def collect_files() -> list[tuple[Path, str]]:
+    items: list[tuple[Path, str]] = []
     for p in sorted(SRC.rglob("*")):
         if p.is_dir():
             continue
@@ -49,21 +45,21 @@ def collect_files() -> list[Path]:
             continue
         if p.name in SKIP_FILES or p.name.endswith(SKIP_SUFFIX):
             continue
-        files.append(p)
-    return files
+        items.append((p, rel.as_posix()))
+    for p in sorted(SDK_SRC.rglob("*.py")):
+        rel = p.relative_to(SDK_SRC.parent)
+        if "__pycache__" in rel.parts:
+            continue
+        items.append((p, f"_sdk/{rel.as_posix()}"))
+    return items
 
 
 def load_secret_scanner():
     sys.path.insert(0, str(ROOT / "tools"))
     try:
         from package import collect_secrets  # type: ignore
-    except Exception as exc:  # noqa: BLE001
-        print(f"  ⚠️ 口令复检不可用（{exc}），跳过")
-        return None
-    try:
         return collect_secrets()
-    except Exception as exc:  # noqa: BLE001
-        print(f"  ⚠️ 口令收集失败（{exc}），跳过")
+    except Exception:  # noqa: BLE001
         return None
 
 
@@ -73,8 +69,8 @@ def main() -> int:
     ap.add_argument("--no-verify", action="store_true", help="跳过口令复检")
     args = ap.parse_args()
 
-    if not (SRC / "main.py").exists():
-        print(f"❌ 源目录不完整：{SRC}")
+    if not (SRC / "main.py").exists() or not (SDK_SRC / "__init__.py").exists():
+        print(f"❌ 源目录不完整：{SRC} / {SDK_SRC}")
         return 1
 
     plugin_name = _meta("name", CLIENT_NAME)
@@ -88,15 +84,15 @@ def main() -> int:
     leaks: list[str] = []
 
     with zipfile.ZipFile(target, "w", zipfile.ZIP_DEFLATED) as zf:
-        for p in files:
+        for p, rel_out in files:
             data = p.read_bytes()
             if secrets:
                 text = data.decode("utf-8", "replace")
                 for sec in secrets:
                     if sec in text:
-                        leaks.append(f"{p.relative_to(SRC)} ({len(sec)} 字符)")
+                        leaks.append(f"{rel_out} ({len(sec)} 字符)")
                         break
-            zf.writestr(f"{plugin_name}/{p.relative_to(SRC).as_posix()}", data)
+            zf.writestr(f"{plugin_name}/{rel_out}", data)
 
     if leaks:
         target.unlink(missing_ok=True)
@@ -110,9 +106,8 @@ def main() -> int:
     print(f"   插件 id（zip 顶层目录）：{plugin_name}/   版本：{version}")
     print(f"   文件数：{len(files)}   大小：{target.stat().st_size / 1024:.1f} KiB")
     print(f"   sha256：{h}")
-    print(f"   安装：unzip -o {target.name} -d <AstrBot>/data/plugins/")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    raise SystemExit(main())

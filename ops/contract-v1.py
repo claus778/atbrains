@@ -27,9 +27,21 @@ import urllib.request
 from pathlib import Path
 
 TEST_SESSION = "zz-contract-v1"
-HERMES_HOME = Path(os.environ.get("HERMES_HOME") or "/root/.hermes")
-TOKENS = HERMES_HOME / "plugins" / "atbrains" / "service-tokens.json"
-ENV_FILE = HERMES_HOME / ".env"
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _token_candidates() -> list[Path]:
+    out: list[Path] = []
+    if os.environ.get("ATBRAINS_TOKENS_FILE"):
+        out.append(Path(os.environ["ATBRAINS_TOKENS_FILE"]).expanduser())
+    if os.environ.get("ATBRAINS_DATA_DIR"):
+        out.append(Path(os.environ["ATBRAINS_DATA_DIR"]).expanduser() / "service-tokens.json")
+    out.extend([
+        Path.home() / ".local" / "share" / "atbrains" / "service-tokens.json",
+        Path("/etc/atbrains/service-tokens.json"),
+        Path(os.environ.get("HERMES_HOME") or "/root/.hermes") / "plugins" / "atbrains" / "service-tokens.json",
+    ])
+    return out
 
 
 def load_token(explicit: str, token_file: str, env_name: str) -> str:
@@ -40,11 +52,15 @@ def load_token(explicit: str, token_file: str, env_name: str) -> str:
     v = os.environ.get(env_name, "").strip()
     if v:
         return v
-    data = json.loads(TOKENS.read_text(encoding="utf-8"))
-    for name in ("server", "r9000p-Windows|dsh"):
-        if name in data:
-            return str(data[name])
-    raise SystemExit(f"没找到令牌：{TOKENS} 里没有 server/dsh 条目")
+    for tok_path in _token_candidates():
+        if not tok_path.is_file():
+            continue
+        data = json.loads(tok_path.read_text(encoding="utf-8"))
+        for name in ("server", "r9000p-Windows|dsh"):
+            if name in data:
+                val = data[name]
+                return str(val["token"] if isinstance(val, dict) else val)
+    raise SystemExit("没找到令牌：请传 --token / --token-file 或设置 ATBRAINS_CONTRACT_TOKEN")
 
 
 def call(base: str, path: str, token: str, body: dict | None = None) -> tuple[int, dict]:
@@ -53,8 +69,9 @@ def call(base: str, path: str, token: str, body: dict | None = None) -> tuple[in
     req = urllib.request.Request(
         url, data=data, method="POST" if body is not None else "GET",
         headers={"content-type": "application/json", "authorization": f"Bearer {token}"})
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(req, timeout=10) as r:
+        with opener.open(req, timeout=10) as r:
             return r.status, json.loads(r.read() or b"{}")
     except urllib.error.HTTPError as e:
         try:
@@ -64,15 +81,14 @@ def call(base: str, path: str, token: str, body: dict | None = None) -> tuple[in
 
 
 def mysql(sql: str) -> list[list[str]]:
-    pwd = ""
-    for line in ENV_FILE.read_text(encoding="utf-8", errors="replace").splitlines():
-        if line.startswith("BRAIN_MARIADB_PASSWORD"):
-            v = line.split("=", 1)[1].strip()
-            pwd = v[1:-1] if v[:1] == v[-1:] and v[:1] in "\"'" else v
-            break
+    sys.path.insert(0, str(REPO_ROOT / "server"))
+    from atbrains_server.config import resolve_config
+    cfg = resolve_config()
+    pwd = str(cfg.get("mariadb_password") or "")
     env = dict(os.environ, MYSQL_PWD=pwd)
     out = subprocess.run(
-        ["mysql", "-h127.0.0.1", "-P57306", "-uagent", "agent_memory",
+        ["mysql", f"-h{cfg['mariadb_host']}", f"-P{cfg['mariadb_port']}",
+         f"-u{cfg['mariadb_user']}", cfg["mariadb_db"],
          "--default-character-set=utf8mb4", "-N", "-B", "-e", sql],
         capture_output=True, text=True, env=env, timeout=30)
     if out.returncode != 0:

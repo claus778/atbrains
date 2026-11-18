@@ -90,8 +90,8 @@ def main() -> int:
     ap.add_argument("--machine", default=DEFAULT_MACHINE)
     args = ap.parse_args()
 
-    sys.path.insert(0, args.plugin_dir)
-    from core import BrainStore, resolve_config  # noqa: PLC0415
+    from _boot import load_server
+    BrainStore, resolve_config = load_server()
 
     store = BrainStore(resolve_config(args.hermes_home))
     store.ensure_schema()

@@ -13,9 +13,12 @@ plugin/service-tokens.json
 clients/*/node_modules/
 *.bak
 
-# 打包产物（tools/package-astrbot-client.py 生成）
+# 打包产物与构建期生成物
 dist/
-
+clients/*/_sdk/
+clients/*/data/
+*.egg-info/
+build/
 # 第三方依赖不入库：服务端用 pip/uv 安装或 `make vendor` 生成；客户端 SDK 纯标准库，无需 vendor
 **/vendor/
 **/_vendor/

@@ -21,8 +21,12 @@ for f in (f"{BRAIN}/core.py", f"{BRAIN}/cli.py", f"{ATBRAINS}/service.py",
     r = subprocess.run([sys.executable, "-m", "py_compile", f], capture_output=True, text=True)
     chk(f"语法 {f.split('/')[-1]}", r.returncode == 0, r.stderr[:80])
 
-from core import BrainStore, resolve_config, _memory_type
-s = BrainStore(resolve_config("/root/.hermes"))
+from pathlib import Path
+from _boot import load_server
+BrainStore, resolve_config = load_server()
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "server"))
+from atbrains_server.util import _memory_type
+s = BrainStore(resolve_config())
 chk("schema 为 v4", s.schema_version() == 4, f"v{s.schema_version()}")
 cols = [r["Field"] for r in s._exec("SHOW COLUMNS FROM brain_memories", fetch=True)]
 for c in ("superseded_by", "superseded_at", "memory_type"):

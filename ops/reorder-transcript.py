@@ -17,8 +17,8 @@ import argparse
 import datetime
 import sys
 
-sys.path.insert(0, "/root/.hermes/plugins/atbrains-memory")
-from core import BrainStore, resolve_config  # noqa: E402
+from _boot import load_server  # noqa: E402
+BrainStore, resolve_config = load_server()
 
 TURN_COLS = ["id", "session_id", "platform", "author", "machine", "truncated",
              "message_count", "message_bytes", "user_content", "assistant_content", "ts"]

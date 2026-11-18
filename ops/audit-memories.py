@@ -19,8 +19,8 @@ def norm(s):
     return " ".join((s or "").split())
 
 # 取 brain 里 active 的记忆
-sys.path.insert(0, os.path.join(HOME, "plugins", "brain"))
-from core import BrainStore, resolve_config
+from _boot import load_server
+BrainStore, resolve_config = load_server()
 store = BrainStore(resolve_config(HOME))
 rows = store._exec(
     "SELECT id, machine, kind, content FROM brain_memories WHERE active=1", fetch=True)

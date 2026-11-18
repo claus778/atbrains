@@ -24,8 +24,8 @@ ap.add_argument("--redis-db", type=int, default=None,
                 help="指定 Redis 库号（缺省=本机 brain.json；用于校正其它 agent 的库）")
 args = ap.parse_args()
 
-sys.path.insert(0, os.path.join(args.hermes_home, "plugins", "brain"))
-from core import BrainStore, resolve_config  # noqa: E402
+from _boot import load_server  # noqa: E402
+BrainStore, resolve_config = load_server()
 
 cfg = resolve_config(args.hermes_home)
 if args.redis_db is not None:

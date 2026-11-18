@@ -86,8 +86,8 @@ def main() -> int:
     args = ap.parse_args()
     write = bool(args.apply) and not args.dry_run
 
-    sys.path.insert(0, args.plugin_dir)
-    from core import BrainStore, resolve_config  # noqa: PLC0415
+    from _boot import load_server
+    BrainStore, resolve_config = load_server()
 
     store = BrainStore(resolve_config(args.hermes_home))
     store.ensure_schema()
