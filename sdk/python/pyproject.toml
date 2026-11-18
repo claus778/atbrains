@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atbrains-client"
+version = "1.0.0"
+description = "Zero-dependency pure-Python SDK for the atbrains universal multi-agent memory server (/v1 API)."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["atbrains_client*"]
