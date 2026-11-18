@@ -12,23 +12,18 @@ import os, re, shutil, subprocess, json, sys
 
 SRC_TO_DST = [
     # (源, 目标相对路径)
-    ("/root/agent_memory.md",                          "docs/agent_memory.md"),
-    ("/root/.hermes/plugins/atbrains-memory/README.md",          "docs/plugin-README.md"),
-    ("/root/.hermes/skills/devops/hermes-brain-memory/SKILL.md", "docs/skill-hermes-brain-memory.md"),
-    ("/root/.hermes/plugins/atbrains-memory/skills/brain/SKILL.md",        "docs/skill-brain-memory.md"),
-    ("/root/agent-db/brain-overview.txt",              "docs/brain-overview.txt"),
-    ("/root/agent-db/migration-20261012.sql",          "setup/migration-20261012.sql"),
-    ("/root/agent-db/init.sql",                        "setup/init.sql"),
-    ("/root/agent-db/rebuild.sh",                      "setup/rebuild.sh"),
-    ("/root/agent-db/verify-accounts.py",              "setup/verify-accounts.py"),
-    ("/root/agent-db/credentials.txt",                 "setup/credentials-LEDGER-scrubbed.txt"),
-    ("/etc/systemd/system/brain-vector-drain.service", "setup/systemd/brain-vector-drain.service"),
-    ("/etc/systemd/system/brain-vector-drain.timer",   "setup/systemd/brain-vector-drain.timer"),
-    ("/root/agent-db/audit-turns.py",                  "scripts/audit-turns.py"),
-    ("/root/brain-audit-kit/audit-memories.py",        "scripts/audit-memories.py"),
-    ("/root/agent-db/brain-overview.py",               "scripts/brain-overview.py"),
-    ("/root/agent-db/prune.sh",                        "scripts/prune.sh"),
-    ("/root/agent-db/refresh-hot-machine.py",          "scripts/refresh-hot-machine.py"),
+    ("/root/agent_memory.md",                                      "docs/agent_memory.md"),
+    ("/root/agent-db/brain-overview.txt",                          "docs/brain-overview.txt"),
+    ("/root/agent-db/migration-20261012.sql",                      "deploy/migration-20261012.sql"),
+    ("/root/agent-db/init.sql",                                    "deploy/init.sql"),
+    ("/root/agent-db/rebuild.sh",                                  "deploy/rebuild.sh"),
+    ("/root/agent-db/verify-accounts.py",                          "deploy/verify-accounts.py"),
+    ("/root/agent-db/credentials.txt",                             "deploy/credentials-LEDGER-scrubbed.txt"),
+    ("/root/agent-db/audit-turns.py",                              "ops/audit-turns.py"),
+    ("/root/brain-audit-kit/audit-memories.py",                    "ops/audit-memories.py"),
+    ("/root/agent-db/brain-overview.py",                           "ops/brain-overview.py"),
+    ("/root/agent-db/prune.sh",                                    "ops/prune.sh"),
+    ("/root/agent-db/refresh-hot-machine.py",                      "ops/refresh-hot-machine.py"),
 ]
 
 ROOT = "/root/atbrains"

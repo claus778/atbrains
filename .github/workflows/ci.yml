@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main, "refactor/**"]
+  pull_request:
+
+jobs:
+  python-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install packages
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ./sdk/python -e ./server
+      - name: Compile check
+        run: |
+          python -m compileall -q server/atbrains_server sdk/python/atbrains_client clients/hermes-atbrains clients/astrbot-atbrains tools ops
+      - name: Run pure, service, SDK, and adapter unit tests
+        run: |
+          python server/tests/test_pure.py
+          python server/tests/test_service.py
+          python sdk/python/tests/test_client.py
+          python clients/hermes-atbrains/tests/test_hermes_adapter.py
+          python clients/astrbot-atbrains/tests/test_astrbot_adapter.py
+      - name: Packaging smoke test
+        run: |
+          python tools/package-astrbot-client.py --no-verify
+          python tools/package-hermes-client.py
+          python tools/export-schema.py --from-code > /tmp/schema-check.sql
+          test -s /tmp/schema-check.sql
+
+  node-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Run dsh-atbrains offline tests
+        working-directory: clients/dsh-atbrains
+        run: |
+          npm test
+          node test/timestamp.mjs
+
+  integration-tests:
+    runs-on: ubuntu-latest
+    services:
+      mariadb:
+        image: mariadb:11
+        env:
+          MARIADB_ROOT_PASSWORD: rootpass
+          MARIADB_DATABASE: agent_memory
+          MARIADB_USER: agent
+          MARIADB_PASSWORD: itpass
+        ports: ["57306:3306"]
+        options: >-
+          --health-cmd="healthcheck.sh --connect --innodb_initialized"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+      redis:
+        image: redis:7-alpine
+        ports: ["9079:6379"]
+        command: redis-server --requirepass itpass
+        options: >-
+          --health-cmd="redis-cli -a itpass ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+      qdrant:
+        image: qdrant/qdrant:latest
+        ports: ["6333:6333"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install packages
+        run: pip install -e ./sdk/python -e ./server
+      - name: Run MariaDB + Redis + Qdrant end-to-end tests
+        env:
+          ATBRAINS_IT_MARIADB_PORT: "57306"
+          ATBRAINS_IT_REDIS_PORT: "9079"
+          ATBRAINS_IT_QDRANT_PORT: "6333"
+        run: python server/tests/test_integration.py

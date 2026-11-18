@@ -104,6 +104,68 @@ export class AtbrainsClient {
     return this.#request('POST', '/v1/memory/forget', { id: Number(id) }, this.writeTimeoutMs)
   }
 
+  restore(id) {
+    return this.#request('POST', '/v1/memory/restore', { id: Number(id) }, this.writeTimeoutMs)
+  }
+
+  deactivate(content) {
+    return this.#request('POST', '/v1/memory/deactivate', { content: String(content) }, this.writeTimeoutMs)
+  }
+
+  turnDetail({ turnId = 0, sessionId = '', maxChars = 1500 } = {}) {
+    const body = { max_chars: Number(maxChars) }
+    if (turnId) body.turn_id = Number(turnId)
+    if (sessionId) body.session_id = String(sessionId)
+    return this.#request('POST', '/v1/memory/turn/detail', body, this.timeoutMs)
+  }
+
+  archive({ sessionId, kind = 'precompress', payload, platform = '' }) {
+    return this.#request('POST', '/v1/memory/archive', {
+      session_id: String(sessionId),
+      kind: String(kind),
+      payload: String(payload),
+      platform: String(platform),
+    }, this.writeTimeoutMs)
+  }
+
+  touchSession(sessionId, platform = '') {
+    return this.#request('POST', '/v1/memory/session/touch', {
+      session_id: String(sessionId),
+      platform: String(platform),
+    }, this.writeTimeoutMs)
+  }
+
+  claimRemember(payload) {
+    return this.#request('POST', '/v1/claim/remember', payload, this.writeTimeoutMs)
+  }
+
+  claimRecall(payload = {}) {
+    return this.#request('POST', '/v1/claim/recall', payload, this.timeoutMs)
+  }
+
+  claimRetire(claimId, reason = '') {
+    return this.#request('POST', '/v1/claim/retire', { claim_id: Number(claimId), reason }, this.writeTimeoutMs)
+  }
+
+  episodeSet(payload) {
+    return this.#request('POST', '/v1/episode/set', payload, this.writeTimeoutMs)
+  }
+
+  episodeGet({ turnId = 0, sessionId = '' } = {}) {
+    const body = {}
+    if (turnId) body.turn_id = Number(turnId)
+    if (sessionId) body.session_id = String(sessionId)
+    return this.#request('POST', '/v1/episode/get', body, this.timeoutMs)
+  }
+
+  context(payload = {}) {
+    return this.#request('POST', '/v1/context', payload, this.timeoutMs)
+  }
+
+  handoff(payload) {
+    return this.#request('POST', '/v1/handoff', payload, this.writeTimeoutMs)
+  }
+
   /** 令牌身份核对/存活检查：light=true 让服务端跳过全表聚合的 stats。 */
   status({ light = false } = {}) {
     return this.#request('POST', '/v1/memory/status', light ? { light: true } : {}, this.timeoutMs)

@@ -18,8 +18,16 @@
  */
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
-import z from '@deepseek-ai/schemastery'
 import { AtbrainsClient } from './client.js'
+
+// 离线单元测试环境下可能未安装宿主提供的 @deepseek-ai/schemastery，提供最小占位
+let z
+try {
+  ({ default: z } = await import('@deepseek-ai/schemastery'))
+} catch {
+  const leaf = () => ({ default: () => ({}) })
+  z = { object: (shape) => shape, string: leaf, number: leaf, boolean: leaf }
+}
 import { readSessionMessages, transcriptFromMessages, isSyntheticUser } from './transcript.js'
 import {
   createIdentityController,
@@ -45,7 +53,7 @@ const PLUGIN_VERSION = (() => {
 
 export const Config = z.object({
   /** 服务地址（可写 http://host:8787 或 http://host:8787/mcp，都会归一化）。 */
-  baseUrl: z.string().default('http://111.230.71.79:8787'),
+  baseUrl: z.string().default('http://127.0.0.1:8787'),
   /** 令牌所在环境变量名；令牌本身不落配置文件。与 MCP 用同一个即可。 */
   tokenEnv: z.string().default('ATBRAINS_MCP_TOKEN'),
   /** 直接给令牌（优先级高于 tokenEnv；不建议写进文件）。 */

@@ -1,0 +1,19 @@
+[Unit]
+Description=atbrains Universal Multi-Agent Memory Server (/v1 + /mcp + Web Console)
+Documentation=file:///root/atbrains/README.md
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=ATBRAINS_HOME=/etc/atbrains
+Environment=ATBRAINS_DATA_DIR=/var/lib/atbrains
+Environment=ATBRAINS_BACKGROUND_WORKERS=1
+ExecStart=/usr/local/bin/atbrains-server serve
+Restart=always
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

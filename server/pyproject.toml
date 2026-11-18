@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atbrains-server"
+version = "3.0.0"
+description = "Universal multi-agent shared memory server (/v1 HTTP + MCP + Web Console) backed by MariaDB, Redis, and Qdrant."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.10"
+dependencies = [
+    "PyMySQL>=1.1.0",
+    "redis>=5.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6.0",
+]
+
+[project.scripts]
+atbrains-server = "atbrains_server.cli:main"
+atbrains-mcp = "atbrains_server.mcp_stdio:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["atbrains_server*"]
+
+[tool.setuptools.package-data]
+atbrains_server = ["console/*.html"]

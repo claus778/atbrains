@@ -1,0 +1,85 @@
+services:
+  mariadb:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${ATBRAINS_MARIADB_ROOT_PASSWORD:-change-me-root}
+      MARIADB_DATABASE: ${ATBRAINS_MARIADB_DB:-agent_memory}
+      MARIADB_USER: ${ATBRAINS_MARIADB_USER:-agent}
+      MARIADB_PASSWORD: ${ATBRAINS_MARIADB_PASSWORD:-change-me-db}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+00:00
+    ports:
+      - "127.0.0.1:57306:3306"
+    volumes:
+      - mariadb_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${ATBRAINS_REDIS_PASSWORD:-change-me-redis}"]
+    ports:
+      - "127.0.0.1:9079:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${ATBRAINS_REDIS_PASSWORD:-change-me-redis}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+  atbrains-server:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    environment:
+      ATBRAINS_HOST: 0.0.0.0
+      ATBRAINS_PORT: 8787
+      ATBRAINS_DATA_DIR: /data
+      ATBRAINS_MARIADB_HOST: mariadb
+      ATBRAINS_MARIADB_PORT: 3306
+      ATBRAINS_MARIADB_USER: ${ATBRAINS_MARIADB_USER:-agent}
+      ATBRAINS_MARIADB_DB: ${ATBRAINS_MARIADB_DB:-agent_memory}
+      ATBRAINS_MARIADB_PASSWORD: ${ATBRAINS_MARIADB_PASSWORD:-change-me-db}
+      ATBRAINS_REDIS_HOST: redis
+      ATBRAINS_REDIS_PORT: 6379
+      ATBRAINS_REDIS_PASSWORD: ${ATBRAINS_REDIS_PASSWORD:-change-me-redis}
+      ATBRAINS_QDRANT_URL: http://qdrant:6333
+      ATBRAINS_QDRANT_API_KEY: ${ATBRAINS_QDRANT_API_KEY:-}
+      ATBRAINS_EMBED_API_KEY: ${ATBRAINS_EMBED_API_KEY:-}
+      ATBRAINS_DISTILL_API_KEY: ${ATBRAINS_DISTILL_API_KEY:-}
+      ATBRAINS_VECTOR_ENABLED: ${ATBRAINS_VECTOR_ENABLED:-1}
+      ATBRAINS_BACKGROUND_WORKERS: 1
+    ports:
+      - "8787:8787"
+    volumes:
+      - server_data:/data
+
+volumes:
+  mariadb_data:
+  redis_data:
+  qdrant_data:
+  server_data:

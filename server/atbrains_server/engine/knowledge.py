@@ -1,0 +1,322 @@
+"""知识层：结构化主张（claim）/ 证据 / 情节头（episode）。"""
+from __future__ import annotations
+
+import logging
+from datetime import datetime
+from typing import Any
+from typing import Optional
+import hashlib
+import json
+import time
+
+from ..util import (  # noqa: F401
+    BrainError,
+    _cfg_flag,
+    _regexp_pattern,
+    _regexp_target,
+    normalize_platform,
+    search_terms,
+)
+
+logger = logging.getLogger("atbrains")
+
+class KnowledgeMixin:
+    """知识层：结构化主张（claim）/ 证据 / 情节头（episode）。"""
+
+    @staticmethod
+    def claim_slot_key(machine: str, subject: str, predicate: str, kind: str) -> str:
+        """一条主张的唯一槽位：同机 + 同主语 + 同谓词 + 同类 = 同一条主张的不同版本。"""
+        raw = "\x00".join([str(machine or ""), str(subject or ""), str(predicate or ""), str(kind or "")])
+        return hashlib.md5(raw.encode("utf-8", "replace")).hexdigest()
+
+    @staticmethod
+    def _json_list(value: Any) -> str:
+        """把 list / JSON 字符串统一成 JSON 数组文本（落库前校验）。"""
+        if value is None:
+            return "[]"
+        if isinstance(value, (list, tuple)):
+            return json.dumps([str(v) for v in value if str(v).strip()], ensure_ascii=False)
+        text = str(value).strip()
+        if not text:
+            return "[]"
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return json.dumps([str(v) for v in parsed], ensure_ascii=False)
+        except Exception:  # noqa: BLE001
+            pass
+        return json.dumps([text], ensure_ascii=False)
+
+    def claim_remember(self, subject: str, predicate: str, value: str, *,
+                       kind: str = "fact", basis: str = "direct_report",
+                       valid_from: Optional[str] = None, valid_to: Optional[str] = None,
+                       turn_id: Optional[int] = None, seq: Optional[int] = None,
+                       quote: str = "", confidence: int = 80, importance: int = 5,
+                       machine: str = "") -> dict[str, Any]:
+        """记一条结构化主张（subject/predicate/value），老版本自动封版。
+
+        与 brain_memories 的区别：这里是「一个槽位的当前值 + 历史版本」，
+        同槽位再写只递增 revision，不新增行；每条版本可挂证据（turn_id + seq + quote）。
+        """
+        subject = str(subject or "").strip()[:191]
+        predicate = str(predicate or "").strip()[:96]
+        value = str(value or "").strip()
+        if not subject or not predicate or not value:
+            raise BrainError("subject / predicate / value 都不能为空")
+        kind = (str(kind or "fact").strip() or "fact")[:24]
+        basis = (str(basis or "direct_report").strip() or "direct_report")[:16]
+        mach = str(machine or self.machine or "")[:48]
+        slot = self.claim_slot_key(mach, subject, predicate, kind)
+        try:
+            importance = max(1, min(10, int(importance)))
+            confidence = max(0, min(100, int(confidence)))
+        except (TypeError, ValueError):
+            importance, confidence = 5, 80
+        self.ensure_schema()
+        row = self._exec(
+            "SELECT id, current_revision FROM brain_claims WHERE slot_key = %s", (slot,), fetch=True)
+        if row:
+            claim_id = int(row[0]["id"])
+            revision = int(row[0]["current_revision"] or 0) + 1
+            self._exec(
+                "UPDATE brain_claims SET current_revision = %s, state = 'active', importance = %s, "
+                "agent = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                (revision, importance, self.agent, claim_id))
+            self._exec(
+                "UPDATE brain_claim_versions SET recorded_to = CURRENT_TIMESTAMP "
+                "WHERE claim_id = %s AND recorded_to IS NULL AND revision < %s", (claim_id, revision))
+            created = False
+        else:
+            _, claim_id = self._exec(
+                "INSERT INTO brain_claims (machine, agent, subject, predicate, kind, slot_key, "
+                "current_revision, state, importance) VALUES (%s, %s, %s, %s, %s, %s, 1, 'active', %s)",
+                (mach, self.agent, subject, predicate, kind, slot, importance))
+            claim_id, revision, created = int(claim_id), 1, True
+        self._exec(
+            "INSERT INTO brain_claim_versions (claim_id, revision, agent, value_text, basis, valid_from, "
+            "valid_to, replaces_revision, source_turn_id, source_seq, quote, confidence) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+            (claim_id, revision, self.agent, value[:16000], basis, valid_from or None, valid_to or None,
+             revision - 1 if revision > 1 else None, int(turn_id) if turn_id else None,
+             int(seq) if seq is not None else None, str(quote or "")[:2000], confidence))
+        if turn_id:
+            self._exec(
+                "INSERT IGNORE INTO brain_claim_evidence (claim_id, revision, turn_id, seq, relation, quote) "
+                "VALUES (%s, %s, %s, %s, 'supports', %s)",
+                (claim_id, revision, int(turn_id), int(seq or 0), str(quote or "")[:2000]))
+        return {"claim_id": claim_id, "revision": revision, "slot_key": slot,
+                "subject": subject, "predicate": predicate, "kind": kind, "created": created}
+
+    def claim_recall(self, *, query: str = "", subject: str = "", predicate: str = "",
+                     limit: int = 10, history: bool = False) -> list[dict[str, Any]]:
+        """取当前有效主张（history=True 返回全部版本，按时间倒序）。"""
+        limit = max(1, min(50, int(limit or 10)))
+        self.ensure_schema()
+        if history:
+            sql = ("SELECT c.id AS claim_id, c.subject, c.predicate, c.kind, c.machine, v.agent AS agent, v.revision, "
+                   "v.value_text, v.basis, v.confidence, v.valid_from, v.valid_to, "
+                   "v.recorded_from, v.recorded_to, v.source_turn_id, v.source_seq, v.quote "
+                   "FROM brain_claims c JOIN brain_claim_versions v ON v.claim_id = c.id WHERE 1=1 ")
+        else:
+            sql = ("SELECT c.id AS claim_id, c.subject, c.predicate, c.kind, c.machine, v.agent AS agent, c.state, "
+                   "v.revision, v.value_text, v.basis, v.confidence, v.valid_from, v.valid_to, "
+                   "v.recorded_from, v.source_turn_id, v.source_seq, v.quote "
+                   "FROM brain_claims c JOIN brain_claim_versions v "
+                   "ON v.claim_id = c.id AND v.revision = c.current_revision "
+                   "WHERE c.state = 'active' ")
+        params: list[Any] = []
+        if subject:
+            sql += "AND c.subject LIKE %s "
+            params.append(f"%{subject}%")
+        if predicate:
+            sql += "AND c.predicate LIKE %s "
+            params.append(f"%{predicate}%")
+        if query:
+            terms = search_terms(query, max_terms=4) or [str(query)]
+            pattern = _regexp_pattern(terms) if _cfg_flag(self.cfg, "search_regexp_enabled", 1) else ""
+            if pattern:
+                cols = ("c.subject", "c.predicate", "v.value_text")
+                sql += f"AND ({_regexp_target(cols)} REGEXP %s) "
+                params.append(pattern)
+            else:
+                conds = []
+                for term in terms:
+                    conds.append("(c.subject LIKE %s OR c.predicate LIKE %s OR v.value_text LIKE %s)")
+                    like = f"%{term}%"
+                    params += [like, like, like]
+                sql += "AND (" + " OR ".join(conds) + ") "
+        sql += "ORDER BY v.recorded_from DESC, c.id DESC LIMIT %s"
+        params.append(limit)
+        rows = [dict(r) for r in self._exec(sql, tuple(params), fetch=True)]
+        for r in rows:
+            for k, v in list(r.items()):
+                if isinstance(v, datetime):
+                    r[k] = v.isoformat(sep=" ", timespec="seconds")
+        return rows
+
+    def claim_retire(self, claim_id: int, reason: str = "") -> dict[str, Any]:
+        """撤回一条主张（保留版本与证据，只是不再算当前值）。"""
+        self.ensure_schema()
+        rowcount, _ = self._exec(
+            "UPDATE brain_claims SET state = 'retracted', updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = %s AND state <> 'retracted'", (int(claim_id),))
+        self._exec(
+            "UPDATE brain_claim_versions SET recorded_to = CURRENT_TIMESTAMP "
+            "WHERE claim_id = %s AND recorded_to IS NULL", (int(claim_id),))
+        return {"claim_id": int(claim_id), "retracted": rowcount, "reason": str(reason or "")[:200]}
+
+    def episode_set(self, turn_id: int, *, goal: Optional[str] = None,
+                    decisions: Any = None, open_items: Any = None, blockers: Any = None,
+                    next_step: Optional[str] = None, status: Optional[str] = None,
+                    session_id: str = "") -> dict[str, Any]:
+        """给某一轮挂一个情节头（目标/决策/未完成/阻碍/下一步）；只更新传入的字段。"""
+        tid = int(turn_id)
+        self.ensure_schema()
+        vals = {
+            "goal": None if goal is None else str(goal)[:4000],
+            "decisions": None if decisions is None else self._json_list(decisions),
+            "open_items": None if open_items is None else self._json_list(open_items),
+            "blockers": None if blockers is None else self._json_list(blockers),
+            "next_step": None if next_step is None else str(next_step)[:4000],
+            "status": None if status is None else str(status)[:16],
+        }
+        self._exec(
+            "INSERT INTO brain_episodes (turn_id, session_id, machine, agent, goal, decisions, open_items, "
+            "blockers, next_step, status) VALUES (%s, %s, %s, %s, COALESCE(%s,''), COALESCE(%s,'[]'), "
+            "COALESCE(%s,'[]'), COALESCE(%s,'[]'), COALESCE(%s,''), COALESCE(%s,'open')) "
+            "ON DUPLICATE KEY UPDATE goal = COALESCE(%s, goal), decisions = COALESCE(%s, decisions), "
+            "open_items = COALESCE(%s, open_items), blockers = COALESCE(%s, blockers), "
+            "next_step = COALESCE(%s, next_step), status = COALESCE(%s, status), agent = VALUES(agent)",
+            (tid, str(session_id or "")[:96], self.machine[:48], self.agent,
+             vals["goal"], vals["decisions"], vals["open_items"], vals["blockers"],
+             vals["next_step"], vals["status"],
+             vals["goal"], vals["decisions"], vals["open_items"], vals["blockers"],
+             vals["next_step"], vals["status"]))
+        return {"turn_id": tid, "updated": True}
+
+    def episode_get(self, turn_id: int = 0, *, session_id: str = "") -> dict[str, Any]:
+        """读某一轮的情节头；不传 turn_id 时取该会话最后一轮。"""
+        self.ensure_schema()
+        tid = int(turn_id or 0)
+        if not tid and session_id:
+            rows = self._exec(
+                "SELECT turn_id FROM brain_episodes WHERE session_id = %s ORDER BY turn_id DESC LIMIT 1",
+                (str(session_id)[:96],), fetch=True)
+            tid = int(rows[0]["turn_id"]) if rows else 0
+        if not tid:
+            return {"found": False, "reason": "需要 turn_id 或可用的 session_id"}
+        rows = self._exec(
+            "SELECT turn_id, session_id, machine, agent, goal, decisions, open_items, blockers, next_step, "
+            "status, created_at, updated_at FROM brain_episodes WHERE turn_id = %s", (tid,), fetch=True)
+        if not rows:
+            return {"found": False, "turn_id": tid}
+        out = dict(rows[0])
+        for key in ("decisions", "open_items", "blockers"):
+            try:
+                out[key] = json.loads(out.get(key) or "[]")
+            except Exception:  # noqa: BLE001
+                out[key] = []
+        for k, v in list(out.items()):
+            if isinstance(v, datetime):
+                out[k] = v.isoformat(sep=" ", timespec="seconds")
+        out["found"] = True
+        return out
+
+    def _resolve_author(self, author: str, platform: str) -> str:
+        """规范化/回填 author，不依赖 MariaDB 触发器也能保持统一口径。"""
+        a = str(author or "").strip()
+        if a.endswith("@im.wechat"):
+            return ("wx:" + a[:-10])[:64]
+        if a:
+            return a[:64]
+        p = str(platform or "").strip().lower()
+        if p in ("cron", "oneshot", "subagent"):
+            return f"sys:{p}"[:64]
+        try:
+            rows = self._exec(
+                "SELECT machine, platform, author FROM brain_author_defaults "
+                "WHERE (machine = %s OR machine = '*') AND (platform = %s OR platform = '*')",
+                (self.machine[:48], p[:32]), fetch=True)
+            best_score, best_author = -1, ""
+            for r in rows:
+                sc = (2 if r.get("machine") != "*" else 0) + (1 if r.get("platform") != "*" else 0)
+                if sc > best_score and r.get("author"):
+                    best_score, best_author = sc, str(r["author"])
+            if best_author:
+                return best_author[:64]
+        except Exception:  # noqa: BLE001
+            pass
+        return "unknown"
+
+    def open_episodes(self, limit: int = 5) -> list[dict[str, Any]]:
+        """未完成情节（status=open），最近的在前。"""
+        self.ensure_schema()
+        try:
+            rows = self._exec(
+                "SELECT turn_id, session_id, machine, agent, goal, decisions, open_items, "
+                "blockers, next_step, status, updated_at FROM brain_episodes "
+                "WHERE status = 'open' ORDER BY updated_at DESC, turn_id DESC LIMIT %s",
+                (max(1, int(limit)),), fetch=True)
+        except Exception:  # noqa: BLE001
+            return []
+        return [dict(r) for r in rows]
+
+    def record_turn(self, session_id: str, user_content: str, assistant_content: str,
+                    *, platform: str = "", author: str = "",
+                    messages: Optional[list[dict[str, Any]]] = None,
+                    total_messages: Optional[int] = None) -> int:
+        platform = normalize_platform(platform)
+        session_id = str(session_id or "")[:96]
+        platform = platform[:48]
+        u_raw, a_raw = str(user_content or ""), str(assistant_content or "")
+        u, a = u_raw[:16000], a_raw[:16000]
+        truncated = 1 if (len(u_raw) > 16000 or len(a_raw) > 16000) else 0
+        self.ensure_schema()
+        resolved_author = self._resolve_author(author, platform)
+        _, turn_id = self._exec(
+            "INSERT INTO brain_turns (session_id, platform, author, machine, agent, truncated, "
+            "user_content, assistant_content) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (session_id, platform, resolved_author, self.machine[:48], self.agent, truncated, u, a),
+        )
+        self._exec(
+            "INSERT INTO brain_sessions (session_id, platform, machine, started_at, last_active, turn_count) "
+            "VALUES (%s, %s, %s, NOW(), NOW(), 1) "
+            "ON DUPLICATE KEY UPDATE last_active = NOW(), turn_count = turn_count + 1, "
+            "platform = VALUES(platform), machine = VALUES(machine)",
+            (session_id, platform, self.machine[:48]),
+        )
+        # 全量转录层（可关）：工具调用/工具输出/推理按 zlib 增量落库
+        stored = stored_bytes = 0
+        if messages:
+            try:
+                stored, stored_bytes = self.store_turn_messages(
+                    turn_id, session_id, messages, total_messages)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("atbrains: 转录层写入失败（正文已存）: %s", str(exc)[:200])
+            if stored:
+                try:
+                    self._exec(
+                        "UPDATE brain_turns SET message_count = %s, message_bytes = %s WHERE id = %s",
+                        (min(stored, 65535), min(stored_bytes, 4294967295), turn_id))
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("atbrains: 转录计数更新失败: %s", exc)
+        try:
+            r = self.redis()
+            stream = self._rk("recent")
+            r.xadd(
+                stream,
+                {"sid": session_id, "platform": platform, "author": author, "machine": self.machine[:48],
+                 "user": u[:600], "assistant": a[:600], "ts": f"{time.time():.3f}"},
+                maxlen=int(self.cfg["stream_maxlen"]), approximate=True,
+            )
+            r.expire(stream, int(self.cfg["short_term_ttl_days"]) * 86400)
+            skey = self._rk("session", session_id)
+            pipe = r.pipeline()
+            pipe.hset(skey, mapping={"platform": platform,
+                                     "last_active": str(int(time.time()))})
+            pipe.hincrby(skey, "turns", 1)
+            pipe.expire(skey, int(self.cfg["short_term_ttl_days"]) * 86400)
+            pipe.execute()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("atbrains: Redis 回合写入失败: %s", exc)
+        return turn_id

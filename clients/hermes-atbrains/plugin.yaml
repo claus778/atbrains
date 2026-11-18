@@ -1,0 +1,11 @@
+name: atbrains-memory
+version: "3.0.0"
+description: >-
+  atbrains 共享记忆库的 Hermes 客户端适配器（纯标准库 HTTP `/v1` 客户端，零数据库依赖、
+  零数据库口令；服务端暂不可达时写入进入本地有界离线队列，恢复后自动重放）。
+author: claus778
+platforms:
+  - linux
+  - macos
+  - windows
+# 纯 Python 标准库实现（内置纯 stdlib SDK），无需任何第三方 pip 依赖。
