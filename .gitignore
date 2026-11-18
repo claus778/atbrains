@@ -15,3 +15,12 @@ clients/*/node_modules/
 
 # 打包产物（tools/package-astrbot-client.py 生成）
 dist/
+
+# 第三方依赖不入库：服务端用 pip/uv 安装或 `make vendor` 生成；客户端 SDK 纯标准库，无需 vendor
+**/vendor/
+**/_vendor/
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
