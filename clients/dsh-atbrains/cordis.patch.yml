@@ -8,7 +8,7 @@
     - id: atbrains-memory
       name: dsh-atbrains
       config:
-        baseUrl: http://111.230.71.79:8787
+        baseUrl: http://127.0.0.1:8787 # 改为你的 atbrains-server 地址
         tokenEnv: ATBRAINS_MCP_TOKEN
         timeoutMs: 1200
         writeTimeoutMs: 4000

@@ -1,6 +1,11 @@
 name: atbrains-memory
-version: 2.6.1
-description: "atbrains — 本机双存储记忆：Redis 短期（最近对话流/会话状态/热点缓存）+ MariaDB 长期（事实/对话归档/全量转录层 brain_turn_messages/会话/压缩存档）。"
-# Python 依赖（redis / PyMySQL）以纯 Python 源码形式内置于本插件 vendor/ 目录，
-# 不参与 PM 依赖构建 —— 避免在国内镜像（缺 PEP 700 upload-time 元数据）环境下
-# 触发 uv 重解析失败、插件被自动禁用。
+version: "3.0.0"
+description: >-
+  atbrains 共享记忆库的 Hermes 客户端适配器（纯标准库 HTTP `/v1` 客户端，零数据库依赖、
+  零数据库口令；服务端暂不可达时写入进入本地有界离线队列，恢复后自动重放）。
+author: claus778
+platforms:
+  - linux
+  - macos
+  - windows
+# 纯 Python 标准库实现（内置纯 stdlib SDK），无需任何第三方 pip 依赖。
