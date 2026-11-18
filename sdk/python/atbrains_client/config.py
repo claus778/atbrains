@@ -159,7 +159,10 @@ def resolve_client_config(
     url = normalize_base_url(url)
 
     tok = token or _first_env_or_dotenv(
-        env_paths, ("ATBRAINS_TOKEN", "ATBRAINS_REMOTE_TOKEN", "ATBRAINS_MCP_TOKEN", "BRAIN_REMOTE_TOKEN"))
+        env_paths,
+        ("ATBRAINS_TOKEN", "ATBRAINS_SERVICE_TOKEN", "ATBRAINS_REMOTE_TOKEN",
+         "ATBRAINS_MCP_TOKEN", "BRAIN_REMOTE_TOKEN"),
+    )
     if not tok:
         for k in ("token", "service_token", "remote_token"):
             if str(raw.get(k) or "").strip():

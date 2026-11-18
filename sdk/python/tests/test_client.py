@@ -41,6 +41,15 @@ class ConfigTest(unittest.TestCase):
             self.assertEqual(cfg.timeout_ms, 900)
             self.assertEqual(cfg.write_timeout_ms, 5000)
 
+    def test_resolve_legacy_service_token(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p / "atbrains.json").write_text(json.dumps({"service_url": "http://srv:8787"}), encoding="utf-8")
+            (p / ".env").write_text("ATBRAINS_SERVICE_TOKEN=srv-tok-xyz\n", encoding="utf-8")
+            cfg = resolve_client_config(str(p))
+            self.assertEqual(cfg.base_url, "http://srv:8787")
+            self.assertEqual(cfg.token, "srv-tok-xyz")
+
 
 class SpoolTest(unittest.TestCase):
     def test_spool_fifo_transient_and_deadletter(self) -> None:
