@@ -69,11 +69,13 @@ atbrains/
 
 ### 1. 启动服务端（推荐 Docker Compose 或 venv）
 
-**方式 A：Docker Compose 一键拉起（MariaDB + Redis + Qdrant + atbrains-server）**
+**方式 A：Docker Compose 一键拉起（MariaDB + Redis + Qdrant + atbrains-server，支持宿主机目录持久化挂载）**
 ```bash
-cd deploy
-ATBRAINS_MARIADB_PASSWORD=your-db-pass ATBRAINS_REDIS_PASSWORD=your-redis-pass \
-  docker compose up -d
+cd server
+cp .env.example .env
+# 可在 .env 修改数据库口令与挂载路径：
+# ATBRAINS_MARIADB_DATA_DIR / ATBRAINS_REDIS_DATA_DIR / ATBRAINS_QDRANT_DATA_DIR / ATBRAINS_SERVER_DATA_DIR
+docker compose up -d --build
 ```
 
 **方式 B：Python 环境安装运行**

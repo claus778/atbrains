@@ -14,7 +14,7 @@ services:
     ports:
       - "127.0.0.1:57306:3306"
     volumes:
-      - mariadb_data:/var/lib/mysql
+      - ${ATBRAINS_MARIADB_DATA_DIR:-./data/mariadb}:/var/lib/mysql
     healthcheck:
       test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
       interval: 10s
@@ -28,7 +28,7 @@ services:
     ports:
       - "127.0.0.1:9079:6379"
     volumes:
-      - redis_data:/data
+      - ${ATBRAINS_REDIS_DATA_DIR:-./data/redis}:/data
     healthcheck:
       test: ["CMD", "redis-cli", "-a", "${ATBRAINS_REDIS_PASSWORD:-change-me-redis}", "ping"]
       interval: 10s
@@ -41,7 +41,7 @@ services:
     ports:
       - "127.0.0.1:6333:6333"
     volumes:
-      - qdrant_data:/qdrant/storage
+      - ${ATBRAINS_QDRANT_DATA_DIR:-./data/qdrant}:/qdrant/storage
 
   atbrains-server:
     build:
@@ -76,10 +76,4 @@ services:
     ports:
       - "8787:8787"
     volumes:
-      - server_data:/data
-
-volumes:
-  mariadb_data:
-  redis_data:
-  qdrant_data:
-  server_data:
+      - ${ATBRAINS_SERVER_DATA_DIR:-./data/server}:/data

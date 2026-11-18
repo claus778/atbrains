@@ -1,0 +1,105 @@
+services:
+  mariadb:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${ATBRAINS_MARIADB_ROOT_PASSWORD:-change-me-root}
+      MARIADB_DATABASE: ${ATBRAINS_MARIADB_DB:-agent_memory}
+      MARIADB_USER: ${ATBRAINS_MARIADB_USER:-agent}
+      MARIADB_PASSWORD: ${ATBRAINS_MARIADB_PASSWORD:-change-me-db}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+00:00
+    ports:
+      - "${ATBRAINS_MARIADB_BIND:-127.0.0.1}:${ATBRAINS_MARIADB_HOST_PORT:-57306}:3306"
+    volumes:
+      # MariaDB 数据文件持久化目录（可通过 .env 修改为宿主机任意路径，如 /root/mariadb）
+      - ${ATBRAINS_MARIADB_DATA_DIR:-./data/mariadb}:/var/lib/mysql
+      # 可选：挂载自定义 MariaDB 配置或首次建库 SQL
+      # - ./my.cnf:/etc/mysql/conf.d/atbrains.cnf:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${ATBRAINS_REDIS_PASSWORD:-change-me-redis}
+    ports:
+      - "${ATBRAINS_REDIS_BIND:-127.0.0.1}:${ATBRAINS_REDIS_HOST_PORT:-9079}:6379"
+    volumes:
+      # Redis AOF / RDB 持久化目录（可通过 .env 修改为宿主机任意路径，如 /root/redis）
+      - ${ATBRAINS_REDIS_DATA_DIR:-./data/redis}:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${ATBRAINS_REDIS_PASSWORD:-change-me-redis}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "${ATBRAINS_QDRANT_BIND:-127.0.0.1}:${ATBRAINS_QDRANT_HOST_PORT:-6333}:6333"
+    volumes:
+      # Qdrant 向量存储目录（可通过 .env 修改为宿主机任意路径，如 /root/qdrant）
+      - ${ATBRAINS_QDRANT_DATA_DIR:-./data/qdrant}:/qdrant/storage
+      # 可选：挂载 Qdrant 配置文件（开启 api-key 鉴权等）
+      # - /etc/qdrant/production.yaml:/qdrant/config/production.yaml:ro
+
+  atbrains-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+    image: ${ATBRAINS_SERVER_IMAGE:-atbrains-server:latest}
+    restart: unless-stopped
+    depends_on:
+      mariadb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_started
+    environment:
+      ATBRAINS_HOST: 0.0.0.0
+      ATBRAINS_PORT: ${ATBRAINS_PORT:-8787}
+      ATBRAINS_DATA_DIR: /data
+      ATBRAINS_AUTO_MIGRATE: ${ATBRAINS_AUTO_MIGRATE:-1}
+      ATBRAINS_BACKGROUND_WORKERS: ${ATBRAINS_BACKGROUND_WORKERS:-1}
+      ATBRAINS_MARIADB_HOST: mariadb
+      ATBRAINS_MARIADB_PORT: 3306
+      ATBRAINS_MARIADB_USER: ${ATBRAINS_MARIADB_USER:-agent}
+      ATBRAINS_MARIADB_DB: ${ATBRAINS_MARIADB_DB:-agent_memory}
+      ATBRAINS_MARIADB_PASSWORD: ${ATBRAINS_MARIADB_PASSWORD:-change-me-db}
+      ATBRAINS_REDIS_HOST: redis
+      ATBRAINS_REDIS_PORT: 6379
+      ATBRAINS_REDIS_DB: ${ATBRAINS_REDIS_DB:-0}
+      ATBRAINS_REDIS_PASSWORD: ${ATBRAINS_REDIS_PASSWORD:-change-me-redis}
+      ATBRAINS_QDRANT_URL: ${ATBRAINS_QDRANT_URL:-http://qdrant:6333}
+      ATBRAINS_QDRANT_COLLECTION: ${ATBRAINS_QDRANT_COLLECTION:-brain_memories}
+      ATBRAINS_QDRANT_API_KEY: ${ATBRAINS_QDRANT_API_KEY:-}
+      ATBRAINS_VECTOR_ENABLED: ${ATBRAINS_VECTOR_ENABLED:-1}
+      ATBRAINS_EMBED_BASE_URL: ${ATBRAINS_EMBED_BASE_URL:-https://api.siliconflow.cn/v1}
+      ATBRAINS_EMBED_MODEL: ${ATBRAINS_EMBED_MODEL:-Qwen/Qwen3-Embedding-4B}
+      ATBRAINS_EMBED_DIM: ${ATBRAINS_EMBED_DIM:-2560}
+      ATBRAINS_EMBED_API_KEY: ${ATBRAINS_EMBED_API_KEY:-}
+      ATBRAINS_DISTILL_ENABLED: ${ATBRAINS_DISTILL_ENABLED:-0}
+      ATBRAINS_DISTILL_API_BASE_URL: ${ATBRAINS_DISTILL_API_BASE_URL:-https://api.commandcode.ai/provider/v1}
+      ATBRAINS_DISTILL_API_MODEL: ${ATBRAINS_DISTILL_API_MODEL:-deepseek/deepseek-v4.1-flash}
+      ATBRAINS_DISTILL_API_KEY: ${ATBRAINS_DISTILL_API_KEY:-}
+      ATBRAINS_PROJECTION_TABLES_ENABLED: ${ATBRAINS_PROJECTION_TABLES_ENABLED:-0}
+    ports:
+      - "${ATBRAINS_SERVER_BIND:-0.0.0.0}:${ATBRAINS_PORT:-8787}:${ATBRAINS_PORT:-8787}"
+    volumes:
+      # 服务端运行时持久化目录：存放 service-tokens.json、控制台 .token 与 access.log
+      - ${ATBRAINS_SERVER_DATA_DIR:-./data/server}:/data

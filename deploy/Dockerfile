@@ -1,14 +1,20 @@
 FROM python:3.13-slim
 
+ARG PIP_INDEX_URL=""
+
 WORKDIR /app
 COPY server /app/server
-COPY sdk/python /app/sdk/python
 
-RUN pip install --no-cache-dir /app/sdk/python /app/server
+RUN if [ -n "$PIP_INDEX_URL" ]; then \
+        pip install --no-cache-dir -i "$PIP_INDEX_URL" /app/server; \
+    else \
+        pip install --no-cache-dir /app/server; \
+    fi
 
 ENV ATBRAINS_HOST=0.0.0.0 \
     ATBRAINS_PORT=8787 \
     ATBRAINS_DATA_DIR=/data \
+    ATBRAINS_AUTO_MIGRATE=1 \
     ATBRAINS_BACKGROUND_WORKERS=1
 
 VOLUME ["/data"]

@@ -17,6 +17,10 @@ clients/*/node_modules/
 dist/
 clients/*/_sdk/
 clients/*/data/
+server/data/
+server/.env
+deploy/data/
+deploy/.env
 *.egg-info/
 build/
 # 第三方依赖不入库：服务端用 pip/uv 安装或 `make vendor` 生成；客户端 SDK 纯标准库，无需 vendor

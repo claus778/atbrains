@@ -277,6 +277,8 @@ def main() -> None:
     cfg = resolve_server_http_config()
     host, port = cfg["host"], int(cfg["port"])
     server, runtime = create_http_server(host, port, start_workers=True)
+    if getattr(runtime.service.engine, "_auto_migrate", True):
+        runtime.service.engine.ensure_schema()
     print(f"atbrains-server v{__version__} → http://{host}:{port}/", flush=True)
     print(f"atbrains /v1 API      → http://{host}:{port}/v1/health", flush=True)
     print(f"atbrains /mcp         → http://{host}:{port}/mcp", flush=True)
