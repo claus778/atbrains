@@ -305,6 +305,14 @@ let lastTick = Date.now();
 /* ── token ── */
 let TOK = '';
 try { TOK = localStorage.getItem('atbrains_token') || ''; } catch (e) {}
+try {
+  const um = location.search.match(/[?&]token=([^&]+)/);
+  if (um) {
+    TOK = decodeURIComponent(um[1]).trim();
+    localStorage.setItem('atbrains_token', TOK);
+    history.replaceState(null, '', location.pathname);
+  }
+} catch (e) {}
 if (TOK) $('#tok').value = TOK;
 
 function saveTok() {
