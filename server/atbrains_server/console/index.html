@@ -1,788 +1,1338 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>atbrains · 记忆系统控制台</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%A7%A0%3C/text%3E%3C/svg%3E">
+<title>atbrains 控制台</title>
 <style>
-  :root{
-    --bg:#0b0f14; --panel:#111820; --panel2:#16202b; --line:#243040;
-    --fg:#dce6f2; --dim:#7f8fa3; --acc:#4c9aff; --acc2:#2f6fdd;
-    --ok:#3fb950; --warn:#d29922; --bad:#f85149;
-    --hdr:57px;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--fg);
-       font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif}
-  a{color:var(--acc);text-decoration:none}
-  a:hover{text-decoration:underline}
-  header{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
-         padding:13px 20px;border-bottom:1px solid var(--line);
-         background:linear-gradient(180deg,#121a24,#101721);position:sticky;top:0;z-index:9}
-  header h1{margin:0;font-size:16px;font-weight:600;letter-spacing:.3px}
-  header h1 span.b{color:var(--acc)}
-  .ver{font-size:11px;color:var(--dim);border:1px solid var(--line);border-radius:20px;padding:1px 8px;font-weight:400}
-  .spacer{flex:1}
-  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--dim);margin-right:6px;vertical-align:1px}
-  .dot.ok{background:var(--ok);box-shadow:0 0 6px #3fb95066}
-  .dot.bad{background:var(--bad)} .dot.warn{background:var(--warn)}
-  input,select,textarea,button{font:inherit;color:var(--fg);background:var(--panel2);
-       border:1px solid var(--line);border-radius:7px;padding:6px 10px;outline:none}
-  input:focus,textarea:focus,select:focus{border-color:var(--acc)}
-  button{cursor:pointer;transition:.15s;white-space:nowrap}
-  button:hover{background:#1d2a38;border-color:#31435a}
-  button:disabled{opacity:.45;cursor:default}
-  button.primary{background:#1c4f9e;border-color:#2a63bd}
-  button.primary:hover{background:#245cb4}
-  button.danger{background:#3a1519;border-color:#63232a;color:#ff9b94}
-  button.danger:hover{background:#4a1b21}
-  button.good{background:#12351f;border-color:#1f5f36;color:#7ee787}
-  button.good:hover{background:#17452a}
-  .chip{background:var(--panel2);border-radius:20px;font-size:12px;color:var(--dim);padding:4px 12px}
-  .hidden{display:none!important}
-  main{padding:18px 20px 70px;max-width:1480px;margin:0 auto}
-  .grid{display:grid;gap:14px}
-  .g4{grid-template-columns:repeat(auto-fit,minmax(250px,1fr))}
-  .g3{grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
-  .g2{grid-template-columns:repeat(auto-fit,minmax(420px,1fr))}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px 16px}
-  .card h3{margin:0 0 10px;font-size:12px;font-weight:600;color:var(--dim);
-           text-transform:uppercase;letter-spacing:.8px}
-  .card h4{margin:10px 0 2px;font-size:13px;color:var(--acc)}
-  .kv{display:flex;justify-content:space-between;gap:10px;padding:3px 0}
-  .kv b{font-weight:600;min-width:0;overflow-wrap:anywhere}
-  .big{font-size:25px;font-weight:700;line-height:1.25}
-  .sub{color:var(--dim);font-size:12px}
-  .warnc{color:var(--warn)}
-  .bar{height:7px;border-radius:5px;background:#0a1017;border:1px solid var(--line);margin:8px 0 2px;overflow:hidden}
-  .bar i{display:block;height:100%;background:var(--ok);border-radius:4px;transition:width .4s}
-  .tabs{display:flex;gap:4px;margin:20px 0 12px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-  .tabs button{background:transparent;border:none;border-bottom:2px solid transparent;
-               border-radius:0;padding:8px 14px;color:var(--dim);font-size:14px}
-  .tabs button:hover{background:transparent;color:var(--fg)}
-  .tabs button.on{color:var(--fg);border-bottom-color:var(--acc)}
-  .toolbar{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:2px 0 10px}
-  table{width:100%;border-collapse:collapse;font-size:13px}
-  th,td{text-align:left;padding:7px 9px;border-bottom:1px solid var(--line);vertical-align:top;overflow-wrap:anywhere}
-  th{color:var(--dim);font-weight:600;font-size:12px;position:sticky;top:var(--hdr);background:var(--panel);z-index:2}
-  tr:hover td{background:#141d27}
-  code{background:#101923;padding:1px 5px;border-radius:4px;font-size:12px}
-  .tag{display:inline-block;background:#182636;color:#9db4d0;border-radius:4px;
-       padding:0 6px;font-size:11px;margin:0 4px 2px 0}
-  .pill{display:inline-block;border-radius:20px;padding:1px 9px;font-size:11px;font-weight:600}
-  .pill.on{background:#0f2f1a;color:var(--ok)} .pill.off{background:#3d1418;color:#ff9b94}
-  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-  .muted{color:var(--dim)}
-  pre{background:#0a0e13;border:1px solid var(--line);border-radius:8px;padding:10px;
-      overflow:auto;max-height:340px;font-size:12px;white-space:pre-wrap}
-  .toast{position:fixed;right:18px;bottom:18px;background:var(--panel);border:1px solid var(--line);
-         border-left:3px solid var(--acc);border-radius:8px;padding:10px 14px;max-width:480px;
-         box-shadow:0 8px 28px #0008;opacity:0;transform:translateY(8px);transition:.2s;pointer-events:none;z-index:50}
-  .toast.show{opacity:1;transform:none}
-  .scroll{max-height:560px;overflow:auto;border:1px solid var(--line);border-radius:8px}
-  .hint{font-size:12px;color:var(--dim);margin-top:6px}
-  .pager{display:flex;gap:8px;align-items:center;margin-top:10px;flex-wrap:wrap}
-  .pager button{padding:4px 10px;font-size:12px}
-  .litem{padding:8px 2px;border-bottom:1px solid var(--line)}
-  .litem:last-child{border-bottom:none}
-  .listbox{max-height:560px;overflow:auto}
-  .clk{cursor:pointer}
-  .clk:hover{color:#fff}
-  .contentbox{background:#0a0e13;border:1px solid var(--line);border-radius:8px;padding:10px;
-      white-space:pre-wrap;word-break:break-word;max-height:46vh;overflow:auto;font-size:13px;margin:6px 0}
-  .modal{position:fixed;inset:0;background:#0009;display:none;align-items:flex-start;
-         justify-content:center;z-index:40;padding:40px 16px;overflow:auto}
-  .modal.show{display:flex}
-  .mbox{background:var(--panel);border:1px solid var(--line);border-radius:12px;
-        width:min(860px,100%);padding:16px 18px;box-shadow:0 18px 60px #000a}
-  .mhead{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:6px}
-  .mhead b{font-size:15px}
-  .mhead button{padding:2px 10px}
-  @media (max-width:640px){
-    main{padding:14px 10px 60px}
-    header{padding:10px 10px;gap:8px}
-    .big{font-size:22px}
-  }
+:root{
+  --bg:#0b0f17;--panel:#111722;--panel2:#161e2e;--line:#222c40;--line2:#2d3a54;
+  --fg:#e5ecf6;--muted:#8a97ad;--dim:#5b677d;
+  --accent:#4f8cff;--accent2:#3b76e8;--ok:#22c55e;--warn:#f59e0b;--err:#ef4444;--info:#06b6d4;--violet:#a855f7;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+  --radius:10px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:13px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
+button,input,select,textarea{font:inherit;color:var(--fg)}
+code,pre,.mono{font-family:var(--mono)}
+a{color:var(--accent);text-decoration:none}
+
+.app{display:grid;grid-template-columns:220px 1fr;min-height:100vh}
+.side{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:16px 12px;gap:14px;position:sticky;top:0;height:100vh}
+.brand{display:flex;align-items:center;gap:10px;padding:4px 8px}
+.logo{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#4f8cff,#7c3aed);display:grid;place-items:center;font-weight:700;font-size:14px;color:#fff}
+.brand h1{margin:0;font-size:15px;font-weight:700;letter-spacing:.2px}
+.brand span{display:block;font-size:11px;color:var(--muted)}
+.nav{display:flex;flex-direction:column;gap:4px}
+.nav button{display:flex;align-items:center;justify-content:space-between;width:100%;background:transparent;border:1px solid transparent;border-radius:8px;padding:9px 11px;color:var(--muted);cursor:pointer;text-align:left;transition:.15s}
+.nav button:hover{background:var(--panel2);color:var(--fg)}
+.nav button.active{background:rgba(79,140,255,.14);border-color:rgba(79,140,255,.35);color:#fff;font-weight:600}
+.nav .cnt{font-size:11px;background:var(--panel2);border:1px solid var(--line);border-radius:99px;padding:0 7px;color:var(--muted)}
+.nav button.active .cnt{background:rgba(79,140,255,.22);border-color:rgba(79,140,255,.4);color:#cfe0ff}
+.side-foot{margin-top:auto;display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--line);padding-top:12px}
+.health-col{display:flex;flex-direction:column;gap:5px;padding:0 4px}
+.h-row{display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--muted)}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--dim);margin-right:6px}
+.dot.ok{background:var(--ok);box-shadow:0 0 6px rgba(34,197,94,.6)}
+.dot.err{background:var(--err)}
+.dot.warn{background:var(--warn)}
+
+.main{display:flex;flex-direction:column;min-width:0}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 22px;border-bottom:1px solid var(--line);background:rgba(17,23,34,.85);backdrop-filter:blur(8px);position:sticky;top:0;z-index:20}
+.topbar-l{display:flex;align-items:center;gap:12px;min-width:0}
+.topbar h2{margin:0;font-size:15px;font-weight:600}
+.topbar-r{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.content{padding:18px 22px 40px;display:flex;flex-direction:column;gap:16px;max-width:1440px;width:100%}
+
+.grid{display:grid;gap:12px}
+.g4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.g3{grid-template-columns:repeat(3,minmax(0,1fr))}
+.g2{grid-template-columns:repeat(2,minmax(0,1fr))}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:15px 16px}
+.card-hd{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+.card-hd h3{margin:0;font-size:13px;font-weight:600;color:var(--fg);letter-spacing:.2px}
+.kpi .label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
+.kpi .val{font-size:24px;font-weight:700;margin-top:4px;line-height:1.2}
+.kpi .sub{font-size:11px;color:var(--muted);margin-top:4px}
+
+.btn{background:var(--panel2);border:1px solid var(--line2);border-radius:7px;padding:6px 11px;cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;transition:.12s}
+.btn:hover{border-color:var(--accent);color:#fff}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+.btn.pri:hover{background:var(--accent2)}
+.btn.ok{border-color:rgba(34,197,94,.45);color:#86efac}
+.btn.ok:hover{background:rgba(34,197,94,.12)}
+.btn.warn{border-color:rgba(245,158,11,.45);color:#fcd34d}
+.btn.warn:hover{background:rgba(245,158,11,.12)}
+.btn.err{border-color:rgba(239,68,68,.45);color:#fca5a5}
+.btn.err:hover{background:rgba(239,68,68,.12)}
+.btn.sm{padding:4px 8px;font-size:12px;border-radius:6px}
+.btn.ghost{background:transparent;border-color:transparent;color:var(--muted)}
+.btn.ghost:hover{background:var(--panel2);color:var(--fg)}
+
+input,select,textarea{background:#0c111b;border:1px solid var(--line2);border-radius:7px;padding:6px 10px;outline:none}
+input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+textarea{width:100%;min-height:84px;resize:vertical}
+.form-row{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
+.field{display:flex;flex-direction:column;gap:4px;min-width:130px}
+.field.grow{flex:1;min-width:180px}
+.field label{font-size:11px;color:var(--muted)}
+
+.pills{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.pill{background:var(--panel2);border:1px solid var(--line);border-radius:99px;padding:4px 10px;font-size:12px;color:var(--muted);cursor:pointer}
+.pill:hover{border-color:var(--line2);color:var(--fg)}
+.pill.active{background:rgba(79,140,255,.18);border-color:rgba(79,140,255,.5);color:#cfe0ff}
+
+.badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;border:1px solid var(--line2);background:var(--panel2);color:var(--fg);white-space:nowrap}
+.b-ok{border-color:rgba(34,197,94,.4);background:rgba(34,197,94,.12);color:#86efac}
+.b-err{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.12);color:#fca5a5}
+.b-warn{border-color:rgba(245,158,11,.4);background:rgba(245,158,11,.12);color:#fcd34d}
+.b-info{border-color:rgba(6,182,212,.4);background:rgba(6,182,212,.12);color:#67e8f9}
+.b-violet{border-color:rgba(168,85,247,.4);background:rgba(168,85,247,.14);color:#d8b4fe}
+.b-blue{border-color:rgba(79,140,255,.45);background:rgba(79,140,255,.15);color:#93c5fd}
+.b-dim{border-color:var(--line);background:transparent;color:var(--muted)}
+
+.tbl-wrap{overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
+th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap}
+tbody tr:hover{background:rgba(255,255,255,.02)}
+td.clip{max-width:340px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.act-grp{display:flex;gap:5px;flex-wrap:nowrap}
+.muted{color:var(--muted)}
+.dim{color:var(--dim)}
+.small{font-size:11.5px}
+.empty{padding:28px 12px;text-align:center;color:var(--muted)}
+
+.secret-box{border:1px solid rgba(34,197,94,.45);background:rgba(34,197,94,.06);border-radius:var(--radius);padding:14px 16px;display:flex;flex-direction:column;gap:10px}
+.secret-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#0a0f18;border:1px solid var(--line2);border-radius:7px;padding:8px 10px}
+.secret-line code{flex:1;word-break:break-all;color:#86efac;font-size:12.5px}
+pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:8px;padding:11px 12px;overflow:auto;max-height:280px;font-size:12px;line-height:1.5;color:#cbd5e1;white-space:pre-wrap;word-break:break-word}
+
+.bar{height:8px;background:#0a0f18;border:1px solid var(--line);border-radius:99px;overflow:hidden;margin-top:8px}
+.bar>span{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--ok));transition:width .25s}
+
+.kv{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 14px;font-size:12px}
+.kv-item{display:flex;justify-content:space-between;gap:8px;border-bottom:1px dashed var(--line);padding:4px 0}
+.kv-item span:first-child{color:var(--muted)}
+
+.pager{display:flex;align-items:center;justify-content:space-between;margin-top:10px;gap:10px}
+.seg{display:inline-flex;background:#0c111b;border:1px solid var(--line2);border-radius:8px;padding:2px}
+.seg button{background:transparent;border:none;border-radius:6px;padding:5px 12px;color:var(--muted);cursor:pointer}
+.seg button.active{background:var(--panel2);color:#fff;font-weight:600}
+
+.hidden{display:none!important}
+.overlay{position:fixed;inset:0;background:rgba(5,8,14,.78);backdrop-filter:blur(4px);display:grid;place-items:center;z-index:100;padding:16px}
+.modal{background:var(--panel);border:1px solid var(--line2);border-radius:12px;max-width:760px;width:100%;max-height:86vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.5)}
+.modal-hd{display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--line)}
+.modal-hd h3{margin:0;font-size:14px}
+.modal-bd{padding:16px;overflow:auto;display:flex;flex-direction:column;gap:12px}
+.modal-ft{padding:12px 16px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+
+.auth-card{background:var(--panel);border:1px solid var(--line2);border-radius:12px;padding:24px;width:100%;max-width:420px;display:flex;flex-direction:column;gap:14px}
+.auth-card h2{margin:0;font-size:17px}
+.toast{position:fixed;right:20px;bottom:20px;background:var(--panel2);border:1px solid var(--line2);border-radius:8px;padding:9px 14px;font-size:12.5px;z-index:200;box-shadow:0 10px 30px rgba(0,0,0,.45);transition:.2s}
+.toast.ok{border-color:rgba(34,197,94,.5);color:#86efac}
+.toast.err{border-color:rgba(239,68,68,.5);color:#fca5a5}
+
+@media(max-width:960px){
+  .app{grid-template-columns:1fr}
+  .side{position:static;height:auto;border-right:none;border-bottom:1px solid var(--line)}
+  .nav{flex-direction:row;flex-wrap:wrap}
+  .nav button{width:auto}
+  .g4,.g3{grid-template-columns:repeat(2,minmax(0,1fr))}
+}
+@media(max-width:640px){
+  .g4,.g3,.g2,.kv{grid-template-columns:1fr}
+  .content{padding:14px}
+}
 </style>
 </head>
 <body>
-<header>
-  <h1>atbrains <span class="b">· 记忆系统控制台</span> <span class="ver" id="ver"></span></h1>
-  <span class="sub" id="conn"><span class="dot"></span>未连接</span>
-  <div class="spacer"></div>
-  <button id="tokchip" class="chip hidden" onclick="expandTok()" title="更换 token">✓ 已认证</button>
-  <span id="tokwrap" class="row">
-    <input id="tok" type="password" placeholder="访问 token(回车即保存)" style="width:215px"
-           onkeydown="if(event.key==='Enter'){event.preventDefault();saveTok();}">
-    <button onclick="saveTok()">保存</button>
-  </span>
-  <button onclick="withBusy(this,()=>refresh(true))">刷新</button>
-  <select id="auto" onchange="setAuto(this.value)">
-    <option value="0">自动:关</option>
-    <option value="5">自动 5s</option>
-    <option value="10" selected>自动 10s</option>
-    <option value="30">自动 30s</option>
-  </select>
-</header>
-
-<main>
-  <div class="grid g4" id="cards"></div>
-
-  <div class="tabs" id="tabs">
-    <button data-tab="mem" class="on" onclick="tab('mem')">记忆</button>
-    <button data-tab="turn" onclick="tab('turn')">对话归档</button>
-    <button data-tab="sess" onclick="tab('sess')">会话</button>
-    <button data-tab="recent" onclick="tab('recent')">动态</button>
-    <button data-tab="search" onclick="tab('search')">检索</button>
-    <button data-tab="tok" onclick="tab('tok')">令牌</button>
-    <button data-tab="act" onclick="tab('act')">操作</button>
-  </div>
-
-  <!-- ── 记忆 ── -->
-  <section id="t-mem">
-    <div class="toolbar">
-      <input id="mq" placeholder="按内容过滤…" style="width:240px" onkeydown="enterLoad(event,'mem')">
-      <input id="magent" placeholder="来源 agent,如 dsh" style="width:150px" onkeydown="enterLoad(event,'mem')">
-      <select id="mactive" onchange="memSearch()">
-        <option value="1">仅活跃</option><option value="0">仅已停用</option><option value="all">全部</option>
-      </select>
-      <select id="mkind" onchange="memSearch()">
-        <option value="">类型:全部</option><option>note</option><option>fact</option>
-        <option>preference</option><option>decision</option><option>todo</option>
-      </select>
-      <select id="mlimit" onchange="memSearch()">
-        <option value="50">每页 50</option><option value="100" selected>每页 100</option><option value="300">每页 300</option>
-      </select>
-      <button class="primary" onclick="memSearch()">查询</button>
-      <span class="sub" id="mcnt"></span>
-    </div>
-    <div class="scroll"><table><thead><tr>
-      <th style="width:58px">ID</th><th style="width:64px">状态</th><th style="width:108px">类型</th>
-      <th>内容</th><th style="width:138px">标签</th><th style="width:44px">权重</th>
-      <th style="width:76px">Agent</th><th style="width:110px">来源机</th><th style="width:128px">操作</th>
-    </tr></thead><tbody id="mtb"></tbody></table></div>
-    <div class="pager" id="mpager"></div>
-  </section>
-
-  <!-- ── 对话归档 ── -->
-  <section id="t-turn" style="display:none">
-    <div class="toolbar">
-      <input id="tmachine" placeholder="来源机,如 server" style="width:150px" onkeydown="enterLoad(event,'turn')">
-      <input id="tq" placeholder="按内容过滤(用户/助手)…" style="width:220px" onkeydown="enterLoad(event,'turn')">
-      <span id="tsesswrap" class="chip hidden">会话: <b id="tsess"></b> <a href="javascript:clearSessFilter()" title="清除">✕</a></span>
-      <select id="tlimit" onchange="turnSearch()">
-        <option value="30">每页 30</option><option value="50" selected>每页 50</option>
-        <option value="100">每页 100</option><option value="300">每页 300</option>
-      </select>
-      <button class="primary" onclick="turnSearch()">查询</button>
-      <span class="sub" id="tcnt"></span>
-    </div>
-    <div class="scroll"><table><thead><tr>
-      <th style="width:58px">ID</th><th style="width:124px">时间(UTC)</th><th style="width:110px">来源机</th>
-      <th style="width:150px">会话 / 平台</th><th>用户</th><th>助手(截断)</th><th style="width:64px">操作</th>
-    </tr></thead><tbody id="ttb"></tbody></table></div>
-    <div class="pager" id="tpager"></div>
-  </section>
-
-  <!-- ── 会话 ── -->
-  <section id="t-sess" style="display:none">
-    <div class="toolbar">
-      <input id="smachine" placeholder="来源机,如 server" style="width:150px" onkeydown="enterLoad(event,'sess')">
-      <input id="sq2" placeholder="按会话 ID 过滤…" style="width:220px" onkeydown="enterLoad(event,'sess')">
-      <select id="slimit" onchange="sessSearch()">
-        <option value="50">每页 50</option><option value="100" selected>每页 100</option><option value="500">每页 500</option>
-      </select>
-      <button class="primary" onclick="sessSearch()">查询</button>
-      <span class="sub" id="scnt"></span>
-    </div>
-    <div class="scroll"><table><thead><tr>
-      <th>会话 ID</th><th style="width:110px">来源机</th><th style="width:96px">平台</th>
-      <th style="width:70px">轮次</th><th style="width:140px">开始</th><th style="width:140px">最近活动</th>
-      <th style="width:92px">操作</th>
-    </tr></thead><tbody id="stb"></tbody></table></div>
-    <div class="pager" id="spager"></div>
-  </section>
-
-  <!-- ── 动态(Redis 短期层) ── -->
-  <section id="t-recent" style="display:none">
-    <div class="toolbar">
-      <button class="primary" onclick="withBusy(this,()=>loadRecent(true))">刷新</button>
-      <span class="sub">Redis 短期层的实时视图:热点记忆 + 最近对话流(自动刷新跟随右上角设置)</span>
-      <span class="sub" id="rcnt"></span>
-    </div>
-    <div class="grid g2">
-      <div class="card"><h3>短期热点记忆(hot index)</h3><div id="rhot" class="listbox"></div></div>
-      <div class="card"><h3>最近对话流(brain:recent)</h3><div id="rtrn" class="listbox"></div></div>
-    </div>
-  </section>
-
-  <!-- ── 检索 ── -->
-  <section id="t-search" style="display:none">
-    <div class="toolbar">
-      <input id="sq" placeholder="语义 + 关键字混合检索…" style="width:380px"
-             onkeydown="if(event.key==='Enter'){event.preventDefault();doSearch();}">
-      <button class="primary" onclick="doSearch()">检索</button>
-      <span class="sub">向量(2560 维) + 关键词融合,同时命中记忆与历史对话</span>
-    </div>
-    <div id="sres"></div>
-  </section>
-
-  <section id="t-tok" style="display:none">
-    <div class="card" style="margin-bottom:14px">
-      <h3>签发 / 轮换令牌</h3>
-      <div class="toolbar" style="margin-bottom:0">
-        <input id="tkname" placeholder="身份名，如 laptop|codex" style="width:220px" onkeydown="if(event.key==='Enter'){event.preventDefault();addToken();}">
-        <select id="tkrole"><option value="agent">agent</option><option value="admin">admin</option></select>
-        <input id="tkmach" placeholder="覆盖 machine（可选）" style="width:160px">
-        <input id="tkagent" placeholder="覆盖 agent（可选）" style="width:160px">
-        <button class="primary" onclick="withBusy(this,()=>addToken())">生成令牌</button>
-        <button onclick="withBusy(this,()=>loadTokens(true))">刷新</button>
-        <span class="sub" id="tkcnt"></span>
+<div class="app">
+  <aside class="side">
+    <div class="brand">
+      <div class="logo">A</div>
+      <div>
+        <h1>atbrains</h1>
+        <span id="srv-ver">v2.1 · multi-agent</span>
       </div>
-      <div id="tknew" class="hidden" style="margin-top:10px">
-        <div class="row">
-          <span class="sub">新令牌（仅显示一次）：</span>
-          <code id="tknewval" style="user-select:all"></code>
-          <button onclick="copyText($('#tknewval').textContent)">复制</button>
+    </div>
+    <nav class="nav" id="nav">
+      <button data-tab="agents" class="active"><span>Agents &amp; 令牌</span><span class="cnt" id="cnt-agents">-</span></button>
+      <button data-tab="system"><span>数据库与状态</span><span class="cnt" id="cnt-sys">-</span></button>
+      <button data-tab="memories"><span>记忆库</span><span class="cnt" id="cnt-mem">-</span></button>
+      <button data-tab="turns"><span>对话与会话</span><span class="cnt" id="cnt-turns">-</span></button>
+      <button data-tab="live"><span>实时与检索</span><span class="cnt" id="cnt-live">-</span></button>
+    </nav>
+    <div class="side-foot">
+      <div class="health-col">
+        <div class="h-row"><span><i class="dot" id="d-db"></i>MariaDB</span><span id="s-db" class="mono">-</span></div>
+        <div class="h-row"><span><i class="dot" id="d-rd"></i>Redis</span><span id="s-rd" class="mono">-</span></div>
+        <div class="h-row"><span><i class="dot" id="d-qd"></i>Qdrant</span><span id="s-qd" class="mono">-</span></div>
+      </div>
+      <button class="btn sm ghost" id="btn-logout">切换令牌 / 退出</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <div class="topbar-l">
+        <h2 id="page-title">Agents &amp; 令牌管理</h2>
+        <span class="badge b-dim mono" id="srv-ts">-</span>
+      </div>
+      <div class="topbar-r">
+        <label class="small muted" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer">
+          <input type="checkbox" id="chk-auto" checked> 自动刷新(15s)
+        </label>
+        <button class="btn sm" id="btn-refresh">刷新</button>
+      </div>
+    </header>
+
+    <main class="content">
+      <section id="view-agents" class="grid" style="gap:16px">
+        <div class="grid g4" id="ag-kpis"></div>
+
+        <div class="card">
+          <div class="card-hd">
+            <h3>签发 Agent 独立令牌</h3>
+            <span class="small muted">每个客户端 / 节点使用独立 Token，服务端按 Token 自动绑定 <span class="mono">machine | agent</span> 与客户端类型</span>
+          </div>
+          <div class="form-row">
+            <div class="field">
+              <label>客户端类型</label>
+              <select id="f-client">
+                <option value="hermes">Hermes (Plugin)</option>
+                <option value="astrbot">AstrBot</option>
+                <option value="dsh">DSH / Koishi</option>
+                <option value="claude-code">Claude Code (MCP)</option>
+                <option value="codex">Codex (MCP)</option>
+                <option value="cursor">Cursor (MCP)</option>
+                <option value="python-sdk">Python SDK</option>
+                <option value="mcp">通用 MCP</option>
+                <option value="custom">自定义 HTTP</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>主机 / 节点 (machine)</label>
+              <input id="f-machine" placeholder="如 x260 / macbook / prod">
+            </div>
+            <div class="field">
+              <label>Agent 标识 (agent)</label>
+              <input id="f-agent" placeholder="如 hermes / codex-work">
+            </div>
+            <div class="field">
+              <label>角色 (role)</label>
+              <select id="f-role">
+                <option value="agent">agent（标准隔离）</option>
+                <option value="admin">admin（管理权限）</option>
+              </select>
+            </div>
+            <div class="field grow">
+              <label>自定义令牌名（可选，默认 machine|agent）</label>
+              <input id="f-name" placeholder="留空自动生成 machine|agent">
+            </div>
+            <button class="btn pri" id="btn-issue">签发令牌</button>
+          </div>
         </div>
-      </div>
-    </div>
-    <div class="scroll"><table><thead><tr>
-      <th>名称</th><th style="width:100px">角色</th><th style="width:200px">掩码</th><th style="width:160px">操作</th>
-    </tr></thead><tbody id="tktb"></tbody></table></div>
-  </section>
 
-  <section id="t-act" style="display:none">
-    <div class="grid g3">
-      <div class="card">
-        <h3>向量与体检</h3>
-        <div class="row">
-          <button class="primary" onclick="withBusy(this,()=>doDrain(false))">增量回填向量</button>
-          <button onclick="withBusy(this,()=>doDrain(true))">全量重建向量</button>
-          <button onclick="withBusy(this,()=>doDoctor())">系统体检</button>
+        <div id="secret-panel" class="secret-box hidden">
+          <div class="card-hd" style="margin:0">
+            <h3 id="secret-title">已签发令牌（明文仅展示一次）</h3>
+            <div class="act-grp">
+              <button class="btn sm ok" id="btn-copy-tok">复制令牌</button>
+              <button class="btn sm" id="btn-copy-snip">复制客户端配置</button>
+              <button class="btn sm ghost" id="btn-close-secret">关闭</button>
+            </div>
+          </div>
+          <div class="secret-line">
+            <span class="badge b-blue" id="secret-client">-</span>
+            <span class="mono small muted" id="secret-name">-</span>
+            <code id="secret-val"></code>
+          </div>
+          <pre class="code" id="secret-snip"></pre>
         </div>
-      </div>
-      <div class="card">
-        <h3>新增记忆</h3>
-        <textarea id="newc" rows="3" style="width:100%" placeholder="记忆内容…"></textarea>
-        <div class="row" style="margin-top:8px">
-          <select id="newk"><option>note</option><option>fact</option><option>preference</option><option>decision</option><option>todo</option></select>
-          <input id="newi" type="number" value="5" min="1" max="10" style="width:64px" title="重要度 1-10">
-          <input id="newt" placeholder="tags,逗号分隔" style="flex:1;min-width:120px">
-          <button class="primary" onclick="withBusy(this,()=>doRemember())">保存</button>
-        </div>
-      </div>
-      <div class="card">
-        <h3>按 ID 操作</h3>
-        <div class="row">
-          <input id="qid" type="number" placeholder="记忆 ID" style="width:110px" onkeydown="enterQuick(event)">
-          <button id="qbDetail" onclick="quick('detail')">详情</button>
-          <button id="qbForget" class="danger" onclick="quick('forget')">停用</button>
-          <button id="qbRestore" class="good" onclick="quick('restore')">恢复</button>
-        </div>
-      </div>
-      <div class="card">
-        <h3>归档清理</h3>
-        <div class="row">
-          <button onclick="withBusy(this,()=>doPrune(true))">预演（只读）</button>
-          <button class="danger" onclick="withBusy(this,()=>doPrune(false))">执行清理</button>
-        </div>
-      </div>
-    </div>
-    <pre id="actout" style="margin-top:14px;display:none"></pre>
-  </section>
-</main>
 
-<div class="toast" id="toast"></div>
-<div class="modal" id="modal" onclick="if(event.target===this)closeModal()">
-  <div class="mbox">
-    <div class="mhead"><b id="mtitle"></b><button onclick="closeModal()" title="关闭 (Esc)">✕</button></div>
-    <div id="mbody"></div>
+        <div class="card">
+          <div class="card-hd">
+            <h3>已接入 Agent 与令牌列表</h3>
+            <div class="form-row" style="gap:8px">
+              <div class="pills" id="client-filters"></div>
+              <input id="tok-q" placeholder="筛选名称 / 主机 / IP" style="width:190px">
+            </div>
+          </div>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>连接状态</th>
+                  <th>客户端</th>
+                  <th>身份 (machine | agent)</th>
+                  <th>角色</th>
+                  <th>令牌掩码</th>
+                  <th>记忆(活/总)</th>
+                  <th>最近通道 / IP / 请求数</th>
+                  <th>最后活跃</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="tb-tokens"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-system" class="grid hidden" style="gap:16px">
+        <div class="grid g3" id="sys-cards"></div>
+        <div class="grid g2">
+          <div class="card">
+            <div class="card-hd">
+              <h3>按 Agent 记忆分布</h3>
+              <span class="small muted">点击条目跳转记忆库筛选</span>
+            </div>
+            <div class="tbl-wrap">
+              <table>
+                <thead><tr><th>Agent</th><th>活跃记忆</th><th>总计</th><th>占比</th><th>操作</th></tr></thead>
+                <tbody id="tb-agent-dist"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-hd">
+              <h3>库维护与诊断</h3>
+              <span class="small muted">即时触发服务端运维操作</span>
+            </div>
+            <div class="form-row" style="gap:8px;margin-bottom:12px">
+              <button class="btn sm pri" data-op="drain">增量补齐向量</button>
+              <button class="btn sm warn" data-op="drain-force">全量重建向量</button>
+              <button class="btn sm ok" data-op="doctor">运行体检 (doctor)</button>
+              <button class="btn sm" data-op="prune-dry">清理预演 (dry-run)</button>
+              <button class="btn sm err" data-op="prune-run">执行过期清理</button>
+            </div>
+            <pre class="code" id="op-out">等待执行操作…</pre>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-memories" class="grid hidden" style="gap:16px">
+        <div class="card">
+          <div class="card-hd">
+            <h3>记忆库浏览</h3>
+            <div class="act-grp">
+              <button class="btn sm pri" id="btn-open-new-mem">+ 写入记忆</button>
+            </div>
+          </div>
+          <div class="form-row" style="margin-bottom:12px">
+            <div class="field"><label>Agent</label><input id="m-agent" placeholder="全部"></div>
+            <div class="field"><label>主机 (machine)</label><input id="m-machine" placeholder="全部"></div>
+            <div class="field">
+              <label>类型 (kind)</label>
+              <select id="m-kind">
+                <option value="">全部</option>
+                <option value="fact">fact</option>
+                <option value="preference">preference</option>
+                <option value="decision">decision</option>
+                <option value="event">event</option>
+                <option value="note">note</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>状态</label>
+              <select id="m-active">
+                <option value="1">仅活跃</option>
+                <option value="0">已停用</option>
+                <option value="all">全部</option>
+              </select>
+            </div>
+            <div class="field grow"><label>内容关键词</label><input id="m-q" placeholder="搜索记忆内容"></div>
+            <button class="btn pri" id="btn-m-search">查询</button>
+            <button class="btn" id="btn-m-reset">重置</button>
+          </div>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>类型</th>
+                  <th>权重</th>
+                  <th>主机 / Agent</th>
+                  <th>状态</th>
+                  <th>内容</th>
+                  <th>更新时间</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="tb-memories"></tbody>
+            </table>
+          </div>
+          <div class="pager">
+            <span class="small muted" id="m-info">-</span>
+            <div class="act-grp">
+              <button class="btn sm" id="m-prev">上一页</button>
+              <button class="btn sm" id="m-next">下一页</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-turns" class="grid hidden" style="gap:16px">
+        <div class="card">
+          <div class="card-hd">
+            <div class="seg" id="turn-seg">
+              <button data-sub="turns" class="active">对话轮次 (Turns)</button>
+              <button data-sub="sessions">会话列表 (Sessions)</button>
+            </div>
+            <div class="form-row" style="gap:8px">
+              <input id="t-machine" placeholder="主机 machine" style="width:130px">
+              <input id="t-session" placeholder="session_id" style="width:180px">
+              <input id="t-q" placeholder="关键词" style="width:180px">
+              <button class="btn sm pri" id="btn-t-search">筛选</button>
+              <button class="btn sm" id="btn-t-reset">重置</button>
+            </div>
+          </div>
+          <div id="sub-turns">
+            <div class="tbl-wrap">
+              <table>
+                <thead><tr><th>ID</th><th>会话</th><th>主机 / Agent</th><th>用户消息</th><th>助手回复</th><th>时间</th><th>操作</th></tr></thead>
+                <tbody id="tb-turns"></tbody>
+              </table>
+            </div>
+            <div class="pager">
+              <span class="small muted" id="t-info">-</span>
+              <div class="act-grp">
+                <button class="btn sm" id="t-prev">上一页</button>
+                <button class="btn sm" id="t-next">下一页</button>
+              </div>
+            </div>
+          </div>
+          <div id="sub-sessions" class="hidden">
+            <div class="tbl-wrap">
+              <table>
+                <thead><tr><th>Session ID</th><th>平台</th><th>主机</th><th>轮次数</th><th>开始时间</th><th>最后活跃</th><th>操作</th></tr></thead>
+                <tbody id="tb-sessions"></tbody>
+              </table>
+            </div>
+            <div class="pager">
+              <span class="small muted" id="s-info">-</span>
+              <div class="act-grp">
+                <button class="btn sm" id="s-prev">上一页</button>
+                <button class="btn sm" id="s-next">下一页</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section id="view-live" class="grid hidden" style="gap:16px">
+        <div class="card">
+          <div class="card-hd"><h3>混合语义 / 关键词检索</h3></div>
+          <div class="form-row">
+            <div class="field grow"><input id="q-search" placeholder="输入语义或关键词，同时检索记忆库与对话轮次"></div>
+            <div class="field" style="min-width:90px">
+              <select id="q-limit"><option value="10">Top 10</option><option value="20">Top 20</option><option value="40">Top 40</option></select>
+            </div>
+            <button class="btn pri" id="btn-q-search">检索</button>
+          </div>
+          <div id="search-res" class="grid g2" style="margin-top:12px"></div>
+        </div>
+        <div class="grid g2">
+          <div class="card">
+            <div class="card-hd"><h3>Redis 热记忆缓存</h3><span class="small muted" id="hot-cnt">-</span></div>
+            <div class="tbl-wrap">
+              <table>
+                <thead><tr><th>ID</th><th>类型</th><th>Agent</th><th>内容</th></tr></thead>
+                <tbody id="tb-hot"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-hd"><h3>Redis 最近对话流</h3><span class="small muted" id="stream-cnt">-</span></div>
+            <div class="tbl-wrap">
+              <table>
+                <thead><tr><th>会话</th><th>主机 / Agent</th><th>摘要</th><th>时间</th></tr></thead>
+                <tbody id="tb-stream"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
   </div>
 </div>
 
-<script>
-const $ = s => document.querySelector(s);
-const esc = s => (s ?? '').toString().replace(/[&<>"']/g, c =>
-  ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const cut = (s, n) => { s = (s ?? '').toString(); return s.length > n ? s.slice(0, n - 1) + '…' : s; };
-const fmt = v => (v ?? '').toString().slice(0, 16);
-const shortTS = v => (v ?? '').toString().replace(/^[A-Za-z]{3}\s+/, '').slice(0, 16);
-const normMem = s => (s ?? '?').toString().replace(/K$/, ' KB').replace(/M$/, ' MB').replace(/G$/, ' GB');
-const fmtEpoch = ts => { const n = Number(ts); if (!n) return '';
-  try { const d = new Date(n * 1000), p = x => String(x).padStart(2, '0');
-    return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
-  } catch (e) { return ''; } };
-
-/* ── 状态 ── */
-const S = {
-  tab: 'mem', autoSec: 10, lastTurnsLoad: 0,
-  mem:  {offset: 0, limit: 100, total: 0},
-  turn: {offset: 0, limit: 50,  total: 0, session_id: ''},
-  sess: {offset: 0, limit: 100, total: 0, items: []},
-};
-let curMemContent = '', curTurnU = '', curTurnA = '';
-let lastTick = Date.now();
-
-/* ── token ── */
-let TOK = '';
-try { TOK = localStorage.getItem('atbrains_token') || ''; } catch (e) {}
-if (TOK) $('#tok').value = TOK;
-
-function saveTok() {
-  TOK = $('#tok').value.trim();
-  try { localStorage.setItem('atbrains_token', TOK); } catch (e) {}
-  refresh(true); loadMem();
-}
-function expandTok() { $('#tokchip').classList.add('hidden'); $('#tokwrap').classList.remove('hidden'); $('#tok').focus(); }
-function collapseTok() { $('#tokchip').classList.remove('hidden'); $('#tokwrap').classList.add('hidden'); }
-
-function toast(msg, ms = 4200) { const t = $('#toast'); t.textContent = msg; t.classList.add('show');
-  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), ms); }
-
-async function api(path, opts = {}) {
-  const hdrs = {'X-Auth-Token': TOK, 'Authorization': 'Bearer ' + TOK, ...(opts.headers || {})};
-  const r = await fetch(path, {...opts, headers: hdrs});
-  if (!r.ok) throw new Error((await r.text()).slice(0, 300));
-  return r.json();
-}
-async function post(path, body) {
-  return api(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
-}
-async function del(path) {
-  return api(path, {method: 'DELETE'});
-}
-async function withBusy(btn, fn) {
-  if (!btn || btn.disabled) return;
-  const old = btn.innerHTML; btn.disabled = true; btn.textContent = '…';
-  try { await fn(); }
-  catch (e) { toast('操作失败:' + (e.message || e)); }
-  finally { btn.disabled = false; btn.innerHTML = old; }
-}
-function enterLoad(e, kind) {
-  if (e.key !== 'Enter') return;
-  e.preventDefault();
-  if (kind === 'mem') memSearch(); else if (kind === 'turn') turnSearch(); else if (kind === 'sess') sessSearch();
-}
-function enterQuick(e) { if (e.key === 'Enter') { e.preventDefault(); quick('detail'); } }
-
-/* ── 总览 ── */
-async function refresh(manual) {
-  if (!TOK) { $('#conn').innerHTML = '<span class="dot warn"></span>请输入 token'; return; }
-  try {
-    const d = await api('/v1/admin/overview');
-    $('#conn').innerHTML = '<span class="dot ok"></span>已连接 · ' + esc(d.ts);
-    $('#ver').textContent = d.version ? ('v' + d.version) : '';
-    collapseTok();
-    renderCards(d);
-    if (manual) toast('已刷新');
-  } catch (e) {
-    const msg = (e.message || '');
-    $('#conn').innerHTML = '<span class="dot bad"></span>' + (msg.includes('unauthorized') ? '口令无效' : '连接失败');
-    if (manual) toast('刷新失败:' + cut(msg, 160));
-  }
-}
-function renderCards(d) {
-  const st = (d.stats && d.stats.mysql) || {}, rd = (d.stats && d.stats.redis) || {};
-  const q = d.qdrant || {}, v = d.vector || {}, ping = d.ping || {};
-  const cov = q.coverage || {};
-  const cards = [];
-
-  cards.push(`<div class="card"><h3>长期层 · MariaDB</h3>
-    <div class="big">${st.memories_active ?? '?'}<span class="sub"> / ${st.memories_total ?? '?'} 条记忆</span></div>
-    <div class="kv"><span>连通状态</span><b style="color:${ping.mariadb ? 'var(--ok)' : 'var(--bad)'}">${ping.mariadb ? '正常' : '异常'}</b></div>
-    <div class="kv"><span>对话轮次</span><b>${st.turns ?? '?'}</b></div>
-    <div class="kv"><span>会话</span><b>${st.sessions ?? '?'}</b></div>
-    <div class="kv"><span>库大小</span><b>${((st.size_bytes || 0) / 1048576).toFixed(2)} MB</b></div></div>`);
-
-  cards.push(`<div class="card"><h3>短期层 · Redis</h3>
-    <div class="big">${rd.keys ?? '?'}<span class="sub"> keys</span></div>
-    <div class="kv"><span>连通状态</span><b style="color:${ping.redis ? 'var(--ok)' : 'var(--bad)'}">${ping.redis ? '正常' : '异常'}</b></div>
-    <div class="kv"><span>对话流</span><b>${rd.recent_stream ?? '?'}</b></div>
-    <div class="kv"><span>热点索引</span><b>${rd.hot_index ?? '?'}</b></div>
-    <div class="kv"><span>内存占用</span><b>${esc(normMem(rd.used_memory))}</b></div></div>`);
-
-  let covBar = '';
-  if (cov.active_memories != null && cov.with_vector != null) {
-    const pct = cov.active_memories === 0 ? 100 : Math.round(100 * cov.with_vector / cov.active_memories);
-    const missN = cov.missing_count != null ? cov.missing_count : (cov.missing || []).length;
-    covBar = `<div class="bar"><i style="width:${pct}%;background:${pct >= 100 ? 'var(--ok)' : 'var(--warn)'}"></i></div>
-      <div class="sub" style="color:${pct >= 100 ? 'var(--ok)' : 'var(--warn)'}">${pct >= 100 ? '全部已向量化' : '缺 ' + missN + ' 条待回填'}</div>`;
-  }
-  cards.push(`<div class="card"><h3>向量层 · Qdrant</h3>
-    <div class="big">${q.points ?? '?'}<span class="sub"> 个向量</span></div>
-    <div class="kv"><span>维度 / 距离</span><b>${q.dim ?? '?'} / ${esc(q.distance || '?')}</b></div>
-    <div class="kv"><span>集合状态</span><b>${esc(q.status || q.error || '?')}</b></div>
-    <div class="kv"><span>覆盖率</span><b>${cov.with_vector ?? '?'} / ${cov.active_memories ?? '?'}</b></div>
-    ${covBar}</div>`);
-
-  const agents = (d.stats && d.stats.agents) || [];
-  const agentTxt = agents.slice(0, 4).map(a => `${a.agent || '?'}:${a.active}`).join(' · ') || '—';
-  cards.push(`<div class="card"><h3>服务端</h3>
-    <div class="big" style="font-size:17px">
-      <span class="pill ${v.enabled ? 'on' : 'off'}">${v.enabled ? '向量启用' : '向量关闭'}</span>
-      <span class="sub">${esc(d.server_version || '')}</span></div>
-    <div class="kv"><span>协议版本</span><b>${esc(d.version || '?')}</b></div>
-    <div class="kv"><span>活跃主张 / 情节</span><b>${st.claims_active ?? '?'} / ${st.episodes ?? '?'}</b></div>
-    <div class="kv"><span>按 Agent 活跃</span><b>${esc(agentTxt)}</b></div>
-    <div class="kv"><span>嵌入模型</span><b>${esc(String(v.embed_model || '?').split('/').pop())}</b></div></div>`);
-
-  $('#cards').innerHTML = cards.join('');
-}
-
-/* ── 分页器 ── */
-function renderPager(elId, st, goFnName, unit) {
-  const pages = Math.max(1, Math.ceil(st.total / st.limit));
-  const page = Math.min(pages, Math.floor(st.offset / st.limit) + 1);
-  $('#' + elId).innerHTML =
-    `<button ${page <= 1 ? 'disabled' : ''} onclick="${goFnName}('first')">« 首页</button>
-     <button ${page <= 1 ? 'disabled' : ''} onclick="${goFnName}(-1)">‹ 上一页</button>
-     <span class="sub">第 ${page} / ${pages} 页 · 共 ${st.total} ${unit || '条'}</span>
-     <button ${page >= pages ? 'disabled' : ''} onclick="${goFnName}(1)">下一页 ›</button>
-     <button ${page >= pages ? 'disabled' : ''} onclick="${goFnName}('last')">末页 »</button>`;
-}
-function pageMove(st, mode) {
-  const pages = Math.max(1, Math.ceil(st.total / st.limit));
-  let p = Math.floor(st.offset / st.limit) + 1;
-  if (mode === 'first') p = 1; else if (mode === 'last') p = pages;
-  else p = Math.max(1, Math.min(pages, p + mode));
-  st.offset = (p - 1) * st.limit;
-}
-
-/* ── tab 切换 ── */
-function switchTab(name) {
-  S.tab = name;
-  document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
-  ['mem', 'turn', 'sess', 'recent', 'search', 'tok', 'act'].forEach(k => {
-    const el = $('#t-' + k); if (el) el.style.display = (k === name ? '' : 'none');
-  });
-}
-function tab(name) {
-  switchTab(name);
-  if (name === 'mem') loadMem();
-  if (name === 'turn') loadTurns();
-  if (name === 'sess') loadSess();
-  if (name === 'recent') loadRecent();
-  if (name === 'tok') loadTokens();
-}
-
-/* ── 记忆 ── */
-function memSearch() { S.mem.offset = 0; loadMem(); }
-function memGo(mode) { pageMove(S.mem, mode); loadMem(); }
-async function loadMem() {
-  if (!TOK) return;
-  $('#mcnt').textContent = '加载中…';
-  try {
-    const q = encodeURIComponent($('#mq').value.trim());
-    S.mem.limit = +$('#mlimit').value;
-    const d = await api(`/v1/admin/memories?limit=${S.mem.limit}&offset=${S.mem.offset}` +
-      `&active=${$('#mactive').value}&kind=${encodeURIComponent($('#mkind').value)}&q=${q}` +
-      `&agent=${encodeURIComponent($('#magent').value.trim())}`);
-    S.mem.total = d.total;
-    $('#mcnt').textContent = `共 ${d.total} 条`;
-    $('#mtb').innerHTML = d.items.map(m => {
-      const tags = (m.tags || '').split(/[,\s]+/).filter(Boolean).slice(0, 5)
-        .map(t => `<span class="tag">${esc(t)}</span>`).join('');
-      const ops = m.active
-        ? `<button class="danger" onclick="withBusy(this,()=>doForget(${m.id}))">停用</button>`
-        : `<button class="good" onclick="withBusy(this,()=>doRestore(${m.id}))">恢复</button>`;
-      return `<tr>
-        <td>${m.id}</td>
-        <td><span class="pill ${m.active ? 'on' : 'off'}">${m.active ? '活跃' : '停用'}</span></td>
-        <td><code>${esc(m.kind)}</code><br><span class="sub">${esc(m.source || '')}</span></td>
-        <td class="clk" onclick="showMem(${m.id})" title="点击查看全文">${esc(cut(m.content, 260))}</td>
-        <td>${tags}</td><td>${m.importance}</td>
-        <td class="sub">${esc(m.agent || 'unknown')}</td>
-        <td class="sub">${esc(m.machine || '—')}</td>
-        <td><div class="row"><button onclick="showMem(${m.id})">详情</button>${ops}</div></td>
-      </tr>`;
-    }).join('') || '<tr><td colspan="9" class="muted">无数据</td></tr>';
-    renderPager('mpager', S.mem, 'memGo', '条');
-  } catch (e) { $('#mcnt').textContent = ''; toast('加载记忆失败:' + cut(e.message, 160)); }
-}
-
-/* ── 对话归档 ── */
-function turnSearch() { S.turn.offset = 0; loadTurns(); }
-function turnGo(mode) { pageMove(S.turn, mode); loadTurns(); }
-async function loadTurns() {
-  if (!TOK) return;
-  $('#tcnt').textContent = '加载中…';
-  try {
-    S.turn.limit = +$('#tlimit').value;
-    const d = await api(`/v1/admin/turns?limit=${S.turn.limit}&offset=${S.turn.offset}` +
-      `&machine=${encodeURIComponent($('#tmachine').value.trim())}` +
-      `&session_id=${encodeURIComponent(S.turn.session_id)}` +
-      `&q=${encodeURIComponent($('#tq').value.trim())}`);
-    S.turn.total = d.total; S.lastTurnsLoad = Date.now();
-    $('#tcnt').textContent = `共 ${d.total} 轮`;
-    $('#ttb').innerHTML = d.items.map(t => `<tr>
-      <td>${t.id}</td>
-      <td class="sub">${esc(fmt(t.ts))}${t.truncated ? ' ⚠️' : ''}</td>
-      <td class="sub">${esc(t.machine || '—')}</td>
-      <td class="sub clk" onclick="showTurn(${t.id})" title="点击查看全文">${esc(cut(t.session_id || '', 18))}<br>${esc(t.platform || '')}</td>
-      <td class="clk" onclick="showTurn(${t.id})">${esc(cut(t.u, 300))}</td>
-      <td class="sub">${esc(cut(t.a, 220))}</td>
-      <td><button onclick="showTurn(${t.id})">详情</button></td>
-    </tr>`).join('') || '<tr><td colspan="7" class="muted">无数据</td></tr>';
-    renderPager('tpager', S.turn, 'turnGo', '轮');
-  } catch (e) { $('#tcnt').textContent = ''; toast('加载对话失败:' + cut(e.message, 160)); }
-}
-function clearSessFilter() {
-  S.turn.session_id = ''; S.turn.offset = 0;
-  $('#tsesswrap').classList.add('hidden'); loadTurns();
-}
-function viewSessionByIdx(i) {
-  const s = S.sess.items[i]; if (!s) return;
-  S.turn.session_id = s.session_id; S.turn.offset = 0;
-  $('#tsess').textContent = cut(s.session_id, 40);
-  $('#tsesswrap').classList.remove('hidden');
-  switchTab('turn'); loadTurns();
-}
-
-/* ── 会话 ── */
-function sessSearch() { S.sess.offset = 0; loadSess(); }
-function sessGo(mode) { pageMove(S.sess, mode); loadSess(); }
-async function loadSess() {
-  if (!TOK) return;
-  $('#scnt').textContent = '加载中…';
-  try {
-    S.sess.limit = +$('#slimit').value;
-    const d = await api(`/v1/admin/sessions?limit=${S.sess.limit}&offset=${S.sess.offset}` +
-      `&machine=${encodeURIComponent($('#smachine').value.trim())}` +
-      `&q=${encodeURIComponent($('#sq2').value.trim())}`);
-    S.sess.total = d.total; S.sess.items = d.items;
-    $('#scnt').textContent = `共 ${d.total} 个`;
-    $('#stb').innerHTML = d.items.map((s, i) => `<tr>
-      <td><span class="clk" onclick="viewSessionByIdx(${i})" title="查看该会话的对话">${esc(cut(s.session_id, 52))}</span></td>
-      <td class="sub">${esc(s.machine || '—')}</td>
-      <td class="sub">${esc(s.platform || '—')}</td>
-      <td>${s.turn_count ?? '?'}</td>
-      <td class="sub">${esc(fmt(s.started_at))}</td>
-      <td class="sub">${esc(fmt(s.last_active))}</td>
-      <td><button onclick="viewSessionByIdx(${i})">查看轮次</button></td>
-    </tr>`).join('') || '<tr><td colspan="7" class="muted">无数据</td></tr>';
-    renderPager('spager', S.sess, 'sessGo', '个');
-  } catch (e) { $('#scnt').textContent = ''; toast('加载会话失败:' + cut(e.message, 160)); }
-}
-
-/* ── 动态 ── */
-async function loadRecent(manual) {
-  if (!TOK) return;
-  try {
-    const d = await api('/v1/admin/recent?limit=20');
-    const hot = d.hot || [], trn = d.turns || [];
-    $('#rcnt').textContent = `热点 ${hot.length} 条 · 流 ${trn.length} 条`;
-    $('#rhot').innerHTML = hot.map(h => `<div class="litem">
-      <div class="row"><span class="sub">#${h.id}</span> <span class="tag">${esc(h.kind || '')}</span>
-        <span class="sub">重要度 ${h.importance ?? '?'} · ${esc(h.machine || '')} · ${esc(fmtEpoch(h.ts))}</span></div>
-      <div>${esc(cut(h.content, 170))}</div>
-      </div>`).join('') || '<div class="muted">热点为空</div>';
-    $('#rtrn').innerHTML = trn.map(t => `<div class="litem">
-      <div class="sub">${esc(t.machine || '')} · ${esc(t.platform || '')} · ${esc(fmtEpoch(t.ts))}</div>
-      <div>${esc(cut(t.user || '', 150))}</div>
-      <div class="sub">↳ ${esc(cut(t.assistant || '', 110))}</div>
-      </div>`).join('') || '<div class="muted">流为空</div>';
-    if (manual) toast('已刷新动态');
-  } catch (e) { toast('加载动态失败:' + cut(e.message, 160)); }
-}
-
-/* ── 检索 ── */
-async function doSearch() {
-  const q = $('#sq').value.trim();
-  if (!q) return;
-  $('#sres').innerHTML = '<div class="muted">检索中…(向量嵌入可能需要几秒)</div>';
-  try {
-    const d = await api('/v1/admin/search?limit=12&q=' + encodeURIComponent(q));
-    const mem = d.memories || [], trn = d.turns || [];
-    $('#sres').innerHTML = `
-      <div class="card"><h3>命中记忆 (${mem.length})</h3>
-      ${mem.map((m, i) => `<div class="litem">
-        <b>${i + 1}.</b> ${esc(m.content || m.preview || '')}
-        <div class="sub">${m.id ? `id=${m.id} · ` : ''}${esc(m.kind || '')}
-        ${m.score != null ? `· score=${Number(m.score).toFixed(3)}` : ''}
-        ${m.machine ? `· ${esc(m.machine)}` : ''}${m.tags ? ` · ${esc(m.tags)}` : ''}</div>
-      </div>`).join('') || '<div class="muted">无命中</div>'}</div>
-      <div class="card" style="margin-top:14px"><h3>命中历史对话 (${trn.length})</h3>
-      ${trn.map(t => `<div class="litem">
-        <div class="sub">${esc(fmt(t.ts))} · ${esc(t.machine || '')}</div>
-        <div>${esc(cut(t.user_content || t.u || '', 400))}</div>
-      </div>`).join('') || '<div class="muted">无命中</div>'}</div>`;
-  } catch (e) { $('#sres').innerHTML = `<div class="muted">检索失败:${esc(e.message)}</div>`; }
-}
-
-async function loadTokens(manual) {
-  if (!TOK) return;
-  $('#tkcnt').textContent = '加载中…';
-  try {
-    const d = await api('/v1/admin/tokens');
-    const items = d.tokens || [];
-    $('#tkcnt').textContent = `共 ${items.length} 个`;
-    $('#tktb').innerHTML = items.map(t => `<tr>
-      <td><code>${esc(t.name)}</code></td>
-      <td><span class="pill ${t.role === 'admin' ? 'on' : 'off'}">${esc(t.role)}</span></td>
-      <td><code>${esc(t.masked)}</code></td>
-      <td><div class="row">
-        <button data-name="${esc(t.name)}" data-role="${esc(t.role)}" onclick="withBusy(this,()=>rotateToken(this.dataset.name,this.dataset.role))">轮换</button>
-        <button class="danger" data-name="${esc(t.name)}" onclick="withBusy(this,()=>rmToken(this.dataset.name))">吊销</button>
-      </div></td>
-    </tr>`).join('') || '<tr><td colspan="4" class="muted">无令牌</td></tr>';
-    if (manual) toast('已刷新令牌表');
-  } catch (e) { $('#tkcnt').textContent = ''; toast('加载令牌失败:' + cut(e.message, 160)); }
-}
-async function addToken() {
-  const name = $('#tkname').value.trim();
-  if (!name) { toast('名称不能为空'); return; }
-  const d = await post('/v1/admin/tokens', {
-    name,
-    role: $('#tkrole').value,
-    machine: $('#tkmach').value.trim(),
-    agent: $('#tkagent').value.trim(),
-  });
-  $('#tknewval').textContent = d.token || '';
-  $('#tknew').classList.remove('hidden');
-  $('#tkname').value = ''; $('#tkmach').value = ''; $('#tkagent').value = '';
-  toast('已签发令牌: ' + d.name);
-  loadTokens();
-}
-async function rotateToken(name, role) {
-  if (!confirm(`轮换 ${name} 的令牌？旧令牌会立即失效。`)) return;
-  const d = await post('/v1/admin/tokens', {name, role});
-  $('#tknewval').textContent = d.token || '';
-  $('#tknew').classList.remove('hidden');
-  toast('已轮换: ' + name);
-  loadTokens();
-}
-async function rmToken(name) {
-  if (!confirm(`吊销令牌 ${name}？`)) return;
-  await del('/v1/admin/tokens?name=' + encodeURIComponent(name));
-  toast('已吊销: ' + name);
-  loadTokens();
-}
-
-function setActout(t) { const el = $('#actout'); el.style.display = 'block'; el.textContent = t; }
-async function doDrain(force) {
-  setActout(force ? '$ 全量重建向量\n⏳ 执行中…' : '$ 增量回填向量\n⏳ 执行中…');
-  const d = await post('/v1/admin/drain', {force: !!force});
-  setActout('$ 向量回填\n' + JSON.stringify(d, null, 2));
-  toast(d.ok ? '向量回填完成' : '向量回填异常'); refresh();
-}
-async function doDoctor() {
-  setActout('$ 系统体检\n⏳ 执行中…');
-  const d = await post('/v1/admin/doctor');
-  setActout('$ 系统体检\n' + JSON.stringify(d, null, 2).slice(0, 4000));
-  toast(d.ok ? '体检完成' : '体检有异常'); refresh();
-}
-async function doPrune(dry) {
-  if (!dry && !confirm('确认执行归档清理？将按配置停用过期记忆并删除超期归档。')) return;
-  setActout(dry ? '$ 归档清理预演\n⏳ 执行中…' : '$ 归档清理执行\n⏳ 执行中…');
-  const d = await post('/v1/admin/prune', {dry_run: !!dry});
-  setActout((dry ? '$ 预演结果\n' : '$ 清理结果\n') + JSON.stringify(d.result ?? d, null, 2).slice(0, 4000));
-  toast(dry ? '预演完成' : '清理完成');
-  if (!dry) refresh();
-}
-async function doRemember() {
-  const content = $('#newc').value.trim();
-  if (!content) { toast('内容不能为空'); return; }
-  const d = await post('/v1/admin/remember', {content, kind: $('#newk').value,
-    importance: +$('#newi').value, tags: $('#newt').value});
-  toast(`已保存 id=${d.saved && d.saved.id}`);
-  $('#newc').value = ''; $('#newt').value = '';
-  loadMem(); refresh();
-}
-async function doForget(id) {
-  if (!confirm('停用记忆 #' + id + '?(软删除,记录保留,可随时恢复)')) return;
-  await post('/v1/admin/forget', {id});
-  toast('已停用 #' + id + ' · 软删除,记录保留');
-  closeModal(); loadMem(); refresh();
-}
-async function doRestore(id) {
-  const d = await post('/v1/admin/restore', {id});
-  if (d.ok === false) { toast('恢复失败:' + (d.error || '')); return; }
-  toast('已恢复 #' + id + (d.result && d.result.note ? ' · ' + d.result.note : ''));
-  closeModal(); loadMem(); refresh();
-}
-function quick(kind) {
-  const id = +$('#qid').value;
-  if (!id) { toast('先填记忆 ID'); return; }
-  if (kind === 'detail') showMem(id);
-  else if (kind === 'forget') withBusy($('#qbForget'), () => doForget(id));
-  else if (kind === 'restore') withBusy($('#qbRestore'), () => doRestore(id));
-}
-
-/* ── 详情弹窗 ── */
-function openModal(title, html) { $('#mtitle').textContent = title; $('#mbody').innerHTML = html; $('#modal').classList.add('show'); }
-function closeModal() { $('#modal').classList.remove('show'); }
-document.addEventListener('keydown', e => { if (e.key === 'Escape') closeModal(); });
-function copyText(t) {
-  const done = () => toast('已复制');
-  const fail = () => {
-    const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta);
-    ta.select(); try { document.execCommand('copy'); done(); } catch (e) { toast('复制失败'); } ta.remove();
-  };
-  try { navigator.clipboard.writeText(t).then(done, fail); } catch (e) { fail(); }
-}
-async function showMem(id) {
-  try {
-    const d = await api('/v1/admin/memory?id=' + id);
-    const m = d.item; if (!m) { toast('记忆 #' + id + ' 不存在'); return; }
-    curMemContent = m.content || '';
-    const tags = (m.tags || '').split(/[,\s]+/).filter(Boolean).map(t => `<span class="tag">${esc(t)}</span>`).join('') || '<span class="muted">—</span>';
-    openModal('记忆 #' + m.id, `
-      <div class="row">
-        <span class="pill ${m.active ? 'on' : 'off'}">${m.active ? '活跃' : '已停用'}</span>
-        <span class="tag">${esc(m.kind)}</span>
-        <span class="sub">重要度 ${m.importance} · 来源 ${esc(m.source || '—')} · 来源机 ${esc(m.machine || '—')}</span>
+<div id="auth-overlay" class="overlay hidden">
+  <form class="auth-card" id="auth-form">
+    <div style="display:flex;align-items:center;gap:10px">
+      <div class="logo">A</div>
+      <div>
+        <h2>atbrains 管理认证</h2>
+        <div class="small muted">输入控制台令牌 (.token) 或任意 admin 角色 Bearer 令牌</div>
       </div>
-      <div class="sub" style="margin-top:6px">标签:${tags}</div>
-      <div class="sub">会话:${esc(m.session_id || '—')}</div>
-      <div class="sub">创建 ${esc(fmt(m.created_at))} · 更新 ${esc(fmt(m.updated_at))}${m.deactivated_at ? ' · 停用 ' + esc(fmt(m.deactivated_at)) : ''}</div>
-      <div class="contentbox">${esc(m.content)}</div>
-      <div class="row">
-        <button onclick="copyText(curMemContent)">复制内容</button>
-        ${m.active
-          ? `<button class="danger" onclick="withBusy(this,()=>doForget(${m.id}))">停用</button>`
-          : `<button class="good" onclick="withBusy(this,()=>doRestore(${m.id}))">恢复</button>`}
-      </div>`);
-  } catch (e) { toast('读取失败:' + cut(e.message, 160)); }
-}
-async function showTurn(id) {
-  try {
-    const d = await api('/v1/admin/turn?id=' + id);
-    const t = d.item; if (!t) { toast('对话 #' + id + ' 不存在'); return; }
-    curTurnU = t.user_content || ''; curTurnA = t.assistant_content || '';
-    openModal('对话 #' + t.id, `
-      <div class="sub">${esc(fmt(t.ts))}(UTC) · ${esc(t.machine || '—')} · ${esc(t.platform || '—')}
-        · 会话 ${esc(t.session_id || '—')}${t.truncated ? ' · ⚠️ 内容已截断' : ''}</div>
-      <h4>用户</h4><div class="contentbox">${esc(t.user_content)}</div>
-      <h4>助手</h4><div class="contentbox">${esc(t.assistant_content)}</div>
-      <div class="row">
-        <button onclick="copyText(curTurnU)">复制用户</button>
-        <button onclick="copyText(curTurnA)">复制助手</button>
-      </div>`);
-  } catch (e) { toast('读取失败:' + cut(e.message, 160)); }
-}
+    </div>
+    <input id="auth-input" type="password" placeholder="粘贴管理员令牌…" autocomplete="current-password" required>
+    <div id="auth-err" class="small" style="color:var(--err);min-height:16px"></div>
+    <button class="btn pri" type="submit" style="justify-content:center;padding:9px">验证并进入控制台</button>
+  </form>
+</div>
 
-/* ── 自动刷新 ── */
-function setAuto(v) { S.autoSec = +v; lastTick = Date.now(); }
-setInterval(() => {
-  if (S.autoSec <= 0 || document.hidden || !TOK) return;
-  const now = Date.now();
-  if (now - lastTick < S.autoSec * 1000) return;
-  lastTick = now;
-  refresh();
-  if (S.tab === 'recent') loadRecent();
-  if (S.tab === 'turn' && now - S.lastTurnsLoad > 30000) loadTurns();
-}, 1000);
+<div id="modal-overlay" class="overlay hidden">
+  <div class="modal">
+    <div class="modal-hd">
+      <h3 id="modal-title">详情</h3>
+      <button class="btn sm ghost" id="modal-close">✕</button>
+    </div>
+    <div class="modal-bd" id="modal-body"></div>
+    <div class="modal-ft" id="modal-foot"></div>
+  </div>
+</div>
 
-/* ── 表头吸顶偏移 ── */
-function syncHdrVar() { document.documentElement.style.setProperty('--hdr', document.querySelector('header').offsetHeight + 'px'); }
-window.addEventListener('resize', syncHdrVar);
+<div id="toast" class="toast hidden"></div>
 
-/* ── 启动 ── */
-syncHdrVar();
-if (TOK) { refresh(); loadMem(); }
-else { expandTok(); refresh(); }
+<script>
+(() => {
+  const $ = s => document.querySelector(s);
+  const $$ = s => Array.from(document.querySelectorAll(s));
+  const LS_KEY = "atbrains_admin_token";
+
+  const CLIENT_META = {
+    "hermes":      {label:"Hermes",      cls:"b-violet", defAgent:"hermes"},
+    "astrbot":     {label:"AstrBot",     cls:"b-info",   defAgent:"astrbot"},
+    "dsh":         {label:"DSH",         cls:"b-warn",   defAgent:"dsh"},
+    "claude-code": {label:"Claude Code", cls:"b-blue",   defAgent:"claude-code"},
+    "codex":       {label:"Codex",       cls:"b-ok",     defAgent:"codex"},
+    "cursor":      {label:"Cursor",      cls:"b-blue",   defAgent:"cursor"},
+    "python-sdk":  {label:"Python SDK",  cls:"b-info",   defAgent:"sdk"},
+    "mcp":         {label:"MCP",         cls:"b-blue",   defAgent:"mcp"},
+    "custom":      {label:"Custom",      cls:"b-dim",    defAgent:"custom"},
+  };
+
+  const TITLES = {
+    agents: "Agents & 令牌管理",
+    system: "数据库与服务状态",
+    memories: "记忆库",
+    turns: "对话轮次与会话",
+    live: "实时热缓存与检索",
+  };
+
+  const state = {
+    token: localStorage.getItem(LS_KEY) || "",
+    tab: "agents",
+    turnSub: "turns",
+    clientFilter: "all",
+    overview: null,
+    tokens: [],
+    lastSecret: null,
+    mem: {offset: 0, limit: 50, total: 0},
+    turns: {offset: 0, limit: 30, total: 0},
+    sessions: {offset: 0, limit: 50, total: 0},
+    timer: null,
+  };
+
+  function esc(v) {
+    return String(v == null ? "" : v)
+      .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+  }
+
+  function fmtBytes(n) {
+    n = Number(n || 0);
+    if (!n) return "0 B";
+    const u = ["B", "KB", "MB", "GB", "TB"];
+    let i = 0;
+    while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+    return (i ? n.toFixed(1) : n) + " " + u[i];
+  }
+
+  function fmtAgo(iso) {
+    if (!iso) return "从未连接";
+    const t = Date.parse(iso);
+    if (isNaN(t)) return iso;
+    const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    if (s < 60) return s + "秒前";
+    if (s < 3600) return Math.floor(s / 60) + "分钟前";
+    if (s < 86400) return Math.floor(s / 3600) + "小时前";
+    return Math.floor(s / 86400) + "天前";
+  }
+
+  function clientBadge(client) {
+    const key = (client || "").toLowerCase();
+    const m = CLIENT_META[key];
+    if (m) return `<span class="badge ${m.cls}">${esc(m.label)}</span>`;
+    return key ? `<span class="badge b-dim">${esc(key)}</span>` : `<span class="badge b-dim">未标记</span>`;
+  }
+
+  let toastTimer = null;
+  function toast(msg, type = "ok") {
+    const el = $("#toast");
+    el.textContent = msg;
+    el.className = "toast " + type;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.add("hidden"), 2600);
+  }
+
+  async function copyText(txt, msg = "已复制到剪贴板") {
+    try {
+      await navigator.clipboard.writeText(txt);
+      toast(msg, "ok");
+    } catch {
+      const ta = document.createElement("textarea");
+      ta.value = txt;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand("copy");
+      ta.remove();
+      toast(msg, "ok");
+    }
+  }
+
+  function showAuth(msg = "") {
+    $("#auth-err").textContent = msg;
+    $("#auth-overlay").classList.remove("hidden");
+    setTimeout(() => $("#auth-input").focus(), 30);
+  }
+
+  function hideAuth() {
+    $("#auth-overlay").classList.add("hidden");
+    $("#auth-err").textContent = "";
+  }
+
+  function openModal(title, bodyHtml, footHtml = "") {
+    $("#modal-title").textContent = title;
+    $("#modal-body").innerHTML = bodyHtml;
+    $("#modal-foot").innerHTML = footHtml;
+    $("#modal-overlay").classList.remove("hidden");
+  }
+
+  function closeModal() {
+    $("#modal-overlay").classList.add("hidden");
+  }
+
+  async function api(path, opts = {}) {
+    if (!state.token) {
+      showAuth();
+      throw new Error("未认证");
+    }
+    const headers = Object.assign({
+      "X-Auth-Token": state.token,
+      "Authorization": "Bearer " + state.token,
+    }, opts.headers || {});
+    const init = {method: opts.method || "GET", headers};
+    if (opts.body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      init.body = JSON.stringify(opts.body);
+    }
+    const res = await fetch(path, init);
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 401 || res.status === 403) {
+      showAuth(data.error || "令牌无效或权限不足（需要 admin / .token）");
+      throw new Error(data.error || "unauthorized");
+    }
+    if (!res.ok || data.ok === false) {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+    return data;
+  }
+
+  function buildSnippet(info) {
+    const base = location.origin;
+    const tok = info.token;
+    const c = (info.client || "custom").toLowerCase();
+    const mach = info.machine || "host";
+    const ag = info.agent || c;
+    if (c === "hermes") {
+      return `# 1) ~/.hermes/atbrains.json\n{\n  "service_url": "${base}"\n}\n\n# 2) ~/.hermes/.env\nATBRAINS_TOKEN=${tok}`;
+    }
+    if (c === "astrbot") {
+      return `# AstrBot atbrains 插件配置\nservice_url: "${base}"\ntoken: "${tok}"\nmachine: "${mach}"\nagent: "${ag}"`;
+    }
+    if (c === "dsh") {
+      return `# cordis.patch.yml (atbrains 插件段)\natbrains:\n  serviceUrl: "${base}"\n  token: "${tok}"`;
+    }
+    if (c === "claude-code" || c === "codex" || c === "cursor" || c === "mcp") {
+      return JSON.stringify({
+        mcpServers: {
+          atbrains: {
+            url: `${base}/mcp`,
+            headers: {
+              Authorization: `Bearer ${tok}`,
+              "X-Atbrains-Client": c,
+            },
+          },
+        },
+      }, null, 2);
+    }
+    if (c === "python-sdk") {
+      return `from atbrains_client import AtbrainsClient\n\nclient = AtbrainsClient(\n    base_url="${base}",\n    token="${tok}",\n)\nprint(client.status())`;
+    }
+    return `curl -sS -X POST "${base}/v1/memory/status" \\\n  -H "Authorization: Bearer ${tok}" \\\n  -H "X-Atbrains-Client: ${c}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"light": true}'`;
+  }
+
+  function showSecret(info, actionLabel) {
+    state.lastSecret = info;
+    $("#secret-title").textContent = `${actionLabel}：${info.name}（明文仅显示本次，请立即保存）`;
+    $("#secret-client").textContent = (CLIENT_META[info.client]?.label) || info.client || "custom";
+    $("#secret-name").textContent = `${info.machine || "-"} | ${info.agent || "-"} · ${info.role}`;
+    $("#secret-val").textContent = info.token;
+    $("#secret-snip").textContent = buildSnippet(info);
+    $("#secret-panel").classList.remove("hidden");
+  }
+
+  function renderHealth(ov) {
+    if (!ov) return;
+    const ping = ov.ping || {};
+    const stats = ov.stats || {};
+    const my = stats.mysql || {};
+    const rd = stats.redis || {};
+    const qd = ov.qdrant || {};
+    $("#srv-ver").textContent = `proto ${ov.version || "-"} · srv ${ov.server_version || "-"}`;
+    $("#srv-ts").textContent = ov.ts || "-";
+    $("#d-db").className = "dot " + (ping.mariadb ? "ok" : "err");
+    $("#s-db").textContent = ping.mariadb ? fmtBytes(my.size_bytes) : "DOWN";
+    $("#d-rd").className = "dot " + (ping.redis ? "ok" : "err");
+    $("#s-rd").textContent = ping.redis ? (rd.used_memory || `${rd.keys || 0}k`) : "DOWN";
+    const qOk = qd.status === "green" || qd.status === "ok" || (!qd.error && qd.points != null);
+    $("#d-qd").className = "dot " + (qOk ? "ok" : (qd.error ? "err" : "warn"));
+    $("#s-qd").textContent = qOk ? `${qd.points ?? 0} pts` : "WARN";
+    $("#cnt-mem").textContent = my.memories_active ?? "-";
+    $("#cnt-turns").textContent = my.turns ?? "-";
+    $("#cnt-sys").textContent = (ping.mariadb && ping.redis && qOk) ? "OK" : "!";
+    $("#cnt-live").textContent = rd.hot_index ?? "-";
+  }
+
+  function agentMemMap() {
+    const map = {};
+    for (const r of (state.overview?.stats?.agents || [])) {
+      map[String(r.agent || "").toLowerCase()] = r;
+    }
+    return map;
+  }
+
+  function renderAgents() {
+    const toks = state.tokens || [];
+    const onlineCnt = toks.filter(t => t.online).length;
+    const clients = new Set(toks.map(t => t.client).filter(Boolean));
+    const totalReqs = toks.reduce((s, t) => s + Number(t.requests || 0), 0);
+    const activeMem = state.overview?.stats?.mysql?.memories_active ?? "-";
+    $("#cnt-agents").textContent = `${onlineCnt}/${toks.length}`;
+
+    $("#ag-kpis").innerHTML = `
+      <div class="card kpi"><div class="label">已签发令牌</div><div class="val">${toks.length}</div><div class="sub">Admin ${toks.filter(t => t.role === "admin").length} · Agent ${toks.filter(t => t.role !== "admin").length}</div></div>
+      <div class="card kpi"><div class="label">在线 Agent (5分钟内)</div><div class="val" style="color:${onlineCnt ? "var(--ok)" : "var(--muted)"}">${onlineCnt}</div><div class="sub">累计处理请求 ${totalReqs} 次</div></div>
+      <div class="card kpi"><div class="label">客户端类型</div><div class="val">${clients.size}</div><div class="sub">${clients.size ? Array.from(clients).slice(0, 4).join(" / ") : "暂无标记"}</div></div>
+      <div class="card kpi"><div class="label">活跃记忆总量</div><div class="val">${activeMem}</div><div class="sub">会话 ${state.overview?.stats?.mysql?.sessions ?? "-"} · 轮次 ${state.overview?.stats?.mysql?.turns ?? "-"}</div></div>
+    `;
+
+    const allClients = Array.from(new Set(toks.map(t => t.client || "unknown"))).sort();
+    if (state.clientFilter !== "all" && !allClients.includes(state.clientFilter)) {
+      state.clientFilter = "all";
+    }
+    const pills = [`<button class="pill ${state.clientFilter === "all" ? "active" : ""}" data-cf="all">全部 (${toks.length})</button>`];
+    for (const c of allClients) {
+      const cnt = toks.filter(t => (t.client || "unknown") === c).length;
+      const lbl = CLIENT_META[c]?.label || (c === "unknown" ? "未标记" : c);
+      pills.push(`<button class="pill ${state.clientFilter === c ? "active" : ""}" data-cf="${esc(c)}">${esc(lbl)} (${cnt})</button>`);
+    }
+    $("#client-filters").innerHTML = pills.join("");
+
+    const q = ($("#tok-q").value || "").trim().toLowerCase();
+    const filtered = toks.filter(t => {
+      if (state.clientFilter !== "all" && (t.client || "unknown") !== state.clientFilter) return false;
+      if (!q) return true;
+      return [t.name, t.machine, t.agent, t.client, t.last_ip, t.last_ua].some(x => String(x || "").toLowerCase().includes(q));
+    });
+
+    const memMap = agentMemMap();
+    const tb = $("#tb-tokens");
+    if (!filtered.length) {
+      tb.innerHTML = `<tr><td colspan="9" class="empty">没有匹配的 Agent 令牌</td></tr>`;
+      return;
+    }
+    tb.innerHTML = filtered.map(t => {
+      const stat = t.online
+        ? `<span class="badge b-ok"><i class="dot ok" style="margin:0"></i>在线</span>`
+        : (t.requests ? `<span class="badge b-dim"><i class="dot" style="margin:0"></i>离线</span>` : `<span class="badge b-dim">未接入</span>`);
+      const roleB = t.role === "admin" ? `<span class="badge b-warn">admin</span>` : `<span class="badge b-dim">agent</span>`;
+      const am = memMap[String(t.agent || "").toLowerCase()];
+      const memTxt = am ? `<span class="mono">${am.active} / ${am.total}</span>` : `<span class="dim mono">0 / 0</span>`;
+      const chBadge = t.last_channel ? `<span class="badge b-info">${esc(t.last_channel)}</span>` : "";
+      const actInfo = t.requests
+        ? `<div>${chBadge} <span class="mono">${esc(t.last_ip || "-")}</span> <span class="muted">(${t.requests}次)</span></div><div class="small dim clip" style="max-width:220px" title="${esc((t.last_path || "") + " " + (t.last_ua || ""))}">${esc(t.last_path || "")} ${esc(t.last_ua || "")}</div>`
+        : `<span class="dim">-</span>`;
+      return `<tr>
+        <td>${stat}</td>
+        <td>${clientBadge(t.client)}</td>
+        <td>
+          <div style="font-weight:600">${esc(t.name)}</div>
+          <div class="small muted mono">${esc(t.machine || "-")} | ${esc(t.agent || "-")}</div>
+        </td>
+        <td>${roleB}</td>
+        <td class="mono muted">${esc(t.masked)}</td>
+        <td>${memTxt}</td>
+        <td>${actInfo}</td>
+        <td title="${esc(t.last_seen || "")}"><span class="small">${esc(fmtAgo(t.last_seen))}</span></td>
+        <td>
+          <div class="act-grp">
+            <button class="btn sm" data-act="mem" data-agent="${esc(t.agent)}" data-machine="${esc(t.machine)}">记忆</button>
+            <button class="btn sm warn" data-act="rotate" data-name="${esc(t.name)}" data-machine="${esc(t.machine)}" data-agent="${esc(t.agent)}" data-client="${esc(t.client)}" data-role="${esc(t.role)}">轮换</button>
+            <button class="btn sm err" data-act="revoke" data-name="${esc(t.name)}">撤销</button>
+          </div>
+        </td>
+      </tr>`;
+    }).join("");
+  }
+
+  function renderSystem() {
+    const ov = state.overview || {};
+    const ping = ov.ping || {};
+    const my = ov.stats?.mysql || {};
+    const rd = ov.stats?.redis || {};
+    const qd = ov.qdrant || {};
+    const cov = qd.coverage || {};
+    const actN = Number(cov.active_memories || 0);
+    const vecN = Number(cov.with_vector || 0);
+    const pct = actN ? Math.min(100, Math.round((vecN / actN) * 100)) : 100;
+
+    $("#sys-cards").innerHTML = `
+      <div class="card">
+        <div class="card-hd"><h3>MariaDB</h3><span class="badge ${ping.mariadb ? "b-ok" : "b-err"}">${ping.mariadb ? "ONLINE" : "ERROR"}</span></div>
+        <div class="kv">
+          <div class="kv-item"><span>库容量</span><span class="mono">${fmtBytes(my.size_bytes)}</span></div>
+          <div class="kv-item"><span>活跃 / 总记忆</span><span class="mono">${my.memories_active ?? 0} / ${my.memories_total ?? 0}</span></div>
+          <div class="kv-item"><span>对话轮次</span><span class="mono">${my.turns ?? 0}</span></div>
+          <div class="kv-item"><span>会话数</span><span class="mono">${my.sessions ?? 0}</span></div>
+          <div class="kv-item"><span>活跃主张</span><span class="mono">${my.claims_active ?? 0}</span></div>
+          <div class="kv-item"><span>图谱实体/边</span><span class="mono">${my.entities ?? 0} / ${my.graph_edges ?? 0}</span></div>
+        </div>
+        ${ping.mariadb_error ? `<div class="small" style="color:var(--err);margin-top:8px">${esc(ping.mariadb_error)}</div>` : ""}
+      </div>
+      <div class="card">
+        <div class="card-hd"><h3>Redis</h3><span class="badge ${ping.redis ? "b-ok" : "b-err"}">${ping.redis ? "ONLINE" : "ERROR"}</span></div>
+        <div class="kv">
+          <div class="kv-item"><span>内存占用</span><span class="mono">${esc(rd.used_memory || "-")}</span></div>
+          <div class="kv-item"><span>Key 总数</span><span class="mono">${rd.keys ?? 0}</span></div>
+          <div class="kv-item"><span>热记忆索引</span><span class="mono">${rd.hot_index ?? 0}</span></div>
+          <div class="kv-item"><span>近期对话流</span><span class="mono">${rd.recent_stream ?? 0}</span></div>
+          <div class="kv-item"><span>命中记忆数</span><span class="mono">${my.memories_accessed ?? 0}</span></div>
+          <div class="kv-item"><span>总命中次数</span><span class="mono">${my.access_total ?? 0}</span></div>
+        </div>
+        ${ping.redis_error ? `<div class="small" style="color:var(--err);margin-top:8px">${esc(ping.redis_error)}</div>` : ""}
+      </div>
+      <div class="card">
+        <div class="card-hd"><h3>Qdrant 向量库</h3><span class="badge ${qd.error ? "b-err" : "b-ok"}">${esc(qd.status || (qd.error ? "ERROR" : "READY"))}</span></div>
+        <div class="kv">
+          <div class="kv-item"><span>集合</span><span class="mono">${esc(qd.collection || "-")}</span></div>
+          <div class="kv-item"><span>向量点数</span><span class="mono">${qd.points ?? 0}</span></div>
+          <div class="kv-item"><span>维度 / 距离</span><span class="mono">${qd.dim || "-"} / ${esc(qd.distance || "-")}</span></div>
+          <div class="kv-item"><span>覆盖 / 缺失</span><span class="mono">${vecN}/${actN} (缺 ${cov.missing_count ?? 0})</span></div>
+        </div>
+        <div class="bar"><span style="width:${pct}%"></span></div>
+        <div class="small muted" style="margin-top:5px">向量覆盖率 ${pct}%</div>
+        ${qd.error ? `<div class="small" style="color:var(--err);margin-top:6px">${esc(qd.error)}</div>` : ""}
+      </div>
+    `;
+
+    const agents = ov.stats?.agents || [];
+    const sum = agents.reduce((s, a) => s + Number(a.total || 0), 0) || 1;
+    $("#tb-agent-dist").innerHTML = agents.length ? agents.map(a => {
+      const p = Math.round((Number(a.total || 0) / sum) * 100);
+      return `<tr>
+        <td class="mono" style="font-weight:600">${esc(a.agent || "(空)")}</td>
+        <td class="mono">${a.active}</td>
+        <td class="mono muted">${a.total}</td>
+        <td class="mono">${p}%</td>
+        <td><button class="btn sm" data-jump-agent="${esc(a.agent || "")}">查看记忆</button></td>
+      </tr>`;
+    }).join("") : `<tr><td colspan="5" class="empty">暂无记忆数据</td></tr>`;
+  }
+
+  async function loadCore(fresh = false) {
+    const [ov, tok] = await Promise.all([
+      api("/v1/admin/overview" + (fresh ? "?fresh=1" : "")),
+      api("/v1/admin/tokens"),
+    ]);
+    state.overview = ov;
+    state.tokens = tok.tokens || [];
+    renderHealth(ov);
+    renderAgents();
+    if (state.tab === "system") renderSystem();
+  }
+
+  async function loadMemories() {
+    const p = new URLSearchParams({
+      limit: String(state.mem.limit),
+      offset: String(state.mem.offset),
+      active: $("#m-active").value,
+      kind: $("#m-kind").value,
+      agent: $("#m-agent").value.trim(),
+      machine: $("#m-machine").value.trim(),
+      q: $("#m-q").value.trim(),
+    });
+    const data = await api("/v1/admin/memories?" + p.toString());
+    state.mem.total = data.total || 0;
+    const items = data.items || [];
+    $("#tb-memories").innerHTML = items.length ? items.map(m => `<tr>
+      <td class="mono">#${m.id}</td>
+      <td><span class="badge b-blue">${esc(m.kind || "-")}</span></td>
+      <td class="mono">${m.importance ?? "-"}</td>
+      <td class="mono small">${esc(m.machine || "-")} / <b>${esc(m.agent || "-")}</b></td>
+      <td>${m.active ? `<span class="badge b-ok">活跃</span>` : `<span class="badge b-dim">停用</span>`}</td>
+      <td class="clip" title="${esc(m.content)}">${esc(m.content)}</td>
+      <td class="small muted mono">${esc(String(m.updated_at || "").slice(0, 19))}</td>
+      <td>
+        <div class="act-grp">
+          <button class="btn sm" data-mact="detail" data-id="${m.id}">详情</button>
+          ${m.active
+            ? `<button class="btn sm err" data-mact="forget" data-id="${m.id}">停用</button>`
+            : `<button class="btn sm ok" data-mact="restore" data-id="${m.id}">恢复</button>`}
+        </div>
+      </td>
+    </tr>`).join("") : `<tr><td colspan="8" class="empty">暂无匹配记忆</td></tr>`;
+    const from = state.mem.total ? state.mem.offset + 1 : 0;
+    const to = Math.min(state.mem.offset + items.length, state.mem.total);
+    $("#m-info").textContent = `显示 ${from}-${to} / 共 ${state.mem.total} 条`;
+    $("#m-prev").disabled = state.mem.offset <= 0;
+    $("#m-next").disabled = state.mem.offset + state.mem.limit >= state.mem.total;
+  }
+
+  async function loadTurnsOrSessions() {
+    if (state.turnSub === "turns") {
+      const p = new URLSearchParams({
+        limit: String(state.turns.limit),
+        offset: String(state.turns.offset),
+        machine: $("#t-machine").value.trim(),
+        session_id: $("#t-session").value.trim(),
+        q: $("#t-q").value.trim(),
+      });
+      const data = await api("/v1/admin/turns?" + p.toString());
+      state.turns.total = data.total || 0;
+      const items = data.items || [];
+      $("#tb-turns").innerHTML = items.length ? items.map(t => `<tr>
+        <td class="mono">#${t.id}</td>
+        <td class="mono small clip" style="max-width:150px" title="${esc(t.session_id)}">${esc(t.session_id || "-")}</td>
+        <td class="mono small">${esc(t.machine || "-")} / ${esc(t.agent || "-")}</td>
+        <td class="clip" style="max-width:240px">${esc(t.u || "")}</td>
+        <td class="clip" style="max-width:240px">${esc(t.a || "")}</td>
+        <td class="small muted mono">${esc(String(t.ts || "").slice(0, 19))}</td>
+        <td><button class="btn sm" data-tact="detail" data-id="${t.id}">全文</button></td>
+      </tr>`).join("") : `<tr><td colspan="7" class="empty">暂无对话轮次</td></tr>`;
+      const from = state.turns.total ? state.turns.offset + 1 : 0;
+      const to = Math.min(state.turns.offset + items.length, state.turns.total);
+      $("#t-info").textContent = `显示 ${from}-${to} / 共 ${state.turns.total} 条`;
+      $("#t-prev").disabled = state.turns.offset <= 0;
+      $("#t-next").disabled = state.turns.offset + state.turns.limit >= state.turns.total;
+    } else {
+      const p = new URLSearchParams({
+        limit: String(state.sessions.limit),
+        offset: String(state.sessions.offset),
+        machine: $("#t-machine").value.trim(),
+        q: $("#t-q").value.trim(),
+      });
+      const data = await api("/v1/admin/sessions?" + p.toString());
+      state.sessions.total = data.total || 0;
+      const items = data.items || [];
+      $("#tb-sessions").innerHTML = items.length ? items.map(s => `<tr>
+        <td class="mono small">${esc(s.session_id)}</td>
+        <td>${esc(s.platform || "-")}</td>
+        <td class="mono small">${esc(s.machine || "-")}</td>
+        <td class="mono">${s.turn_count ?? 0}</td>
+        <td class="small muted mono">${esc(String(s.started_at || "").slice(0, 19))}</td>
+        <td class="small muted mono">${esc(String(s.last_active || "").slice(0, 19))}</td>
+        <td><button class="btn sm" data-sess="${esc(s.session_id)}">看轮次</button></td>
+      </tr>`).join("") : `<tr><td colspan="7" class="empty">暂无会话</td></tr>`;
+      const from = state.sessions.total ? state.sessions.offset + 1 : 0;
+      const to = Math.min(state.sessions.offset + items.length, state.sessions.total);
+      $("#s-info").textContent = `显示 ${from}-${to} / 共 ${state.sessions.total} 条`;
+      $("#s-prev").disabled = state.sessions.offset <= 0;
+      $("#s-next").disabled = state.sessions.offset + state.sessions.limit >= state.sessions.total;
+    }
+  }
+
+  async function loadLive() {
+    const data = await api("/v1/admin/recent?limit=30");
+    const hot = data.hot || [];
+    const turns = data.turns || [];
+    $("#hot-cnt").textContent = `${hot.length} 条`;
+    $("#stream-cnt").textContent = `${turns.length} 条`;
+    $("#tb-hot").innerHTML = hot.length ? hot.map(h => `<tr>
+      <td class="mono">#${h.id ?? "-"}</td>
+      <td><span class="badge b-blue">${esc(h.kind || "-")}</span></td>
+      <td class="mono small">${esc(h.agent || "-")}</td>
+      <td class="clip">${esc(h.content || h.preview || "")}</td>
+    </tr>`).join("") : `<tr><td colspan="4" class="empty">热缓存为空</td></tr>`;
+    $("#tb-stream").innerHTML = turns.length ? turns.map(t => `<tr>
+      <td class="mono small clip" style="max-width:130px">${esc(t.session_id || "-")}</td>
+      <td class="mono small">${esc(t.machine || "-")} / ${esc(t.agent || "-")}</td>
+      <td class="clip" style="max-width:260px">${esc(t.user || t.u || t.content || "")}</td>
+      <td class="small muted mono">${esc(String(t.ts || "").slice(0, 19))}</td>
+    </tr>`).join("") : `<tr><td colspan="4" class="empty">最近流为空</td></tr>`;
+  }
+
+  async function refreshCurrent(fresh = false) {
+    try {
+      await loadCore(fresh);
+      if (state.tab === "system") renderSystem();
+      else if (state.tab === "memories") await loadMemories();
+      else if (state.tab === "turns") await loadTurnsOrSessions();
+      else if (state.tab === "live") await loadLive();
+    } catch (err) {
+      if (String(err.message || "").indexOf("unauthorized") < 0 && err.message !== "未认证") {
+        toast(err.message, "err");
+      }
+    }
+  }
+
+  function switchTab(tab) {
+    state.tab = tab;
+    $$("#nav button").forEach(b => b.classList.toggle("active", b.dataset.tab === tab));
+    $$("main > section").forEach(s => s.classList.toggle("hidden", s.id !== "view-" + tab));
+    $("#page-title").textContent = TITLES[tab] || tab;
+    refreshCurrent(false);
+  }
+
+  function setupAuto() {
+    clearInterval(state.timer);
+    if ($("#chk-auto").checked) {
+      state.timer = setInterval(() => {
+        if (!document.hidden && $("#auth-overlay").classList.contains("hidden")) {
+          loadCore(false).catch(() => {});
+        }
+      }, 15000);
+    }
+  }
+
+  $("#nav").addEventListener("click", e => {
+    const b = e.target.closest("button[data-tab]");
+    if (b) switchTab(b.dataset.tab);
+  });
+
+  $("#btn-refresh").addEventListener("click", () => refreshCurrent(true));
+  $("#chk-auto").addEventListener("change", setupAuto);
+
+  $("#btn-logout").addEventListener("click", () => {
+    state.token = "";
+    localStorage.removeItem(LS_KEY);
+    $("#auth-input").value = "";
+    showAuth();
+  });
+
+  $("#auth-form").addEventListener("submit", async e => {
+    e.preventDefault();
+    const val = $("#auth-input").value.trim();
+    if (!val) return;
+    state.token = val;
+    try {
+      await loadCore(true);
+      localStorage.setItem(LS_KEY, val);
+      hideAuth();
+      toast("认证成功", "ok");
+      refreshCurrent(false);
+    } catch (err) {
+      state.token = "";
+      $("#auth-err").textContent = err.message || "认证失败";
+    }
+  });
+
+  $("#f-client").addEventListener("change", () => {
+    const c = $("#f-client").value;
+    const def = CLIENT_META[c]?.defAgent || "";
+    const cur = $("#f-agent").value.trim();
+    const isPreset = !cur || Object.values(CLIENT_META).some(m => m.defAgent === cur);
+    if (isPreset && def) $("#f-agent").value = def;
+  });
+
+  $("#btn-issue").addEventListener("click", async () => {
+    const client = $("#f-client").value;
+    const machine = $("#f-machine").value.trim();
+    const agent = $("#f-agent").value.trim() || (CLIENT_META[client]?.defAgent || "");
+    const role = $("#f-role").value;
+    const name = $("#f-name").value.trim();
+    if (!name && !agent) return toast("请填写主机 / Agent 标识或令牌名", "err");
+    try {
+      const res = await api("/v1/admin/tokens", {
+        method: "POST",
+        body: {name, machine, agent, client, role},
+      });
+      $("#f-name").value = "";
+      showSecret(res, "新令牌已签发");
+      toast(`已签发 ${res.name}`, "ok");
+      await loadCore(false);
+    } catch (err) {
+      toast(err.message, "err");
+    }
+  });
+
+  $("#btn-copy-tok").addEventListener("click", () => {
+    if (state.lastSecret) copyText(state.lastSecret.token, "已复制令牌");
+  });
+  $("#btn-copy-snip").addEventListener("click", () => {
+    if (state.lastSecret) copyText($("#secret-snip").textContent, "已复制客户端配置");
+  });
+  $("#btn-close-secret").addEventListener("click", () => {
+    state.lastSecret = null;
+    $("#secret-panel").classList.add("hidden");
+  });
+
+  $("#client-filters").addEventListener("click", e => {
+    const b = e.target.closest("button[data-cf]");
+    if (!b) return;
+    state.clientFilter = b.dataset.cf;
+    renderAgents();
+  });
+  $("#tok-q").addEventListener("input", renderAgents);
+
+  $("#tb-tokens").addEventListener("click", async e => {
+    const b = e.target.closest("button[data-act]");
+    if (!b) return;
+    const act = b.dataset.act;
+    if (act === "mem") {
+      $("#m-agent").value = b.dataset.agent || "";
+      $("#m-machine").value = b.dataset.machine || "";
+      state.mem.offset = 0;
+      switchTab("memories");
+      return;
+    }
+    if (act === "rotate") {
+      const name = b.dataset.name;
+      if (!confirm(`确定轮换令牌「${name}」？旧令牌将立即失效。`)) return;
+      try {
+        const res = await api("/v1/admin/tokens", {
+          method: "POST",
+          body: {
+            name,
+            machine: b.dataset.machine || "",
+            agent: b.dataset.agent || "",
+            client: b.dataset.client || "",
+            role: b.dataset.role || "agent",
+          },
+        });
+        showSecret(res, "令牌已轮换");
+        toast(`已轮换 ${res.name}`, "ok");
+        await loadCore(false);
+      } catch (err) { toast(err.message, "err"); }
+      return;
+    }
+    if (act === "revoke") {
+      const name = b.dataset.name;
+      if (!confirm(`确定撤销令牌「${name}」？该 Agent 将无法再访问服务。`)) return;
+      try {
+        await api("/v1/admin/tokens", {method: "DELETE", body: {name}});
+        toast(`已撤销 ${name}`, "ok");
+        await loadCore(false);
+      } catch (err) { toast(err.message, "err"); }
+    }
+  });
+
+  $("#tb-agent-dist").addEventListener("click", e => {
+    const b = e.target.closest("button[data-jump-agent]");
+    if (!b) return;
+    $("#m-agent").value = b.dataset.jumpAgent || "";
+    $("#m-machine").value = "";
+    state.mem.offset = 0;
+    switchTab("memories");
+  });
+
+  $("#view-system").addEventListener("click", async e => {
+    const b = e.target.closest("button[data-op]");
+    if (!b) return;
+    const op = b.dataset.op;
+    if (op === "prune-run" && !confirm("确认执行真实过期数据清理？")) return;
+    if (op === "drain-force" && !confirm("确认全量重建所有活跃记忆向量？")) return;
+    $("#op-out").textContent = "执行中…";
+    try {
+      let res;
+      if (op === "drain") res = await api("/v1/admin/drain", {method: "POST", body: {force: false}});
+      else if (op === "drain-force") res = await api("/v1/admin/drain", {method: "POST", body: {force: true}});
+      else if (op === "doctor") res = await api("/v1/admin/doctor", {method: "POST", body: {}});
+      else if (op === "prune-dry") res = await api("/v1/admin/prune", {method: "POST", body: {dry_run: true}});
+      else if (op === "prune-run") res = await api("/v1/admin/prune", {method: "POST", body: {dry_run: false}});
+      $("#op-out").textContent = JSON.stringify(res, null, 2);
+      toast("操作完成", "ok");
+      await loadCore(true);
+    } catch (err) {
+      $("#op-out").textContent = "ERROR: " + err.message;
+      toast(err.message, "err");
+    }
+  });
+
+  $("#btn-m-search").addEventListener("click", () => { state.mem.offset = 0; loadMemories().catch(e => toast(e.message, "err")); });
+  $("#btn-m-reset").addEventListener("click", () => {
+    $("#m-agent").value = ""; $("#m-machine").value = ""; $("#m-kind").value = "";
+    $("#m-active").value = "1"; $("#m-q").value = "";
+    state.mem.offset = 0;
+    loadMemories().catch(e => toast(e.message, "err"));
+  });
+  $("#m-prev").addEventListener("click", () => { state.mem.offset = Math.max(0, state.mem.offset - state.mem.limit); loadMemories(); });
+  $("#m-next").addEventListener("click", () => { state.mem.offset += state.mem.limit; loadMemories(); });
+
+  $("#btn-open-new-mem").addEventListener("click", () => {
+    openModal(
+      "写入新记忆",
+      `<div class="form-row">
+        <div class="field"><label>类型</label>
+          <select id="nm-kind"><option value="note">note</option><option value="fact">fact</option><option value="preference">preference</option><option value="decision">decision</option><option value="event">event</option></select>
+        </div>
+        <div class="field"><label>重要度 (1-10)</label><input id="nm-imp" type="number" min="1" max="10" value="5" style="width:90px"></div>
+        <div class="field grow"><label>标签 (逗号分隔)</label><input id="nm-tags" placeholder="ops,deploy"></div>
+      </div>
+      <div class="field"><label>内容</label><textarea id="nm-content" placeholder="输入要持久化的记忆内容…"></textarea></div>`,
+      `<button class="btn" id="nm-cancel">取消</button><button class="btn pri" id="nm-save">保存</button>`
+    );
+    $("#nm-cancel").onclick = closeModal;
+    $("#nm-save").onclick = async () => {
+      const content = $("#nm-content").value.trim();
+      if (!content) return toast("内容不能为空", "err");
+      try {
+        await api("/v1/admin/remember", {
+          method: "POST",
+          body: {
+            content,
+            kind: $("#nm-kind").value,
+            importance: Number($("#nm-imp").value || 5),
+            tags: $("#nm-tags").value.trim(),
+            source: "console",
+          },
+        });
+        closeModal();
+        toast("已写入记忆", "ok");
+        await refreshCurrent(true);
+      } catch (err) { toast(err.message, "err"); }
+    };
+  });
+
+  $("#tb-memories").addEventListener("click", async e => {
+    const b = e.target.closest("button[data-mact]");
+    if (!b) return;
+    const id = Number(b.dataset.id);
+    const act = b.dataset.mact;
+    try {
+      if (act === "forget") {
+        await api("/v1/admin/forget", {method: "POST", body: {id}});
+        toast(`已停用 #${id}`, "ok");
+        await loadMemories();
+      } else if (act === "restore") {
+        await api("/v1/admin/restore", {method: "POST", body: {id}});
+        toast(`已恢复 #${id}`, "ok");
+        await loadMemories();
+      } else if (act === "detail") {
+        const res = await api(`/v1/admin/memory?id=${id}`);
+        const m = res.item;
+        if (!m) return toast("未找到该记忆", "err");
+        openModal(
+          `记忆 #${m.id}`,
+          `<div class="kv">
+            <div class="kv-item"><span>类型 / 分类</span><span class="mono">${esc(m.kind)} / ${esc(m.memory_type || "-")}</span></div>
+            <div class="kv-item"><span>重要度</span><span class="mono">${m.importance}</span></div>
+            <div class="kv-item"><span>主机 / Agent</span><span class="mono">${esc(m.machine || "-")} / ${esc(m.agent || "-")}</span></div>
+            <div class="kv-item"><span>来源 / 会话</span><span class="mono">${esc(m.source || "-")} / ${esc(m.session_id || "-")}</span></div>
+            <div class="kv-item"><span>标签</span><span class="mono">${esc(m.tags || "-")}</span></div>
+            <div class="kv-item"><span>更新于</span><span class="mono">${esc(m.updated_at || "-")}</span></div>
+          </div>
+          <pre class="code">${esc(m.content || "")}</pre>`,
+          `<button class="btn" id="md-copy">复制内容</button><button class="btn" id="md-close">关闭</button>`
+        );
+        $("#md-copy").onclick = () => copyText(m.content || "");
+        $("#md-close").onclick = closeModal;
+      }
+    } catch (err) { toast(err.message, "err"); }
+  });
+
+  $("#turn-seg").addEventListener("click", e => {
+    const b = e.target.closest("button[data-sub]");
+    if (!b) return;
+    state.turnSub = b.dataset.sub;
+    $$("#turn-seg button").forEach(x => x.classList.toggle("active", x.dataset.sub === state.turnSub));
+    $("#sub-turns").classList.toggle("hidden", state.turnSub !== "turns");
+    $("#sub-sessions").classList.toggle("hidden", state.turnSub !== "sessions");
+    loadTurnsOrSessions().catch(err => toast(err.message, "err"));
+  });
+
+  $("#btn-t-search").addEventListener("click", () => {
+    state.turns.offset = 0; state.sessions.offset = 0;
+    loadTurnsOrSessions().catch(e => toast(e.message, "err"));
+  });
+  $("#btn-t-reset").addEventListener("click", () => {
+    $("#t-machine").value = ""; $("#t-session").value = ""; $("#t-q").value = "";
+    state.turns.offset = 0; state.sessions.offset = 0;
+    loadTurnsOrSessions().catch(e => toast(e.message, "err"));
+  });
+  $("#t-prev").addEventListener("click", () => { state.turns.offset = Math.max(0, state.turns.offset - state.turns.limit); loadTurnsOrSessions(); });
+  $("#t-next").addEventListener("click", () => { state.turns.offset += state.turns.limit; loadTurnsOrSessions(); });
+  $("#s-prev").addEventListener("click", () => { state.sessions.offset = Math.max(0, state.sessions.offset - state.sessions.limit); loadTurnsOrSessions(); });
+  $("#s-next").addEventListener("click", () => { state.sessions.offset += state.sessions.limit; loadTurnsOrSessions(); });
+
+  $("#tb-turns").addEventListener("click", async e => {
+    const b = e.target.closest("button[data-tact='detail']");
+    if (!b) return;
+    try {
+      const res = await api(`/v1/admin/turn?id=${Number(b.dataset.id)}`);
+      const t = res.item;
+      if (!t) return toast("未找到该轮次", "err");
+      openModal(
+        `对话轮次 #${t.id}`,
+        `<div class="kv">
+          <div class="kv-item"><span>会话</span><span class="mono">${esc(t.session_id || "-")}</span></div>
+          <div class="kv-item"><span>主机 / Agent</span><span class="mono">${esc(t.machine || "-")} / ${esc(t.agent || "-")}</span></div>
+          <div class="kv-item"><span>平台 / 作者</span><span class="mono">${esc(t.platform || "-")} / ${esc(t.author || "-")}</span></div>
+          <div class="kv-item"><span>时间</span><span class="mono">${esc(t.ts || "-")}</span></div>
+        </div>
+        <div class="small muted">User</div><pre class="code">${esc(t.user_content || "")}</pre>
+        <div class="small muted">Assistant</div><pre class="code">${esc(t.assistant_content || "")}</pre>`,
+        `<button class="btn" id="td-close">关闭</button>`
+      );
+      $("#td-close").onclick = closeModal;
+    } catch (err) { toast(err.message, "err"); }
+  });
+
+  $("#tb-sessions").addEventListener("click", e => {
+    const b = e.target.closest("button[data-sess]");
+    if (!b) return;
+    $("#t-session").value = b.dataset.sess || "";
+    state.turnSub = "turns";
+    state.turns.offset = 0;
+    $$("#turn-seg button").forEach(x => x.classList.toggle("active", x.dataset.sub === "turns"));
+    $("#sub-turns").classList.remove("hidden");
+    $("#sub-sessions").classList.add("hidden");
+    loadTurnsOrSessions().catch(err => toast(err.message, "err"));
+  });
+
+  async function doSearch() {
+    const q = $("#q-search").value.trim();
+    if (!q) return toast("请输入检索词", "err");
+    const lim = $("#q-limit").value;
+    try {
+      const data = await api(`/v1/admin/search?q=${encodeURIComponent(q)}&limit=${lim}`);
+      const mems = data.memories || [];
+      const turns = data.turns || [];
+      $("#search-res").innerHTML = `
+        <div>
+          <div class="small muted" style="margin-bottom:6px">匹配记忆 (${mems.length})</div>
+          <pre class="code">${mems.length ? mems.map(m => `#${m.id} [${m.kind || "-"}] (${m.agent || "-"}) ${m.content || ""}`).join("\n\n") : "无匹配"}</pre>
+        </div>
+        <div>
+          <div class="small muted" style="margin-bottom:6px">匹配轮次 (${turns.length})</div>
+          <pre class="code">${turns.length ? turns.map(t => `#${t.id} (${t.session_id || "-"}) U: ${t.user_content || t.u || ""}\nA: ${t.assistant_content || t.a || ""}`).join("\n\n") : "无匹配"}</pre>
+        </div>
+      `;
+    } catch (err) { toast(err.message, "err"); }
+  }
+  $("#btn-q-search").addEventListener("click", doSearch);
+  $("#q-search").addEventListener("keydown", e => { if (e.key === "Enter") doSearch(); });
+
+  $("#modal-close").addEventListener("click", closeModal);
+  $("#modal-overlay").addEventListener("click", e => { if (e.target === $("#modal-overlay")) closeModal(); });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
+
+  $("#f-agent").value = CLIENT_META[$("#f-client").value].defAgent;
+  setupAuto();
+  if (state.token) {
+    refreshCurrent(true);
+  } else {
+    showAuth();
+  }
+})();
 </script>
 </body>
 </html>

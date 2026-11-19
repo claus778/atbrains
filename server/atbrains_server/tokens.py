@@ -20,7 +20,36 @@ class TokenIdentity:
     name: str
     machine: str
     agent: str
-    role: str = "agent"   # "agent" | "admin"
+    role: str = "agent"
+    client: str = ""
+
+
+_CLIENT_ALIASES = {
+    "hermes": "hermes",
+    "astrbot": "astrbot",
+    "dsh": "dsh",
+    "claude": "claude-code",
+    "claude-code": "claude-code",
+    "codex": "codex",
+    "cursor": "cursor",
+    "python": "python-sdk",
+    "python-sdk": "python-sdk",
+    "mcp": "mcp",
+    "custom": "custom",
+}
+
+
+def infer_client(agent: str, raw_client: str = "") -> str:
+    c = str(raw_client or "").strip().lower()[:32]
+    if c:
+        return _CLIENT_ALIASES.get(c, c)
+    a = str(agent or "").strip().lower()
+    if a in _CLIENT_ALIASES:
+        return _CLIENT_ALIASES[a]
+    for k, v in _CLIENT_ALIASES.items():
+        if k != "custom" and (a.startswith(k + "-") or a.startswith(k + "_")):
+            return v
+    return ""
 
 
 def split_identity(name: str) -> tuple[str, str]:
@@ -90,6 +119,8 @@ class TokenStore:
                 out["machine"] = str(raw["machine"]).strip()
             if raw.get("agent"):
                 out["agent"] = str(raw["agent"]).strip()
+            if raw.get("client"):
+                out["client"] = str(raw["client"]).strip().lower()[:32]
             role = str(raw.get("role") or ("admin" if name in ("server", "admin") else "agent")).strip().lower()
             out["role"] = "admin" if role == "admin" else "agent"
             return out
@@ -159,19 +190,21 @@ class TokenStore:
             finally:
                 os.close(fd)
 
-    def add(self, name: str, *, role: str = "", machine: str = "", agent: str = "") -> str:
+    def add(self, name: str, *, role: str = "", machine: str = "", agent: str = "", client: str = "") -> str:
         key = str(name or "").strip()
         if not key:
             raise ValueError("令牌名称不能为空")
         tok = secrets.token_urlsafe(32)
         with self._lock, self._file_lock():
             raw = self._read_raw()
-            if role or machine or agent:
+            if role or machine or agent or client:
                 entry: dict[str, Any] = {"token": tok}
                 if machine:
                     entry["machine"] = str(machine).strip()
                 if agent:
                     entry["agent"] = str(agent).strip()
+                if client:
+                    entry["client"] = str(client).strip().lower()[:32]
                 entry["role"] = "admin" if role == "admin" else ("admin" if key in ("server", "admin") else "agent")
                 raw[key] = entry
             else:
@@ -191,8 +224,26 @@ class TokenStore:
             self._cache = None
             return True
 
+    @staticmethod
+    def resolve_entry(name: str, entry: dict[str, str]) -> dict[str, str]:
+        role = entry.get("role") or "agent"
+        if entry.get("machine") or entry.get("agent"):
+            mach = entry.get("machine") or (split_identity(name)[0] if "|" in name else name)
+            ag = entry.get("agent") or (split_identity(name)[1] if "|" in name else name)
+        elif "|" in name:
+            mach, ag = split_identity(name)
+        else:
+            mach, ag = name, ("admin" if role == "admin" else name)
+        return {
+            "name": name,
+            "machine": mach,
+            "agent": ag,
+            "client": infer_client(ag, entry.get("client") or ""),
+            "role": role,
+            "masked": mask(entry.get("token", "")),
+        }
+
     def authorize(self, headers: Any, *, channel: str = "v1") -> Optional[TokenIdentity]:
-        """验证请求头并解析统一身份（/v1 与 /mcp 遵循同一套 <machine>|<agent> 规则）；失败返回 None。"""
         got = extract_bearer_token(headers)
         if not got:
             return None
@@ -200,18 +251,12 @@ class TokenStore:
         for name, entry in self.entries().items():
             known = entry.get("token") or ""
             if known and hmac.compare_digest(enc, known.encode("utf-8", "replace")):
-                role = entry.get("role") or "agent"
-                if entry.get("machine") or entry.get("agent"):
-                    mach = entry.get("machine") or (split_identity(name)[0] if "|" in name else name)
-                    ag = entry.get("agent") or (split_identity(name)[1] if "|" in name else name)
-                elif "|" in name:
-                    mach, ag = split_identity(name)
-                else:
-                    mach, ag = name, ("admin" if role == "admin" else name)
+                info = self.resolve_entry(name, entry)
                 return TokenIdentity(
-                    name=name,
-                    machine=mach,
-                    agent=ag,
-                    role=role,
+                    name=info["name"],
+                    machine=info["machine"],
+                    agent=info["agent"],
+                    role=info["role"],
+                    client=info["client"],
                 )
         return None

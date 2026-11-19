@@ -238,6 +238,12 @@ class TokenStoreTest(unittest.TestCase):
             assert ident_adm
             self.assertEqual((ident_adm.machine, ident_adm.agent, ident_adm.role), ("ops", "cli", "admin"))
 
+            hermes_tok = ts.add("x260|hermes", machine="x260", agent="hermes", client="hermes")
+            ident_h = ts.authorize({"Authorization": f"Bearer {hermes_tok}"}, channel="v1")
+            assert ident_h
+            self.assertEqual((ident_h.machine, ident_h.agent, ident_h.client), ("x260", "hermes", "hermes"))
+            self.assertEqual(ident_cdx.client, "codex")
+
 
 class HttpAndMcpServiceTest(unittest.TestCase):
     def _req(self, port: int, method: str, path: str, body=None, headers=None) -> tuple[int, dict]:
@@ -366,6 +372,44 @@ class HttpAndMcpServiceTest(unittest.TestCase):
                 code, ov = self._req(p, "GET", "/v1/admin/overview", headers={"X-Auth-Token": console_tok})
                 self.assertEqual(code, 200)
                 self.assertTrue(ov["ok"])
+
+                # 按客户端签发独立 agent 令牌 + 实时活动追踪（区分 token / client / channel / IP）
+                hdr_console = {"X-Auth-Token": console_tok}
+                code, issued = self._req(
+                    p, "POST", "/v1/admin/tokens",
+                    {"machine": "x260", "agent": "hermes", "client": "hermes", "role": "agent"},
+                    hdr_console,
+                )
+                self.assertEqual(code, 200)
+                self.assertEqual(issued["name"], "x260|hermes")
+                self.assertEqual(issued["client"], "hermes")
+                hdr_h = {
+                    "Authorization": f"Bearer {issued['token']}",
+                    "X-Real-IP": "10.0.0.42",
+                    "User-Agent": "hermes-plugin/2.1",
+                }
+                code, _ = self._req(p, "POST", "/v1/memory/status", {"light": True}, hdr_h)
+                self.assertEqual(code, 200)
+                code, _ = self._req(
+                    p, "POST", "/mcp",
+                    {"jsonrpc": "2.0", "id": 9, "method": "tools/list"},
+                    hdr_h,
+                )
+                self.assertEqual(code, 200)
+                code, tlist = self._req(p, "GET", "/v1/admin/tokens", headers=hdr_console)
+                self.assertEqual(code, 200)
+                by_name = {t["name"]: t for t in tlist["tokens"]}
+                rec_h = by_name["x260|hermes"]
+                self.assertEqual(rec_h["client"], "hermes")
+                self.assertEqual(rec_h["machine"], "x260")
+                self.assertEqual(rec_h["agent"], "hermes")
+                self.assertEqual(rec_h["last_channel"], "mcp")
+                self.assertEqual(rec_h["last_ip"], "10.0.0.42")
+                self.assertEqual(rec_h["requests"], 2)
+                self.assertTrue(rec_h["online"])
+                code, rm = self._req(p, "DELETE", "/v1/admin/tokens", {"name": "x260|hermes"}, hdr_console)
+                self.assertEqual(code, 200)
+                self.assertTrue(rm["removed"])
 
                 # 畸形 JSON 必须报 400 invalid json，而不是静默变空对象
                 req = urllib.request.Request(

@@ -14,6 +14,7 @@ from __future__ import annotations
 import hmac
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -22,7 +23,7 @@ from . import PROTOCOL_VERSION, __version__
 from .config import resolve_config
 from .context import RequestContext, ScopedStore
 from .store import AtbrainsStore
-from .tokens import TokenIdentity, TokenStore, mask
+from .tokens import TokenIdentity, TokenStore, header_value, infer_client
 from .tools_registry import as_bool, as_int, as_list, clean_rows, context_markdown, context_packet
 
 # 异常消息脱敏:即便某个驱动把连接串塞进了报错里,也不能把口令下发
@@ -138,6 +139,8 @@ class MemoryService:
         self._lock = threading.Lock()
         self._vec_wake = threading.Event()
         self._workers_started = False
+        self._activity: dict[str, dict[str, Any]] = {}
+        self._activity_lock = threading.Lock()
         if start_workers:
             self.start_workers()
 
@@ -206,7 +209,64 @@ class MemoryService:
 
     # ---------------------------------------------------------- 入口
 
-    def handle(self, method: str, path: str, query: dict, body: dict, headers: dict) -> tuple[int, dict]:
+    def record_activity(
+        self,
+        ident: TokenIdentity,
+        *,
+        channel: str,
+        headers: Any = None,
+        path: str = "",
+        remote_ip: str = "",
+    ) -> None:
+        if not ident or not ident.name or ident.name == "console":
+            return
+        ip = header_value(headers, "X-Real-IP").strip()
+        if not ip:
+            xff = header_value(headers, "X-Forwarded-For").strip()
+            ip = xff.split(",")[0].strip() if xff else str(remote_ip or "").strip()
+        ua = header_value(headers, "User-Agent").strip()[:120]
+        hdr_client = header_value(headers, "X-Atbrains-Client").strip().lower()[:32]
+        detected = hdr_client or ident.client
+        if not detected and ua:
+            low = ua.lower()
+            for kw, cname in (
+                ("hermes", "hermes"),
+                ("astrbot", "astrbot"),
+                ("dsh", "dsh"),
+                ("claude", "claude-code"),
+                ("codex", "codex"),
+                ("cursor", "cursor"),
+                ("atbrains-client", "python-sdk"),
+            ):
+                if kw in low:
+                    detected = cname
+                    break
+        now = time.time()
+        seen = datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        with self._activity_lock:
+            prev = self._activity.get(ident.name)
+            reqs = int(prev.get("requests", 0)) + 1 if prev else 1
+            self._activity[ident.name] = {
+                "last_ts": now,
+                "last_seen": seen,
+                "last_ip": ip,
+                "last_channel": str(channel or ""),
+                "last_ua": ua,
+                "detected_client": detected or (prev.get("detected_client", "") if prev else ""),
+                "last_path": str(path or "")[:64],
+                "requests": reqs,
+            }
+
+    def handle(
+        self,
+        method: str,
+        path: str,
+        query: dict,
+        body: dict,
+        headers: dict,
+        *,
+        remote_ip: str = "",
+    ) -> tuple[int, dict]:
         method = str(method or "GET").upper()
         route = self._ROUTES.get(path)
         if route is None:
@@ -222,10 +282,12 @@ class MemoryService:
                 ident = self._authorize_admin(headers)
                 if ident is None:
                     return 401, {"ok": False, "error": "unauthorized"}
+                self.record_activity(ident, channel="admin", headers=headers, path=path, remote_ip=remote_ip)
                 return 200, getattr(self, handler)(method, ident, payload, query)
             ident = self.authorize_identity(headers, channel="v1")
             if ident is None:
                 return 401, {"error": "unauthorized"}
+            self.record_activity(ident, channel="v1", headers=headers, path=path, remote_ip=remote_ip)
             return 200, getattr(self, handler)(ident, payload, query)
         except BadRequest as e:
             return 400, {"ok": False, "error": str(e)}
@@ -652,26 +714,62 @@ class MemoryService:
 
     def _admin_tokens(self, method: str, ident: TokenIdentity, body: dict, query: dict) -> dict:
         if method == "GET":
-            items = [
-                {"name": name, "role": ent.get("role", "agent"), "masked": mask(ent.get("token", ""))}
-                for name, ent in sorted(self.tokens.entries().items())
-            ]
+            now = time.time()
+            with self._activity_lock:
+                acts = {k: dict(v) for k, v in self._activity.items()}
+            items = []
+            for name, ent in sorted(self.tokens.entries().items()):
+                info = self.tokens.resolve_entry(name, ent)
+                act = acts.get(name) or {}
+                last_ts = float(act.get("last_ts") or 0)
+                items.append({
+                    "name": info["name"],
+                    "machine": info["machine"],
+                    "agent": info["agent"],
+                    "client": info["client"] or str(act.get("detected_client") or ""),
+                    "role": info["role"],
+                    "masked": info["masked"],
+                    "online": bool(last_ts and (now - last_ts) <= 300.0),
+                    "requests": int(act.get("requests") or 0),
+                    "last_seen": str(act.get("last_seen") or ""),
+                    "last_ip": str(act.get("last_ip") or ""),
+                    "last_channel": str(act.get("last_channel") or ""),
+                    "last_ua": str(act.get("last_ua") or ""),
+                    "last_path": str(act.get("last_path") or ""),
+                })
             return {"ok": True, "tokens": items}
         if method == "POST":
+            machine = str(body.get("machine") or "").strip()
+            agent = str(body.get("agent") or "").strip().lower()
+            client = str(body.get("client") or "").strip().lower()
+            role = str(body.get("role") or "").strip().lower()
             name = str(body.get("name") or "").strip()
             if not name:
-                raise BadRequest("name 不能为空")
-            role = str(body.get("role") or "").strip()
-            tok = self.tokens.add(
-                name,
-                role=role,
-                machine=str(body.get("machine") or "").strip(),
-                agent=str(body.get("agent") or "").strip(),
-            )
-            return {"ok": True, "name": name, "token": tok}
+                if machine and agent:
+                    name = f"{machine}|{agent}"
+                elif agent:
+                    name = agent
+            if not name:
+                raise BadRequest("name 或 machine/agent 不能为空")
+            eff_client = infer_client(agent, client)
+            tok = self.tokens.add(name, role=role, machine=machine, agent=agent, client=eff_client)
+            ent = self.tokens.entries().get(name) or {"token": tok, "role": role or "agent"}
+            info = self.tokens.resolve_entry(name, ent)
+            return {
+                "ok": True,
+                "name": info["name"],
+                "machine": info["machine"],
+                "agent": info["agent"],
+                "client": info["client"],
+                "role": info["role"],
+                "token": tok,
+            }
         if method == "DELETE":
             name = str(body.get("name") or _qparam(query, "name", "")).strip()
             if not name:
                 raise BadRequest("name 不能为空")
-            return {"ok": True, "removed": self.tokens.remove(name)}
+            removed = self.tokens.remove(name)
+            with self._activity_lock:
+                self._activity.pop(name, None)
+            return {"ok": True, "removed": removed}
         raise BadRequest(f"unsupported method: {method}")

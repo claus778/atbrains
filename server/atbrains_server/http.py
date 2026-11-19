@@ -175,7 +175,14 @@ def make_handler(runtime: ServerRuntime):
                 except BadRequest as exc:
                     return self._send(400, jdump({"ok": False, "error": str(exc)}))
             flat = {k: v[0] for k, v in query.items()}
-            code, payload = runtime.service.handle(method, urlparse(self.path).path, flat, body, headers)
+            code, payload = runtime.service.handle(
+                method,
+                urlparse(self.path).path,
+                flat,
+                body,
+                headers,
+                remote_ip=self.address_string(),
+            )
             return self._send(code, jdump(payload))
 
         def _mcp(self):
@@ -186,6 +193,13 @@ def make_handler(runtime: ServerRuntime):
                     "jsonrpc": "2.0", "id": None,
                     "error": {"code": -32001, "message": "unauthorized"},
                 }))
+            runtime.service.record_activity(
+                ident,
+                channel="mcp",
+                headers=headers,
+                path="/mcp",
+                remote_ip=self.address_string(),
+            )
             try:
                 raw = self._read_raw_body()
                 payload = json.loads(raw) if raw.strip() else None
