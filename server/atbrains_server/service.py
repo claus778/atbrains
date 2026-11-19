@@ -180,6 +180,8 @@ class MemoryService:
                 if str(k).lower() == "x-auth-token":
                     got = str(v or "")
                     break
+            got = got.strip()
+            expected = expected.strip()
             if expected and got and hmac.compare_digest(got.encode("utf-8"), expected.encode("utf-8")):
                 return TokenIdentity(name="console", machine="", agent="console", role="admin")
         return None

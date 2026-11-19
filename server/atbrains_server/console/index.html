@@ -1558,6 +1558,12 @@ pre.code{margin:0;background:rgba(7,10,17,.9);border:1px solid var(--border);bor
   $("#f-agent").value = CLIENT_MAP[state.selectedClient].defAgent;
   updateNamePreview();
   setupAuto();
+  const urlTok = new URLSearchParams(location.search).get("token");
+  if (urlTok && urlTok.trim()) {
+    state.token = urlTok.trim();
+    localStorage.setItem(LS_KEY, state.token);
+    history.replaceState(null, "", location.pathname + location.hash);
+  }
   if (state.token) {
     refreshCurrent(true);
   } else {
