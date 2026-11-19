@@ -302,6 +302,8 @@ const S = {
 let curMemContent = '', curTurnU = '', curTurnA = '';
 let lastTick = Date.now();
 
+const UI_BUILD = '2026-11-19';
+
 /* ── token ── */
 let TOK = '';
 try { TOK = localStorage.getItem('atbrains_token') || ''; } catch (e) {}
@@ -354,7 +356,9 @@ async function refresh(manual) {
   try {
     const d = await api('/v1/admin/overview');
     $('#conn').innerHTML = '<span class="dot ok"></span>已连接 · ' + esc(d.ts);
-    $('#ver').textContent = d.version ? ('v' + d.version) : '';
+    const _sv = d.server_version || d.version || '';
+    $('#ver').textContent = _sv ? ('v' + _sv) : '';
+    $('#ver').title = '服务端 v' + _sv + ' · 协议 ' + (d.version || '?') + ' · UI ' + UI_BUILD;
     collapseTok();
     renderCards(d);
     if (manual) toast('已刷新');
