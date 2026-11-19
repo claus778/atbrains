@@ -3,151 +3,209 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>atbrains 控制台</title>
+<title>atbrains · 控制中心</title>
 <style>
 :root{
-  --bg:#0b0f17;--panel:#111722;--panel2:#161e2e;--line:#222c40;--line2:#2d3a54;
-  --fg:#e5ecf6;--muted:#8a97ad;--dim:#5b677d;
-  --accent:#4f8cff;--accent2:#3b76e8;--ok:#22c55e;--warn:#f59e0b;--err:#ef4444;--info:#06b6d4;--violet:#a855f7;
-  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
-  --radius:10px;
+  --bg:#070a11;
+  --bg-glow:radial-gradient(900px 420px at 18% -10%,rgba(59,130,246,.14),transparent 65%),radial-gradient(700px 360px at 88% -8%,rgba(139,92,246,.12),transparent 60%);
+  --surface:#0e131f;
+  --surface2:#141b2b;
+  --surface3:#1a2337;
+  --border:rgba(148,163,184,.12);
+  --border-hi:rgba(148,163,184,.24);
+  --fg:#f1f5f9;
+  --fg2:#cbd5e1;
+  --muted:#8b9ab2;
+  --dim:#59667d;
+  --accent:#3b82f6;
+  --accent-hi:#60a5fa;
+  --ok:#10b981;
+  --warn:#f59e0b;
+  --err:#ef4444;
+  --info:#06b6d4;
+  --violet:#a855f7;
+  --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;
+  --sans:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif;
+  --r:12px;
+  --r-sm:8px;
+  --shadow:0 12px 36px rgba(0,0,0,.38);
 }
 *{box-sizing:border-box}
-html,body{margin:0;height:100%;background:var(--bg);color:var(--fg);font:13px/1.5 var(--sans);-webkit-font-smoothing:antialiased}
+html,body{margin:0;min-height:100%;background:var(--bg);background-image:var(--bg-glow);background-attachment:fixed;color:var(--fg);font:13.5px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
 button,input,select,textarea{font:inherit;color:var(--fg)}
 code,pre,.mono{font-family:var(--mono)}
-a{color:var(--accent);text-decoration:none}
+.num{font-variant-numeric:tabular-nums}
+::-webkit-scrollbar{width:7px;height:7px}
+::-webkit-scrollbar-track{background:transparent}
+::-webkit-scrollbar-thumb{background:rgba(148,163,184,.2);border-radius:99px}
+::-webkit-scrollbar-thumb:hover{background:rgba(148,163,184,.35)}
 
-.app{display:grid;grid-template-columns:220px 1fr;min-height:100vh}
-.side{background:var(--panel);border-right:1px solid var(--line);display:flex;flex-direction:column;padding:16px 12px;gap:14px;position:sticky;top:0;height:100vh}
-.brand{display:flex;align-items:center;gap:10px;padding:4px 8px}
-.logo{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,#4f8cff,#7c3aed);display:grid;place-items:center;font-weight:700;font-size:14px;color:#fff}
-.brand h1{margin:0;font-size:15px;font-weight:700;letter-spacing:.2px}
-.brand span{display:block;font-size:11px;color:var(--muted)}
+.app{display:grid;grid-template-columns:244px 1fr;min-height:100vh}
+.side{background:rgba(14,19,31,.86);backdrop-filter:blur(14px);border-right:1px solid var(--border);display:flex;flex-direction:column;padding:18px 14px;gap:18px;position:sticky;top:0;height:100vh}
+.brand{display:flex;align-items:center;gap:11px;padding:4px 6px}
+.logo{width:34px;height:34px;border-radius:10px;background:linear-gradient(135deg,#3b82f6,#8b5cf6);box-shadow:0 6px 20px rgba(59,130,246,.35);display:grid;place-items:center;color:#fff;flex-shrink:0}
+.brand h1{margin:0;font-size:15.5px;font-weight:700;letter-spacing:.2px;line-height:1.2}
+.brand span{display:block;font-size:11px;color:var(--muted);margin-top:2px}
+
+.nav-grp-lbl{font-size:10.5px;text-transform:uppercase;letter-spacing:.8px;color:var(--dim);padding:0 10px;margin-bottom:4px;font-weight:600}
 .nav{display:flex;flex-direction:column;gap:4px}
-.nav button{display:flex;align-items:center;justify-content:space-between;width:100%;background:transparent;border:1px solid transparent;border-radius:8px;padding:9px 11px;color:var(--muted);cursor:pointer;text-align:left;transition:.15s}
-.nav button:hover{background:var(--panel2);color:var(--fg)}
-.nav button.active{background:rgba(79,140,255,.14);border-color:rgba(79,140,255,.35);color:#fff;font-weight:600}
-.nav .cnt{font-size:11px;background:var(--panel2);border:1px solid var(--line);border-radius:99px;padding:0 7px;color:var(--muted)}
-.nav button.active .cnt{background:rgba(79,140,255,.22);border-color:rgba(79,140,255,.4);color:#cfe0ff}
-.side-foot{margin-top:auto;display:flex;flex-direction:column;gap:8px;border-top:1px solid var(--line);padding-top:12px}
-.health-col{display:flex;flex-direction:column;gap:5px;padding:0 4px}
-.h-row{display:flex;align-items:center;justify-content:space-between;font-size:12px;color:var(--muted)}
-.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--dim);margin-right:6px}
-.dot.ok{background:var(--ok);box-shadow:0 0 6px rgba(34,197,94,.6)}
-.dot.err{background:var(--err)}
+.nav button{display:flex;align-items:center;gap:10px;width:100%;background:transparent;border:1px solid transparent;border-radius:9px;padding:9px 11px;color:var(--muted);cursor:pointer;text-align:left;transition:all .15s ease}
+.nav button svg{width:16px;height:16px;flex-shrink:0;opacity:.8}
+.nav button .lbl{flex:1;font-weight:500}
+.nav button:hover{background:rgba(255,255,255,.04);color:var(--fg)}
+.nav button.active{background:linear-gradient(90deg,rgba(59,130,246,.18),rgba(59,130,246,.06));border-color:rgba(59,130,246,.35);color:#fff}
+.nav button.active svg{color:var(--accent-hi);opacity:1}
+.nav .cnt{font-size:11px;font-variant-numeric:tabular-nums;background:rgba(255,255,255,.05);border:1px solid var(--border);border-radius:99px;padding:1px 7px;color:var(--muted)}
+.nav button.active .cnt{background:rgba(59,130,246,.22);border-color:rgba(96,165,250,.35);color:#dbeafe}
+
+.side-foot{margin-top:auto;display:flex;flex-direction:column;gap:10px;border-top:1px solid var(--border);padding-top:14px}
+.health-box{background:rgba(7,10,17,.55);border:1px solid var(--border);border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:7px}
+.h-row{display:flex;align-items:center;justify-content:space-between;font-size:12px}
+.h-row .name{display:flex;align-items:center;gap:7px;color:var(--fg2)}
+.h-row .meta{color:var(--muted);font-size:11.5px}
+.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--dim);flex-shrink:0}
+.dot.ok{background:var(--ok);box-shadow:0 0 8px rgba(16,185,129,.75)}
+.dot.pulse{animation:pulse 2.2s infinite}
+.dot.err{background:var(--err);box-shadow:0 0 8px rgba(239,68,68,.7)}
 .dot.warn{background:var(--warn)}
+@keyframes pulse{0%,100%{box-shadow:0 0 0 0 rgba(16,185,129,.55)}50%{box-shadow:0 0 0 5px rgba(16,185,129,0)}}
 
 .main{display:flex;flex-direction:column;min-width:0}
-.topbar{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 22px;border-bottom:1px solid var(--line);background:rgba(17,23,34,.85);backdrop-filter:blur(8px);position:sticky;top:0;z-index:20}
+.topbar{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:13px 26px;border-bottom:1px solid var(--border);background:rgba(10,14,23,.72);backdrop-filter:blur(12px);position:sticky;top:0;z-index:20}
 .topbar-l{display:flex;align-items:center;gap:12px;min-width:0}
-.topbar h2{margin:0;font-size:15px;font-weight:600}
-.topbar-r{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.content{padding:18px 22px 40px;display:flex;flex-direction:column;gap:16px;max-width:1440px;width:100%}
+.topbar h2{margin:0;font-size:16px;font-weight:650;letter-spacing:-.1px}
+.topbar-r{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.content{padding:22px 26px 48px;display:flex;flex-direction:column;gap:18px;max-width:1480px;width:100%}
 
-.grid{display:grid;gap:12px}
+.grid{display:grid;gap:14px}
 .g4{grid-template-columns:repeat(4,minmax(0,1fr))}
 .g3{grid-template-columns:repeat(3,minmax(0,1fr))}
 .g2{grid-template-columns:repeat(2,minmax(0,1fr))}
 
-.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:15px 16px}
-.card-hd{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:12px;flex-wrap:wrap}
-.card-hd h3{margin:0;font-size:13px;font-weight:600;color:var(--fg);letter-spacing:.2px}
-.kpi .label{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.4px}
-.kpi .val{font-size:24px;font-weight:700;margin-top:4px;line-height:1.2}
-.kpi .sub{font-size:11px;color:var(--muted);margin-top:4px}
+.card{background:linear-gradient(180deg,rgba(20,27,43,.85),rgba(14,19,31,.92));border:1px solid var(--border);border-radius:var(--r);padding:18px 20px;box-shadow:0 4px 20px rgba(0,0,0,.18);transition:border-color .15s}
+.card:hover{border-color:rgba(148,163,184,.18)}
+.card-hd{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap}
+.card-hd h3{margin:0;font-size:14px;font-weight:600;color:var(--fg);display:flex;align-items:center;gap:8px}
+.card-hd h3 svg{width:16px;height:16px;color:var(--accent-hi)}
 
-.btn{background:var(--panel2);border:1px solid var(--line2);border-radius:7px;padding:6px 11px;cursor:pointer;display:inline-flex;align-items:center;gap:5px;white-space:nowrap;transition:.12s}
-.btn:hover{border-color:var(--accent);color:#fff}
+.kpi{position:relative;overflow:hidden;padding:16px 18px}
+.kpi::after{content:"";position:absolute;inset:0 0 auto 0;height:2px;background:var(--kpi-bar,linear-gradient(90deg,var(--accent),transparent));opacity:.85}
+.kpi-top{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.kpi .label{font-size:11.5px;color:var(--muted);font-weight:500}
+.kpi .ic{width:30px;height:30px;border-radius:8px;background:rgba(255,255,255,.04);border:1px solid var(--border);display:grid;place-items:center;color:var(--accent-hi)}
+.kpi .ic svg{width:15px;height:15px}
+.kpi .val{font-size:26px;font-weight:700;margin-top:6px;line-height:1.15;letter-spacing:-.4px}
+.kpi .sub{font-size:11.5px;color:var(--muted);margin-top:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.btn{background:var(--surface2);border:1px solid var(--border-hi);border-radius:var(--r-sm);padding:7px 12px;cursor:pointer;display:inline-flex;align-items:center;justify-content:center;gap:6px;white-space:nowrap;font-weight:500;transition:all .14s ease}
+.btn svg{width:14px;height:14px;flex-shrink:0}
+.btn:hover:not(:disabled){border-color:var(--accent-hi);background:var(--surface3);color:#fff}
+.btn:active:not(:disabled){transform:translateY(1px)}
 .btn:disabled{opacity:.45;cursor:not-allowed}
-.btn.pri{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
-.btn.pri:hover{background:var(--accent2)}
-.btn.ok{border-color:rgba(34,197,94,.45);color:#86efac}
-.btn.ok:hover{background:rgba(34,197,94,.12)}
-.btn.warn{border-color:rgba(245,158,11,.45);color:#fcd34d}
-.btn.warn:hover{background:rgba(245,158,11,.12)}
-.btn.err{border-color:rgba(239,68,68,.45);color:#fca5a5}
-.btn.err:hover{background:rgba(239,68,68,.12)}
-.btn.sm{padding:4px 8px;font-size:12px;border-radius:6px}
+.btn.pri{background:linear-gradient(180deg,#3b82f6,#2563eb);border-color:rgba(96,165,250,.5);color:#fff;box-shadow:0 4px 14px rgba(37,99,235,.32)}
+.btn.pri:hover:not(:disabled){background:linear-gradient(180deg,#4f8ff7,#2d6df0);border-color:#93c5fd}
+.btn.ok{border-color:rgba(16,185,129,.4);background:rgba(16,185,129,.1);color:#6ee7b7}
+.btn.ok:hover:not(:disabled){background:rgba(16,185,129,.2);border-color:rgba(16,185,129,.7)}
+.btn.warn{border-color:rgba(245,158,11,.4);background:rgba(245,158,11,.08);color:#fcd34d}
+.btn.warn:hover:not(:disabled){background:rgba(245,158,11,.18);border-color:rgba(245,158,11,.7)}
+.btn.err{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.08);color:#fca5a5}
+.btn.err:hover:not(:disabled){background:rgba(239,68,68,.18);border-color:rgba(239,68,68,.7)}
+.btn.sm{padding:4.5px 9px;font-size:12px;border-radius:7px}
 .btn.ghost{background:transparent;border-color:transparent;color:var(--muted)}
-.btn.ghost:hover{background:var(--panel2);color:var(--fg)}
+.btn.ghost:hover:not(:disabled){background:rgba(255,255,255,.06);color:var(--fg);border-color:transparent}
 
-input,select,textarea{background:#0c111b;border:1px solid var(--line2);border-radius:7px;padding:6px 10px;outline:none}
-input:focus,select:focus,textarea:focus{border-color:var(--accent)}
-textarea{width:100%;min-height:84px;resize:vertical}
+input,select,textarea{background:rgba(7,10,17,.85);border:1px solid var(--border-hi);border-radius:var(--r-sm);padding:7px 11px;outline:none;transition:border-color .14s,box-shadow .14s}
+input::placeholder,textarea::placeholder{color:var(--dim)}
+input:focus,select:focus,textarea:focus{border-color:var(--accent-hi);box-shadow:0 0 0 3px rgba(59,130,246,.16)}
+textarea{width:100%;min-height:96px;resize:vertical}
 .form-row{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end}
-.field{display:flex;flex-direction:column;gap:4px;min-width:130px}
-.field.grow{flex:1;min-width:180px}
-.field label{font-size:11px;color:var(--muted)}
+.field{display:flex;flex-direction:column;gap:5px;min-width:140px}
+.field.grow{flex:1;min-width:190px}
+.field label{font-size:11.5px;color:var(--muted);font-weight:500}
+
+.client-picker{display:flex;flex-wrap:wrap;gap:7px;margin-bottom:14px}
+.c-chip{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:9px;background:rgba(7,10,17,.7);border:1px solid var(--border-hi);color:var(--fg2);cursor:pointer;font-size:12.5px;font-weight:500;transition:all .14s}
+.c-chip:hover{border-color:var(--accent-hi);background:var(--surface2)}
+.c-chip.active{background:rgba(59,130,246,.18);border-color:var(--accent-hi);color:#fff;box-shadow:0 0 0 2px rgba(59,130,246,.18)}
+.c-chip .sw{width:8px;height:8px;border-radius:50%}
 
 .pills{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-.pill{background:var(--panel2);border:1px solid var(--line);border-radius:99px;padding:4px 10px;font-size:12px;color:var(--muted);cursor:pointer}
-.pill:hover{border-color:var(--line2);color:var(--fg)}
-.pill.active{background:rgba(79,140,255,.18);border-color:rgba(79,140,255,.5);color:#cfe0ff}
+.pill{background:rgba(7,10,17,.65);border:1px solid var(--border);border-radius:99px;padding:4px 11px;font-size:12px;color:var(--muted);cursor:pointer;transition:all .14s}
+.pill:hover{border-color:var(--border-hi);color:var(--fg)}
+.pill.active{background:rgba(59,130,246,.18);border-color:rgba(96,165,250,.5);color:#dbeafe;font-weight:600}
 
-.badge{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:99px;font-size:11px;font-weight:600;border:1px solid var(--line2);background:var(--panel2);color:var(--fg);white-space:nowrap}
-.b-ok{border-color:rgba(34,197,94,.4);background:rgba(34,197,94,.12);color:#86efac}
-.b-err{border-color:rgba(239,68,68,.4);background:rgba(239,68,68,.12);color:#fca5a5}
-.b-warn{border-color:rgba(245,158,11,.4);background:rgba(245,158,11,.12);color:#fcd34d}
-.b-info{border-color:rgba(6,182,212,.4);background:rgba(6,182,212,.12);color:#67e8f9}
-.b-violet{border-color:rgba(168,85,247,.4);background:rgba(168,85,247,.14);color:#d8b4fe}
-.b-blue{border-color:rgba(79,140,255,.45);background:rgba(79,140,255,.15);color:#93c5fd}
-.b-dim{border-color:var(--line);background:transparent;color:var(--muted)}
+.badge{display:inline-flex;align-items:center;gap:5px;padding:2px 8.5px;border-radius:99px;font-size:11.5px;font-weight:600;border:1px solid var(--border-hi);background:var(--surface2);color:var(--fg);white-space:nowrap}
+.b-ok{border-color:rgba(16,185,129,.42);background:rgba(16,185,129,.12);color:#6ee7b7}
+.b-err{border-color:rgba(239,68,68,.42);background:rgba(239,68,68,.12);color:#fca5a5}
+.b-warn{border-color:rgba(245,158,11,.42);background:rgba(245,158,11,.12);color:#fcd34d}
+.b-info{border-color:rgba(6,182,212,.42);background:rgba(6,182,212,.12);color:#67e8f9}
+.b-violet{border-color:rgba(168,85,247,.42);background:rgba(168,85,247,.14);color:#d8b4fe}
+.b-blue{border-color:rgba(59,130,246,.45);background:rgba(59,130,246,.15);color:#93c5fd}
+.b-dim{border-color:var(--border);background:rgba(255,255,255,.03);color:var(--muted)}
 
-.tbl-wrap{overflow-x:auto}
-table{width:100%;border-collapse:collapse;font-size:12.5px}
-th,td{padding:9px 10px;border-bottom:1px solid var(--line);text-align:left;vertical-align:middle}
-th{color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.3px;white-space:nowrap}
-tbody tr:hover{background:rgba(255,255,255,.02)}
+.tbl-wrap{overflow-x:auto;border:1px solid var(--border);border-radius:10px;background:rgba(7,10,17,.4)}
+table{width:100%;border-collapse:collapse;font-size:12.8px}
+th,td{padding:11px 12px;border-bottom:1px solid var(--border);text-align:left;vertical-align:middle}
+thead th{background:rgba(20,27,43,.7);color:var(--muted);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.45px;white-space:nowrap}
+tbody tr:last-child td{border-bottom:none}
+tbody tr{transition:background .12s}
+tbody tr:hover{background:rgba(59,130,246,.05)}
 td.clip{max-width:340px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.act-grp{display:flex;gap:5px;flex-wrap:nowrap}
+.act-grp{display:flex;gap:6px;flex-wrap:nowrap;align-items:center}
 .muted{color:var(--muted)}
 .dim{color:var(--dim)}
 .small{font-size:11.5px}
-.empty{padding:28px 12px;text-align:center;color:var(--muted)}
+.empty{padding:36px 14px;text-align:center;color:var(--muted)}
 
-.secret-box{border:1px solid rgba(34,197,94,.45);background:rgba(34,197,94,.06);border-radius:var(--radius);padding:14px 16px;display:flex;flex-direction:column;gap:10px}
-.secret-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:#0a0f18;border:1px solid var(--line2);border-radius:7px;padding:8px 10px}
-.secret-line code{flex:1;word-break:break-all;color:#86efac;font-size:12.5px}
-pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:8px;padding:11px 12px;overflow:auto;max-height:280px;font-size:12px;line-height:1.5;color:#cbd5e1;white-space:pre-wrap;word-break:break-word}
+.secret-box{border:1px solid rgba(16,185,129,.45);background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(6,182,212,.04));border-radius:var(--r);padding:16px 18px;display:flex;flex-direction:column;gap:12px;box-shadow:0 8px 28px rgba(16,185,129,.08)}
+.secret-line{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:rgba(7,10,17,.85);border:1px solid rgba(16,185,129,.35);border-radius:9px;padding:10px 12px}
+.secret-line code{flex:1;word-break:break-all;color:#6ee7b7;font-size:13px;user-select:all}
+pre.code{margin:0;background:rgba(7,10,17,.9);border:1px solid var(--border);border-radius:9px;padding:13px 14px;overflow:auto;max-height:300px;font-size:12px;line-height:1.58;color:#cbd5e1;white-space:pre-wrap;word-break:break-word}
 
-.bar{height:8px;background:#0a0f18;border:1px solid var(--line);border-radius:99px;overflow:hidden;margin-top:8px}
-.bar>span{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--ok));transition:width .25s}
+.bar{height:8px;background:rgba(7,10,17,.85);border:1px solid var(--border);border-radius:99px;overflow:hidden}
+.bar>span{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--ok));border-radius:99px;transition:width .3s ease}
+.mini-bar{width:80px;height:6px;background:rgba(255,255,255,.06);border-radius:99px;overflow:hidden;display:inline-block;vertical-align:middle;margin-right:6px}
+.mini-bar>span{display:block;height:100%;background:linear-gradient(90deg,var(--accent),var(--violet));border-radius:99px}
 
-.kv{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 14px;font-size:12px}
-.kv-item{display:flex;justify-content:space-between;gap:8px;border-bottom:1px dashed var(--line);padding:4px 0}
+.kv{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px 18px;font-size:12.5px}
+.kv-item{display:flex;justify-content:space-between;align-items:center;gap:8px;border-bottom:1px dashed var(--border);padding:5px 0}
 .kv-item span:first-child{color:var(--muted)}
 
-.pager{display:flex;align-items:center;justify-content:space-between;margin-top:10px;gap:10px}
-.seg{display:inline-flex;background:#0c111b;border:1px solid var(--line2);border-radius:8px;padding:2px}
-.seg button{background:transparent;border:none;border-radius:6px;padding:5px 12px;color:var(--muted);cursor:pointer}
-.seg button.active{background:var(--panel2);color:#fff;font-weight:600}
+.pager{display:flex;align-items:center;justify-content:space-between;margin-top:12px;gap:10px;flex-wrap:wrap}
+.seg{display:inline-flex;background:rgba(7,10,17,.8);border:1px solid var(--border-hi);border-radius:9px;padding:3px;gap:2px}
+.seg button{background:transparent;border:none;border-radius:7px;padding:5.5px 13px;color:var(--muted);cursor:pointer;font-weight:500;transition:.14s}
+.seg button.active{background:var(--surface3);color:#fff;box-shadow:0 2px 8px rgba(0,0,0,.25)}
+
+.switch{display:inline-flex;align-items:center;gap:7px;cursor:pointer;font-size:12px;color:var(--muted);user-select:none}
+.switch input{width:14px;height:14px;accent-color:var(--accent);cursor:pointer}
 
 .hidden{display:none!important}
-.overlay{position:fixed;inset:0;background:rgba(5,8,14,.78);backdrop-filter:blur(4px);display:grid;place-items:center;z-index:100;padding:16px}
-.modal{background:var(--panel);border:1px solid var(--line2);border-radius:12px;max-width:760px;width:100%;max-height:86vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.5)}
-.modal-hd{display:flex;align-items:center;justify-content:space-between;padding:13px 16px;border-bottom:1px solid var(--line)}
-.modal-hd h3{margin:0;font-size:14px}
-.modal-bd{padding:16px;overflow:auto;display:flex;flex-direction:column;gap:12px}
-.modal-ft{padding:12px 16px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+.overlay{position:fixed;inset:0;background:rgba(4,7,13,.8);backdrop-filter:blur(6px);display:grid;place-items:center;z-index:100;padding:18px;animation:fadeIn .14s ease}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.modal{background:var(--surface);border:1px solid var(--border-hi);border-radius:14px;max-width:780px;width:100%;max-height:86vh;display:flex;flex-direction:column;overflow:hidden;box-shadow:0 24px 70px rgba(0,0,0,.6)}
+.modal.sm{max-width:440px}
+.modal-hd{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid var(--border)}
+.modal-hd h3{margin:0;font-size:14.5px;font-weight:650}
+.modal-bd{padding:18px;overflow:auto;display:flex;flex-direction:column;gap:13px}
+.modal-ft{padding:12px 18px;border-top:1px solid var(--border);display:flex;justify-content:flex-end;gap:8px;background:rgba(7,10,17,.35)}
 
-.auth-card{background:var(--panel);border:1px solid var(--line2);border-radius:12px;padding:24px;width:100%;max-width:420px;display:flex;flex-direction:column;gap:14px}
-.auth-card h2{margin:0;font-size:17px}
-.toast{position:fixed;right:20px;bottom:20px;background:var(--panel2);border:1px solid var(--line2);border-radius:8px;padding:9px 14px;font-size:12.5px;z-index:200;box-shadow:0 10px 30px rgba(0,0,0,.45);transition:.2s}
-.toast.ok{border-color:rgba(34,197,94,.5);color:#86efac}
-.toast.err{border-color:rgba(239,68,68,.5);color:#fca5a5}
+.auth-card{background:linear-gradient(180deg,var(--surface2),var(--surface));border:1px solid var(--border-hi);border-radius:16px;padding:28px;width:100%;max-width:430px;display:flex;flex-direction:column;gap:16px;box-shadow:var(--shadow)}
+.auth-card h2{margin:0;font-size:18px;font-weight:700}
+.toast{position:fixed;right:22px;bottom:22px;background:var(--surface2);border:1px solid var(--border-hi);border-radius:10px;padding:10px 15px;font-size:12.8px;z-index:200;box-shadow:var(--shadow);display:flex;align-items:center;gap:8px;animation:fadeIn .14s ease}
+.toast.ok{border-color:rgba(16,185,129,.55);color:#6ee7b7}
+.toast.err{border-color:rgba(239,68,68,.55);color:#fca5a5}
 
-@media(max-width:960px){
+@media(max-width:1024px){
   .app{grid-template-columns:1fr}
-  .side{position:static;height:auto;border-right:none;border-bottom:1px solid var(--line)}
+  .side{position:static;height:auto;border-right:none;border-bottom:1px solid var(--border);padding:14px}
   .nav{flex-direction:row;flex-wrap:wrap}
   .nav button{width:auto}
+  .side-foot{display:none}
   .g4,.g3{grid-template-columns:repeat(2,minmax(0,1fr))}
 }
 @media(max-width:640px){
+  .topbar,.content{padding-left:14px;padding-right:14px}
   .g4,.g3,.g2,.kv{grid-template-columns:1fr}
-  .content{padding:14px}
 }
 </style>
 </head>
@@ -155,26 +213,56 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
 <div class="app">
   <aside class="side">
     <div class="brand">
-      <div class="logo">A</div>
+      <div class="logo">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2a7 7 0 0 1 7 7c0 2.5-1.3 4.7-3.3 6l-.7 3H9l-.7-3A7 7 0 0 1 12 2Z"/><path d="M9 21h6"/></svg>
+      </div>
       <div>
         <h1>atbrains</h1>
-        <span id="srv-ver">v2.1 · multi-agent</span>
+        <span id="srv-ver">Control Plane</span>
       </div>
     </div>
-    <nav class="nav" id="nav">
-      <button data-tab="agents" class="active"><span>Agents &amp; 令牌</span><span class="cnt" id="cnt-agents">-</span></button>
-      <button data-tab="system"><span>数据库与状态</span><span class="cnt" id="cnt-sys">-</span></button>
-      <button data-tab="memories"><span>记忆库</span><span class="cnt" id="cnt-mem">-</span></button>
-      <button data-tab="turns"><span>对话与会话</span><span class="cnt" id="cnt-turns">-</span></button>
-      <button data-tab="live"><span>实时与检索</span><span class="cnt" id="cnt-live">-</span></button>
-    </nav>
+
+    <div>
+      <div class="nav-grp-lbl">控制台</div>
+      <nav class="nav" id="nav">
+        <button data-tab="agents" class="active">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+          <span class="lbl">Agents &amp; 令牌</span>
+          <span class="cnt" id="cnt-agents">-</span>
+        </button>
+        <button data-tab="system">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/><path d="M3 12c0 1.66 4 3 9 3s9-1.34 9-3"/></svg>
+          <span class="lbl">数据库与状态</span>
+          <span class="cnt" id="cnt-sys">-</span>
+        </button>
+        <button data-tab="memories">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+          <span class="lbl">记忆库</span>
+          <span class="cnt" id="cnt-mem">-</span>
+        </button>
+        <button data-tab="turns">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+          <span class="lbl">对话与会话</span>
+          <span class="cnt" id="cnt-turns">-</span>
+        </button>
+        <button data-tab="live">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>
+          <span class="lbl">实时与检索</span>
+          <span class="cnt" id="cnt-live">-</span>
+        </button>
+      </nav>
+    </div>
+
     <div class="side-foot">
-      <div class="health-col">
-        <div class="h-row"><span><i class="dot" id="d-db"></i>MariaDB</span><span id="s-db" class="mono">-</span></div>
-        <div class="h-row"><span><i class="dot" id="d-rd"></i>Redis</span><span id="s-rd" class="mono">-</span></div>
-        <div class="h-row"><span><i class="dot" id="d-qd"></i>Qdrant</span><span id="s-qd" class="mono">-</span></div>
+      <div class="health-box">
+        <div class="h-row"><span class="name"><i class="dot" id="d-db"></i>MariaDB</span><span id="s-db" class="meta mono num">-</span></div>
+        <div class="h-row"><span class="name"><i class="dot" id="d-rd"></i>Redis</span><span id="s-rd" class="meta mono num">-</span></div>
+        <div class="h-row"><span class="name"><i class="dot" id="d-qd"></i>Qdrant</span><span id="s-qd" class="meta mono num">-</span></div>
       </div>
-      <button class="btn sm ghost" id="btn-logout">切换令牌 / 退出</button>
+      <button class="btn sm ghost" id="btn-logout">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        切换管理员令牌
+      </button>
     </div>
   </aside>
 
@@ -182,13 +270,14 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     <header class="topbar">
       <div class="topbar-l">
         <h2 id="page-title">Agents &amp; 令牌管理</h2>
-        <span class="badge b-dim mono" id="srv-ts">-</span>
+        <span class="badge b-dim mono num" id="srv-ts">-</span>
       </div>
       <div class="topbar-r">
-        <label class="small muted" style="display:inline-flex;align-items:center;gap:5px;cursor:pointer">
-          <input type="checkbox" id="chk-auto" checked> 自动刷新(15s)
-        </label>
-        <button class="btn sm" id="btn-refresh">刷新</button>
+        <label class="switch"><input type="checkbox" id="chk-auto" checked> 自动刷新 15s</label>
+        <button class="btn sm" id="btn-refresh">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/><path d="M16 16h5v5"/></svg>
+          刷新
+        </button>
       </div>
     </header>
 
@@ -198,24 +287,14 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
 
         <div class="card">
           <div class="card-hd">
-            <h3>签发 Agent 独立令牌</h3>
-            <span class="small muted">每个客户端 / 节点使用独立 Token，服务端按 Token 自动绑定 <span class="mono">machine | agent</span> 与客户端类型</span>
+            <h3>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="16"/><line x1="8" y1="12" x2="16" y2="12"/></svg>
+              签发 Agent 独立令牌
+            </h3>
+            <span class="small muted">目标标识预览：<code id="name-preview" style="color:var(--accent-hi)">host|hermes</code></span>
           </div>
+          <div class="client-picker" id="client-picker"></div>
           <div class="form-row">
-            <div class="field">
-              <label>客户端类型</label>
-              <select id="f-client">
-                <option value="hermes">Hermes (Plugin)</option>
-                <option value="astrbot">AstrBot</option>
-                <option value="dsh">DSH / Koishi</option>
-                <option value="claude-code">Claude Code (MCP)</option>
-                <option value="codex">Codex (MCP)</option>
-                <option value="cursor">Cursor (MCP)</option>
-                <option value="python-sdk">Python SDK</option>
-                <option value="mcp">通用 MCP</option>
-                <option value="custom">自定义 HTTP</option>
-              </select>
-            </div>
             <div class="field">
               <label>主机 / 节点 (machine)</label>
               <input id="f-machine" placeholder="如 x260 / macbook / prod">
@@ -225,23 +304,26 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
               <input id="f-agent" placeholder="如 hermes / codex-work">
             </div>
             <div class="field">
-              <label>角色 (role)</label>
+              <label>权限角色 (role)</label>
               <select id="f-role">
-                <option value="agent">agent（标准隔离）</option>
-                <option value="admin">admin（管理权限）</option>
+                <option value="agent">agent · 独立隔离</option>
+                <option value="admin">admin · 管理权限</option>
               </select>
             </div>
             <div class="field grow">
-              <label>自定义令牌名（可选，默认 machine|agent）</label>
-              <input id="f-name" placeholder="留空自动生成 machine|agent">
+              <label>自定义令牌名（可选，留空自动拼 machine|agent）</label>
+              <input id="f-name" placeholder="留空自动生成">
             </div>
-            <button class="btn pri" id="btn-issue">签发令牌</button>
+            <button class="btn pri" id="btn-issue">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+              签发令牌
+            </button>
           </div>
         </div>
 
         <div id="secret-panel" class="secret-box hidden">
           <div class="card-hd" style="margin:0">
-            <h3 id="secret-title">已签发令牌（明文仅展示一次）</h3>
+            <h3 id="secret-title" style="color:#6ee7b7">已签发令牌</h3>
             <div class="act-grp">
               <button class="btn sm ok" id="btn-copy-tok">复制令牌</button>
               <button class="btn sm" id="btn-copy-snip">复制客户端配置</button>
@@ -258,23 +340,26 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
 
         <div class="card">
           <div class="card-hd">
-            <h3>已接入 Agent 与令牌列表</h3>
+            <h3>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+              已接入 Agent 与令牌列表
+            </h3>
             <div class="form-row" style="gap:8px">
               <div class="pills" id="client-filters"></div>
-              <input id="tok-q" placeholder="筛选名称 / 主机 / IP" style="width:190px">
+              <input id="tok-q" placeholder="搜索名称 / 主机 / IP" style="width:200px">
             </div>
           </div>
           <div class="tbl-wrap">
             <table>
               <thead>
                 <tr>
-                  <th>连接状态</th>
+                  <th>状态</th>
                   <th>客户端</th>
                   <th>身份 (machine | agent)</th>
                   <th>角色</th>
                   <th>令牌掩码</th>
-                  <th>记忆(活/总)</th>
-                  <th>最近通道 / IP / 请求数</th>
+                  <th>记忆 (活/总)</th>
+                  <th>最近通道 / IP / 请求</th>
                   <th>最后活跃</th>
                   <th>操作</th>
                 </tr>
@@ -291,11 +376,11 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
           <div class="card">
             <div class="card-hd">
               <h3>按 Agent 记忆分布</h3>
-              <span class="small muted">点击条目跳转记忆库筛选</span>
+              <span class="small muted">按写入方统计活跃与总量</span>
             </div>
             <div class="tbl-wrap">
               <table>
-                <thead><tr><th>Agent</th><th>活跃记忆</th><th>总计</th><th>占比</th><th>操作</th></tr></thead>
+                <thead><tr><th>Agent</th><th>活跃 / 总计</th><th>占比</th><th>操作</th></tr></thead>
                 <tbody id="tb-agent-dist"></tbody>
               </table>
             </div>
@@ -303,16 +388,16 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
           <div class="card">
             <div class="card-hd">
               <h3>库维护与诊断</h3>
-              <span class="small muted">即时触发服务端运维操作</span>
+              <span class="small muted">即时触发服务端运维接口</span>
             </div>
-            <div class="form-row" style="gap:8px;margin-bottom:12px">
+            <div class="form-row" style="gap:8px;margin-bottom:14px">
               <button class="btn sm pri" data-op="drain">增量补齐向量</button>
               <button class="btn sm warn" data-op="drain-force">全量重建向量</button>
-              <button class="btn sm ok" data-op="doctor">运行体检 (doctor)</button>
-              <button class="btn sm" data-op="prune-dry">清理预演 (dry-run)</button>
+              <button class="btn sm ok" data-op="doctor">系统体检</button>
+              <button class="btn sm" data-op="prune-dry">清理预演</button>
               <button class="btn sm err" data-op="prune-run">执行过期清理</button>
             </div>
-            <pre class="code" id="op-out">等待执行操作…</pre>
+            <pre class="code" id="op-out">选择上方运维指令以查看输出…</pre>
           </div>
         </div>
       </section>
@@ -321,22 +406,21 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
         <div class="card">
           <div class="card-hd">
             <h3>记忆库浏览</h3>
-            <div class="act-grp">
-              <button class="btn sm pri" id="btn-open-new-mem">+ 写入记忆</button>
-            </div>
+            <button class="btn sm pri" id="btn-open-new-mem">+ 写入记忆</button>
           </div>
-          <div class="form-row" style="margin-bottom:12px">
+          <div class="form-row" style="margin-bottom:14px">
             <div class="field"><label>Agent</label><input id="m-agent" placeholder="全部"></div>
             <div class="field"><label>主机 (machine)</label><input id="m-machine" placeholder="全部"></div>
             <div class="field">
               <label>类型 (kind)</label>
               <select id="m-kind">
-                <option value="">全部</option>
+                <option value="">全部类型</option>
                 <option value="fact">fact</option>
                 <option value="preference">preference</option>
                 <option value="decision">decision</option>
                 <option value="event">event</option>
                 <option value="note">note</option>
+                <option value="todo">todo</option>
               </select>
             </div>
             <div class="field">
@@ -347,7 +431,7 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
                 <option value="all">全部</option>
               </select>
             </div>
-            <div class="field grow"><label>内容关键词</label><input id="m-q" placeholder="搜索记忆内容"></div>
+            <div class="field grow"><label>关键词</label><input id="m-q" placeholder="搜索记忆内容…"></div>
             <button class="btn pri" id="btn-m-search">查询</button>
             <button class="btn" id="btn-m-reset">重置</button>
           </div>
@@ -369,7 +453,7 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
             </table>
           </div>
           <div class="pager">
-            <span class="small muted" id="m-info">-</span>
+            <span class="small muted num" id="m-info">-</span>
             <div class="act-grp">
               <button class="btn sm" id="m-prev">上一页</button>
               <button class="btn sm" id="m-next">下一页</button>
@@ -387,8 +471,8 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
             </div>
             <div class="form-row" style="gap:8px">
               <input id="t-machine" placeholder="主机 machine" style="width:130px">
-              <input id="t-session" placeholder="session_id" style="width:180px">
-              <input id="t-q" placeholder="关键词" style="width:180px">
+              <input id="t-session" placeholder="session_id" style="width:185px">
+              <input id="t-q" placeholder="关键词" style="width:185px">
               <button class="btn sm pri" id="btn-t-search">筛选</button>
               <button class="btn sm" id="btn-t-reset">重置</button>
             </div>
@@ -401,7 +485,7 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
               </table>
             </div>
             <div class="pager">
-              <span class="small muted" id="t-info">-</span>
+              <span class="small muted num" id="t-info">-</span>
               <div class="act-grp">
                 <button class="btn sm" id="t-prev">上一页</button>
                 <button class="btn sm" id="t-next">下一页</button>
@@ -416,7 +500,7 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
               </table>
             </div>
             <div class="pager">
-              <span class="small muted" id="s-info">-</span>
+              <span class="small muted num" id="s-info">-</span>
               <div class="act-grp">
                 <button class="btn sm" id="s-prev">上一页</button>
                 <button class="btn sm" id="s-next">下一页</button>
@@ -430,17 +514,17 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
         <div class="card">
           <div class="card-hd"><h3>混合语义 / 关键词检索</h3></div>
           <div class="form-row">
-            <div class="field grow"><input id="q-search" placeholder="输入语义或关键词，同时检索记忆库与对话轮次"></div>
-            <div class="field" style="min-width:90px">
+            <div class="field grow"><input id="q-search" placeholder="输入语义或关键词，同时检索记忆库与对话轮次…"></div>
+            <div class="field" style="min-width:100px">
               <select id="q-limit"><option value="10">Top 10</option><option value="20">Top 20</option><option value="40">Top 40</option></select>
             </div>
             <button class="btn pri" id="btn-q-search">检索</button>
           </div>
-          <div id="search-res" class="grid g2" style="margin-top:12px"></div>
+          <div id="search-res" class="grid g2" style="margin-top:14px"></div>
         </div>
         <div class="grid g2">
           <div class="card">
-            <div class="card-hd"><h3>Redis 热记忆缓存</h3><span class="small muted" id="hot-cnt">-</span></div>
+            <div class="card-hd"><h3>Redis 热记忆缓存</h3><span class="badge b-dim num" id="hot-cnt">-</span></div>
             <div class="tbl-wrap">
               <table>
                 <thead><tr><th>ID</th><th>类型</th><th>Agent</th><th>内容</th></tr></thead>
@@ -449,10 +533,10 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
             </div>
           </div>
           <div class="card">
-            <div class="card-hd"><h3>Redis 最近对话流</h3><span class="small muted" id="stream-cnt">-</span></div>
+            <div class="card-hd"><h3>Redis 最近对话流</h3><span class="badge b-dim num" id="stream-cnt">-</span></div>
             <div class="tbl-wrap">
               <table>
-                <thead><tr><th>会话</th><th>主机 / Agent</th><th>摘要</th><th>时间</th></tr></thead>
+                <thead><tr><th>会话</th><th>主机 / Agent</th><th>用户摘要</th><th>时间</th></tr></thead>
                 <tbody id="tb-stream"></tbody>
               </table>
             </div>
@@ -465,21 +549,23 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
 
 <div id="auth-overlay" class="overlay hidden">
   <form class="auth-card" id="auth-form">
-    <div style="display:flex;align-items:center;gap:10px">
-      <div class="logo">A</div>
+    <div style="display:flex;align-items:center;gap:12px">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 2a7 7 0 0 1 7 7c0 2.5-1.3 4.7-3.3 6l-.7 3H9l-.7-3A7 7 0 0 1 12 2Z"/><path d="M9 21h6"/></svg>
+      </div>
       <div>
-        <h2>atbrains 管理认证</h2>
-        <div class="small muted">输入控制台令牌 (.token) 或任意 admin 角色 Bearer 令牌</div>
+        <h2>atbrains 控制中心</h2>
+        <div class="small muted">使用服务端 <span class="mono">.token</span> 或 <span class="mono">role=admin</span> 令牌登录</div>
       </div>
     </div>
     <input id="auth-input" type="password" placeholder="粘贴管理员令牌…" autocomplete="current-password" required>
     <div id="auth-err" class="small" style="color:var(--err);min-height:16px"></div>
-    <button class="btn pri" type="submit" style="justify-content:center;padding:9px">验证并进入控制台</button>
+    <button class="btn pri" id="auth-submit" type="submit" style="padding:10px">验证并进入</button>
   </form>
 </div>
 
 <div id="modal-overlay" class="overlay hidden">
-  <div class="modal">
+  <div class="modal" id="modal-box">
     <div class="modal-hd">
       <h3 id="modal-title">详情</h3>
       <button class="btn sm ghost" id="modal-close">✕</button>
@@ -497,17 +583,18 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
   const $$ = s => Array.from(document.querySelectorAll(s));
   const LS_KEY = "atbrains_admin_token";
 
-  const CLIENT_META = {
-    "hermes":      {label:"Hermes",      cls:"b-violet", defAgent:"hermes"},
-    "astrbot":     {label:"AstrBot",     cls:"b-info",   defAgent:"astrbot"},
-    "dsh":         {label:"DSH",         cls:"b-warn",   defAgent:"dsh"},
-    "claude-code": {label:"Claude Code", cls:"b-blue",   defAgent:"claude-code"},
-    "codex":       {label:"Codex",       cls:"b-ok",     defAgent:"codex"},
-    "cursor":      {label:"Cursor",      cls:"b-blue",   defAgent:"cursor"},
-    "python-sdk":  {label:"Python SDK",  cls:"b-info",   defAgent:"sdk"},
-    "mcp":         {label:"MCP",         cls:"b-blue",   defAgent:"mcp"},
-    "custom":      {label:"Custom",      cls:"b-dim",    defAgent:"custom"},
-  };
+  const CLIENTS = [
+    {id:"hermes",      label:"Hermes",      cls:"b-violet", color:"#a855f7", defAgent:"hermes"},
+    {id:"astrbot",     label:"AstrBot",     cls:"b-info",   color:"#06b6d4", defAgent:"astrbot"},
+    {id:"dsh",         label:"DSH",         cls:"b-warn",   color:"#f59e0b", defAgent:"dsh"},
+    {id:"claude-code", label:"Claude Code", cls:"b-blue",   color:"#3b82f6", defAgent:"claude-code"},
+    {id:"codex",       label:"Codex",       cls:"b-ok",     color:"#10b981", defAgent:"codex"},
+    {id:"cursor",      label:"Cursor",      cls:"b-blue",   color:"#60a5fa", defAgent:"cursor"},
+    {id:"python-sdk",  label:"Python SDK",  cls:"b-info",   color:"#22d3ee", defAgent:"sdk"},
+    {id:"mcp",         label:"MCP",         cls:"b-blue",   color:"#818cf8", defAgent:"mcp"},
+    {id:"custom",      label:"Custom",      cls:"b-dim",    color:"#94a3b8", defAgent:"custom"},
+  ];
+  const CLIENT_MAP = Object.fromEntries(CLIENTS.map(c => [c.id, c]));
 
   const TITLES = {
     agents: "Agents & 令牌管理",
@@ -521,6 +608,7 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     token: localStorage.getItem(LS_KEY) || "",
     tab: "agents",
     turnSub: "turns",
+    selectedClient: "hermes",
     clientFilter: "all",
     overview: null,
     tokens: [],
@@ -546,31 +634,45 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     return (i ? n.toFixed(1) : n) + " " + u[i];
   }
 
+  function fmtTs(v) {
+    if (v == null || v === "") return "-";
+    if (typeof v === "number" || /^\d+(\.\d+)?$/.test(String(v).trim())) {
+      const n = Number(v);
+      if (!n) return "-";
+      const d = new Date(n > 1e12 ? n : n * 1000);
+      if (!isNaN(d.getTime())) {
+        const pad = x => String(x).padStart(2, "0");
+        return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+      }
+    }
+    return String(v).replace("T", " ").replace("Z", "").slice(0, 19);
+  }
+
   function fmtAgo(iso) {
     if (!iso) return "从未连接";
     const t = Date.parse(iso);
     if (isNaN(t)) return iso;
     const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
-    if (s < 60) return s + "秒前";
-    if (s < 3600) return Math.floor(s / 60) + "分钟前";
-    if (s < 86400) return Math.floor(s / 3600) + "小时前";
-    return Math.floor(s / 86400) + "天前";
+    if (s < 60) return s + " 秒前";
+    if (s < 3600) return Math.floor(s / 60) + " 分钟前";
+    if (s < 86400) return Math.floor(s / 3600) + " 小时前";
+    return Math.floor(s / 86400) + " 天前";
   }
 
   function clientBadge(client) {
     const key = (client || "").toLowerCase();
-    const m = CLIENT_META[key];
-    if (m) return `<span class="badge ${m.cls}">${esc(m.label)}</span>`;
+    const m = CLIENT_MAP[key];
+    if (m) return `<span class="badge ${m.cls}"><i style="width:6px;height:6px;border-radius:50%;background:${m.color}"></i>${esc(m.label)}</span>`;
     return key ? `<span class="badge b-dim">${esc(key)}</span>` : `<span class="badge b-dim">未标记</span>`;
   }
 
   let toastTimer = null;
   function toast(msg, type = "ok") {
     const el = $("#toast");
-    el.textContent = msg;
+    el.innerHTML = `<i class="dot ${type === "ok" ? "ok" : "err"}"></i><span>${esc(msg)}</span>`;
     el.className = "toast " + type;
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => el.classList.add("hidden"), 2600);
+    toastTimer = setTimeout(() => el.classList.add("hidden"), 2800);
   }
 
   async function copyText(txt, msg = "已复制到剪贴板") {
@@ -599,7 +701,8 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     $("#auth-err").textContent = "";
   }
 
-  function openModal(title, bodyHtml, footHtml = "") {
+  function openModal(title, bodyHtml, footHtml = "", small = false) {
+    $("#modal-box").classList.toggle("sm", !!small);
     $("#modal-title").textContent = title;
     $("#modal-body").innerHTML = bodyHtml;
     $("#modal-foot").innerHTML = footHtml;
@@ -608,6 +711,27 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
 
   function closeModal() {
     $("#modal-overlay").classList.add("hidden");
+  }
+
+  function confirmModal(title, message, confirmLabel, btnCls, onConfirm) {
+    openModal(
+      title,
+      `<div style="color:var(--fg2);line-height:1.6">${esc(message)}</div>`,
+      `<button class="btn" id="cf-cancel">取消</button><button class="btn ${btnCls}" id="cf-ok">${esc(confirmLabel)}</button>`,
+      true
+    );
+    $("#cf-cancel").onclick = closeModal;
+    $("#cf-ok").onclick = async () => {
+      const btn = $("#cf-ok");
+      btn.disabled = true;
+      try {
+        await onConfirm();
+        closeModal();
+      } catch (err) {
+        btn.disabled = false;
+        toast(err.message || "操作失败", "err");
+      }
+    };
   }
 
   async function api(path, opts = {}) {
@@ -627,13 +751,28 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     const res = await fetch(path, init);
     const data = await res.json().catch(() => ({}));
     if (res.status === 401 || res.status === 403) {
-      showAuth(data.error || "令牌无效或权限不足（需要 admin / .token）");
+      showAuth(data.error || "令牌无效或权限不足（需要 .token 或 admin 令牌）");
       throw new Error(data.error || "unauthorized");
     }
     if (!res.ok || data.ok === false) {
       throw new Error(data.error || `HTTP ${res.status}`);
     }
     return data;
+  }
+
+  function updateNamePreview() {
+    const custom = $("#f-name").value.trim();
+    const mach = $("#f-machine").value.trim();
+    const ag = $("#f-agent").value.trim() || (CLIENT_MAP[state.selectedClient]?.defAgent || "agent");
+    $("#name-preview").textContent = custom || (mach ? `${mach}|${ag}` : ag);
+  }
+
+  function renderClientPicker() {
+    $("#client-picker").innerHTML = CLIENTS.map(c =>
+      `<button type="button" class="c-chip ${state.selectedClient === c.id ? "active" : ""}" data-pick="${esc(c.id)}">
+        <span class="sw" style="background:${c.color}"></span>${esc(c.label)}
+      </button>`
+    ).join("");
   }
 
   function buildSnippet(info) {
@@ -646,10 +785,10 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
       return `# 1) ~/.hermes/atbrains.json\n{\n  "service_url": "${base}"\n}\n\n# 2) ~/.hermes/.env\nATBRAINS_TOKEN=${tok}`;
     }
     if (c === "astrbot") {
-      return `# AstrBot atbrains 插件配置\nservice_url: "${base}"\ntoken: "${tok}"\nmachine: "${mach}"\nagent: "${ag}"`;
+      return `# AstrBot 环境变量或 ~/.config/atbrains/client.json + .env\nATBRAINS_URL=${base}\nATBRAINS_TOKEN=${tok}\n# 身份绑定: ${mach} | ${ag}`;
     }
     if (c === "dsh") {
-      return `# cordis.patch.yml (atbrains 插件段)\natbrains:\n  serviceUrl: "${base}"\n  token: "${tok}"`;
+      return `# 1) 环境变量\nexport ATBRAINS_MCP_TOKEN="${tok}"\n\n# 2) cordis.patch.yml\nbaseUrl: "${base}"`;
     }
     if (c === "claude-code" || c === "codex" || c === "cursor" || c === "mcp") {
       return JSON.stringify({
@@ -672,12 +811,13 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
 
   function showSecret(info, actionLabel) {
     state.lastSecret = info;
-    $("#secret-title").textContent = `${actionLabel}：${info.name}（明文仅显示本次，请立即保存）`;
-    $("#secret-client").textContent = (CLIENT_META[info.client]?.label) || info.client || "custom";
+    $("#secret-title").textContent = `${actionLabel}：${info.name}（明文仅展示本次，请立即保存）`;
+    $("#secret-client").textContent = (CLIENT_MAP[info.client]?.label) || info.client || "custom";
     $("#secret-name").textContent = `${info.machine || "-"} | ${info.agent || "-"} · ${info.role}`;
     $("#secret-val").textContent = info.token;
     $("#secret-snip").textContent = buildSnippet(info);
     $("#secret-panel").classList.remove("hidden");
+    $("#secret-panel").scrollIntoView({behavior: "smooth", block: "nearest"});
   }
 
   function renderHealth(ov) {
@@ -687,12 +827,12 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     const my = stats.mysql || {};
     const rd = stats.redis || {};
     const qd = ov.qdrant || {};
-    $("#srv-ver").textContent = `proto ${ov.version || "-"} · srv ${ov.server_version || "-"}`;
-    $("#srv-ts").textContent = ov.ts || "-";
+    $("#srv-ver").textContent = `proto ${ov.version || "-"} · v${ov.server_version || "-"}`;
+    $("#srv-ts").textContent = fmtTs(ov.ts);
     $("#d-db").className = "dot " + (ping.mariadb ? "ok" : "err");
     $("#s-db").textContent = ping.mariadb ? fmtBytes(my.size_bytes) : "DOWN";
     $("#d-rd").className = "dot " + (ping.redis ? "ok" : "err");
-    $("#s-rd").textContent = ping.redis ? (rd.used_memory || `${rd.keys || 0}k`) : "DOWN";
+    $("#s-rd").textContent = ping.redis ? (rd.used_memory || `${rd.keys || 0} keys`) : "DOWN";
     const qOk = qd.status === "green" || qd.status === "ok" || (!qd.error && qd.points != null);
     $("#d-qd").className = "dot " + (qOk ? "ok" : (qd.error ? "err" : "warn"));
     $("#s-qd").textContent = qOk ? `${qd.points ?? 0} pts` : "WARN";
@@ -715,14 +855,30 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     const onlineCnt = toks.filter(t => t.online).length;
     const clients = new Set(toks.map(t => t.client).filter(Boolean));
     const totalReqs = toks.reduce((s, t) => s + Number(t.requests || 0), 0);
-    const activeMem = state.overview?.stats?.mysql?.memories_active ?? "-";
+    const my = state.overview?.stats?.mysql || {};
     $("#cnt-agents").textContent = `${onlineCnt}/${toks.length}`;
 
     $("#ag-kpis").innerHTML = `
-      <div class="card kpi"><div class="label">已签发令牌</div><div class="val">${toks.length}</div><div class="sub">Admin ${toks.filter(t => t.role === "admin").length} · Agent ${toks.filter(t => t.role !== "admin").length}</div></div>
-      <div class="card kpi"><div class="label">在线 Agent (5分钟内)</div><div class="val" style="color:${onlineCnt ? "var(--ok)" : "var(--muted)"}">${onlineCnt}</div><div class="sub">累计处理请求 ${totalReqs} 次</div></div>
-      <div class="card kpi"><div class="label">客户端类型</div><div class="val">${clients.size}</div><div class="sub">${clients.size ? Array.from(clients).slice(0, 4).join(" / ") : "暂无标记"}</div></div>
-      <div class="card kpi"><div class="label">活跃记忆总量</div><div class="val">${activeMem}</div><div class="sub">会话 ${state.overview?.stats?.mysql?.sessions ?? "-"} · 轮次 ${state.overview?.stats?.mysql?.turns ?? "-"}</div></div>
+      <div class="card kpi" style="--kpi-bar:linear-gradient(90deg,#3b82f6,transparent)">
+        <div class="kpi-top"><span class="label">已签发令牌</span><span class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5"/></svg></span></div>
+        <div class="val num">${toks.length}</div>
+        <div class="sub">Admin ${toks.filter(t => t.role === "admin").length} · Agent ${toks.filter(t => t.role !== "admin").length}</div>
+      </div>
+      <div class="card kpi" style="--kpi-bar:linear-gradient(90deg,#10b981,transparent)">
+        <div class="kpi-top"><span class="label">在线 Agent (5m)</span><span class="ic" style="color:var(--ok)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg></span></div>
+        <div class="val num" style="color:${onlineCnt ? "var(--ok)" : "var(--fg)"}">${onlineCnt}</div>
+        <div class="sub num">累计处理请求 ${totalReqs} 次</div>
+      </div>
+      <div class="card kpi" style="--kpi-bar:linear-gradient(90deg,#a855f7,transparent)">
+        <div class="kpi-top"><span class="label">已区分客户端</span><span class="ic" style="color:var(--violet)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg></span></div>
+        <div class="val num">${clients.size}</div>
+        <div class="sub">${clients.size ? Array.from(clients).slice(0, 4).join(" · ") : "暂无标记"}</div>
+      </div>
+      <div class="card kpi" style="--kpi-bar:linear-gradient(90deg,#06b6d4,transparent)">
+        <div class="kpi-top"><span class="label">活跃记忆总量</span><span class="ic" style="color:var(--info)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/></svg></span></div>
+        <div class="val num">${my.memories_active ?? "-"}</div>
+        <div class="sub num">会话 ${my.sessions ?? "-"} · 轮次 ${my.turns ?? "-"}</div>
+      </div>
     `;
 
     const allClients = Array.from(new Set(toks.map(t => t.client || "unknown"))).sort();
@@ -732,7 +888,7 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     const pills = [`<button class="pill ${state.clientFilter === "all" ? "active" : ""}" data-cf="all">全部 (${toks.length})</button>`];
     for (const c of allClients) {
       const cnt = toks.filter(t => (t.client || "unknown") === c).length;
-      const lbl = CLIENT_META[c]?.label || (c === "unknown" ? "未标记" : c);
+      const lbl = CLIENT_MAP[c]?.label || (c === "unknown" ? "未标记" : c);
       pills.push(`<button class="pill ${state.clientFilter === c ? "active" : ""}" data-cf="${esc(c)}">${esc(lbl)} (${cnt})</button>`);
     }
     $("#client-filters").innerHTML = pills.join("");
@@ -752,27 +908,27 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     }
     tb.innerHTML = filtered.map(t => {
       const stat = t.online
-        ? `<span class="badge b-ok"><i class="dot ok" style="margin:0"></i>在线</span>`
-        : (t.requests ? `<span class="badge b-dim"><i class="dot" style="margin:0"></i>离线</span>` : `<span class="badge b-dim">未接入</span>`);
+        ? `<span class="badge b-ok"><i class="dot ok pulse"></i>在线</span>`
+        : (t.requests ? `<span class="badge b-dim"><i class="dot"></i>离线</span>` : `<span class="badge b-dim">未接入</span>`);
       const roleB = t.role === "admin" ? `<span class="badge b-warn">admin</span>` : `<span class="badge b-dim">agent</span>`;
       const am = memMap[String(t.agent || "").toLowerCase()];
-      const memTxt = am ? `<span class="mono">${am.active} / ${am.total}</span>` : `<span class="dim mono">0 / 0</span>`;
+      const memTxt = am ? `<span class="mono num"><b>${am.active}</b> <span class="muted">/ ${am.total}</span></span>` : `<span class="dim mono num">0 / 0</span>`;
       const chBadge = t.last_channel ? `<span class="badge b-info">${esc(t.last_channel)}</span>` : "";
       const actInfo = t.requests
-        ? `<div>${chBadge} <span class="mono">${esc(t.last_ip || "-")}</span> <span class="muted">(${t.requests}次)</span></div><div class="small dim clip" style="max-width:220px" title="${esc((t.last_path || "") + " " + (t.last_ua || ""))}">${esc(t.last_path || "")} ${esc(t.last_ua || "")}</div>`
+        ? `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">${chBadge}<span class="mono small">${esc(t.last_ip || "-")}</span><span class="muted small num">${t.requests}次</span></div><div class="small dim clip" style="max-width:220px;margin-top:2px" title="${esc((t.last_path || "") + " " + (t.last_ua || ""))}">${esc(t.last_path || "")} ${esc(t.last_ua || "")}</div>`
         : `<span class="dim">-</span>`;
       return `<tr>
         <td>${stat}</td>
         <td>${clientBadge(t.client)}</td>
         <td>
-          <div style="font-weight:600">${esc(t.name)}</div>
+          <div style="font-weight:600;color:#fff">${esc(t.name)}</div>
           <div class="small muted mono">${esc(t.machine || "-")} | ${esc(t.agent || "-")}</div>
         </td>
         <td>${roleB}</td>
-        <td class="mono muted">${esc(t.masked)}</td>
+        <td class="mono muted small">${esc(t.masked)}</td>
         <td>${memTxt}</td>
         <td>${actInfo}</td>
-        <td title="${esc(t.last_seen || "")}"><span class="small">${esc(fmtAgo(t.last_seen))}</span></td>
+        <td title="${esc(fmtTs(t.last_seen))}"><span class="small">${esc(fmtAgo(t.last_seen))}</span></td>
         <td>
           <div class="act-grp">
             <button class="btn sm" data-act="mem" data-agent="${esc(t.agent)}" data-machine="${esc(t.machine)}">记忆</button>
@@ -797,40 +953,51 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
 
     $("#sys-cards").innerHTML = `
       <div class="card">
-        <div class="card-hd"><h3>MariaDB</h3><span class="badge ${ping.mariadb ? "b-ok" : "b-err"}">${ping.mariadb ? "ONLINE" : "ERROR"}</span></div>
-        <div class="kv">
-          <div class="kv-item"><span>库容量</span><span class="mono">${fmtBytes(my.size_bytes)}</span></div>
-          <div class="kv-item"><span>活跃 / 总记忆</span><span class="mono">${my.memories_active ?? 0} / ${my.memories_total ?? 0}</span></div>
-          <div class="kv-item"><span>对话轮次</span><span class="mono">${my.turns ?? 0}</span></div>
-          <div class="kv-item"><span>会话数</span><span class="mono">${my.sessions ?? 0}</span></div>
-          <div class="kv-item"><span>活跃主张</span><span class="mono">${my.claims_active ?? 0}</span></div>
-          <div class="kv-item"><span>图谱实体/边</span><span class="mono">${my.entities ?? 0} / ${my.graph_edges ?? 0}</span></div>
+        <div class="card-hd">
+          <h3>MariaDB</h3>
+          <span class="badge ${ping.mariadb ? "b-ok" : "b-err"}"><i class="dot ${ping.mariadb ? "ok" : "err"}"></i>${ping.mariadb ? "ONLINE" : "ERROR"}</span>
         </div>
-        ${ping.mariadb_error ? `<div class="small" style="color:var(--err);margin-top:8px">${esc(ping.mariadb_error)}</div>` : ""}
+        <div class="kv">
+          <div class="kv-item"><span>库容量</span><span class="mono num">${fmtBytes(my.size_bytes)}</span></div>
+          <div class="kv-item"><span>活跃 / 总记忆</span><span class="mono num">${my.memories_active ?? 0} / ${my.memories_total ?? 0}</span></div>
+          <div class="kv-item"><span>对话轮次</span><span class="mono num">${my.turns ?? 0}</span></div>
+          <div class="kv-item"><span>会话数</span><span class="mono num">${my.sessions ?? 0}</span></div>
+          <div class="kv-item"><span>活跃主张</span><span class="mono num">${my.claims_active ?? 0}</span></div>
+          <div class="kv-item"><span>图谱实体/边</span><span class="mono num">${my.entities ?? 0} / ${my.graph_edges ?? 0}</span></div>
+        </div>
+        ${ping.mariadb_error ? `<div class="small" style="color:var(--err);margin-top:10px">${esc(ping.mariadb_error)}</div>` : ""}
       </div>
       <div class="card">
-        <div class="card-hd"><h3>Redis</h3><span class="badge ${ping.redis ? "b-ok" : "b-err"}">${ping.redis ? "ONLINE" : "ERROR"}</span></div>
-        <div class="kv">
-          <div class="kv-item"><span>内存占用</span><span class="mono">${esc(rd.used_memory || "-")}</span></div>
-          <div class="kv-item"><span>Key 总数</span><span class="mono">${rd.keys ?? 0}</span></div>
-          <div class="kv-item"><span>热记忆索引</span><span class="mono">${rd.hot_index ?? 0}</span></div>
-          <div class="kv-item"><span>近期对话流</span><span class="mono">${rd.recent_stream ?? 0}</span></div>
-          <div class="kv-item"><span>命中记忆数</span><span class="mono">${my.memories_accessed ?? 0}</span></div>
-          <div class="kv-item"><span>总命中次数</span><span class="mono">${my.access_total ?? 0}</span></div>
+        <div class="card-hd">
+          <h3>Redis</h3>
+          <span class="badge ${ping.redis ? "b-ok" : "b-err"}"><i class="dot ${ping.redis ? "ok" : "err"}"></i>${ping.redis ? "ONLINE" : "ERROR"}</span>
         </div>
-        ${ping.redis_error ? `<div class="small" style="color:var(--err);margin-top:8px">${esc(ping.redis_error)}</div>` : ""}
+        <div class="kv">
+          <div class="kv-item"><span>内存占用</span><span class="mono num">${esc(rd.used_memory || "-")}</span></div>
+          <div class="kv-item"><span>Key 总数</span><span class="mono num">${rd.keys ?? 0}</span></div>
+          <div class="kv-item"><span>热记忆索引</span><span class="mono num">${rd.hot_index ?? 0}</span></div>
+          <div class="kv-item"><span>近期对话流</span><span class="mono num">${rd.recent_stream ?? 0}</span></div>
+          <div class="kv-item"><span>命中记忆数</span><span class="mono num">${my.memories_accessed ?? 0}</span></div>
+          <div class="kv-item"><span>总命中次数</span><span class="mono num">${my.access_total ?? 0}</span></div>
+        </div>
+        ${ping.redis_error ? `<div class="small" style="color:var(--err);margin-top:10px">${esc(ping.redis_error)}</div>` : ""}
       </div>
       <div class="card">
-        <div class="card-hd"><h3>Qdrant 向量库</h3><span class="badge ${qd.error ? "b-err" : "b-ok"}">${esc(qd.status || (qd.error ? "ERROR" : "READY"))}</span></div>
+        <div class="card-hd">
+          <h3>Qdrant 向量库</h3>
+          <span class="badge ${qd.error ? "b-err" : "b-ok"}"><i class="dot ${qd.error ? "err" : "ok"}"></i>${esc(qd.status || (qd.error ? "ERROR" : "READY"))}</span>
+        </div>
         <div class="kv">
           <div class="kv-item"><span>集合</span><span class="mono">${esc(qd.collection || "-")}</span></div>
-          <div class="kv-item"><span>向量点数</span><span class="mono">${qd.points ?? 0}</span></div>
-          <div class="kv-item"><span>维度 / 距离</span><span class="mono">${qd.dim || "-"} / ${esc(qd.distance || "-")}</span></div>
-          <div class="kv-item"><span>覆盖 / 缺失</span><span class="mono">${vecN}/${actN} (缺 ${cov.missing_count ?? 0})</span></div>
+          <div class="kv-item"><span>向量点数</span><span class="mono num">${qd.points ?? 0}</span></div>
+          <div class="kv-item"><span>维度 / 距离</span><span class="mono num">${qd.dim || "-"} / ${esc(qd.distance || "-")}</span></div>
+          <div class="kv-item"><span>覆盖 / 缺失</span><span class="mono num">${vecN}/${actN} (缺 ${cov.missing_count ?? 0})</span></div>
         </div>
-        <div class="bar"><span style="width:${pct}%"></span></div>
-        <div class="small muted" style="margin-top:5px">向量覆盖率 ${pct}%</div>
-        ${qd.error ? `<div class="small" style="color:var(--err);margin-top:6px">${esc(qd.error)}</div>` : ""}
+        <div style="margin-top:12px">
+          <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:5px"><span class="muted">向量覆盖率</span><span class="mono num">${pct}%</span></div>
+          <div class="bar"><span style="width:${pct}%"></span></div>
+        </div>
+        ${qd.error ? `<div class="small" style="color:var(--err);margin-top:8px">${esc(qd.error)}</div>` : ""}
       </div>
     `;
 
@@ -839,13 +1006,12 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     $("#tb-agent-dist").innerHTML = agents.length ? agents.map(a => {
       const p = Math.round((Number(a.total || 0) / sum) * 100);
       return `<tr>
-        <td class="mono" style="font-weight:600">${esc(a.agent || "(空)")}</td>
-        <td class="mono">${a.active}</td>
-        <td class="mono muted">${a.total}</td>
-        <td class="mono">${p}%</td>
-        <td><button class="btn sm" data-jump-agent="${esc(a.agent || "")}">查看记忆</button></td>
+        <td class="mono" style="font-weight:600;color:#fff">${esc(a.agent || "(空)")}</td>
+        <td class="mono num"><b>${a.active}</b> <span class="muted">/ ${a.total}</span></td>
+        <td class="mono num"><span class="mini-bar"><span style="width:${p}%"></span></span>${p}%</td>
+        <td><button class="btn sm" data-jump-agent="${esc(a.agent || "")}">看记忆</button></td>
       </tr>`;
-    }).join("") : `<tr><td colspan="5" class="empty">暂无记忆数据</td></tr>`;
+    }).join("") : `<tr><td colspan="4" class="empty">暂无记忆数据</td></tr>`;
   }
 
   async function loadCore(fresh = false) {
@@ -874,13 +1040,13 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     state.mem.total = data.total || 0;
     const items = data.items || [];
     $("#tb-memories").innerHTML = items.length ? items.map(m => `<tr>
-      <td class="mono">#${m.id}</td>
+      <td class="mono num muted">#${m.id}</td>
       <td><span class="badge b-blue">${esc(m.kind || "-")}</span></td>
-      <td class="mono">${m.importance ?? "-"}</td>
-      <td class="mono small">${esc(m.machine || "-")} / <b>${esc(m.agent || "-")}</b></td>
+      <td class="mono num">${m.importance ?? "-"}</td>
+      <td class="mono small">${esc(m.machine || "-")} / <b style="color:#fff">${esc(m.agent || "-")}</b></td>
       <td>${m.active ? `<span class="badge b-ok">活跃</span>` : `<span class="badge b-dim">停用</span>`}</td>
       <td class="clip" title="${esc(m.content)}">${esc(m.content)}</td>
-      <td class="small muted mono">${esc(String(m.updated_at || "").slice(0, 19))}</td>
+      <td class="small muted mono num">${esc(fmtTs(m.updated_at))}</td>
       <td>
         <div class="act-grp">
           <button class="btn sm" data-mact="detail" data-id="${m.id}">详情</button>
@@ -910,12 +1076,12 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
       state.turns.total = data.total || 0;
       const items = data.items || [];
       $("#tb-turns").innerHTML = items.length ? items.map(t => `<tr>
-        <td class="mono">#${t.id}</td>
-        <td class="mono small clip" style="max-width:150px" title="${esc(t.session_id)}">${esc(t.session_id || "-")}</td>
+        <td class="mono num muted">#${t.id}</td>
+        <td class="mono small clip" style="max-width:155px" title="${esc(t.session_id)}">${esc(t.session_id || "-")}</td>
         <td class="mono small">${esc(t.machine || "-")} / ${esc(t.agent || "-")}</td>
         <td class="clip" style="max-width:240px">${esc(t.u || "")}</td>
         <td class="clip" style="max-width:240px">${esc(t.a || "")}</td>
-        <td class="small muted mono">${esc(String(t.ts || "").slice(0, 19))}</td>
+        <td class="small muted mono num">${esc(fmtTs(t.ts))}</td>
         <td><button class="btn sm" data-tact="detail" data-id="${t.id}">全文</button></td>
       </tr>`).join("") : `<tr><td colspan="7" class="empty">暂无对话轮次</td></tr>`;
       const from = state.turns.total ? state.turns.offset + 1 : 0;
@@ -935,11 +1101,11 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
       const items = data.items || [];
       $("#tb-sessions").innerHTML = items.length ? items.map(s => `<tr>
         <td class="mono small">${esc(s.session_id)}</td>
-        <td>${esc(s.platform || "-")}</td>
+        <td><span class="badge b-dim">${esc(s.platform || "-")}</span></td>
         <td class="mono small">${esc(s.machine || "-")}</td>
-        <td class="mono">${s.turn_count ?? 0}</td>
-        <td class="small muted mono">${esc(String(s.started_at || "").slice(0, 19))}</td>
-        <td class="small muted mono">${esc(String(s.last_active || "").slice(0, 19))}</td>
+        <td class="mono num">${s.turn_count ?? 0}</td>
+        <td class="small muted mono num">${esc(fmtTs(s.started_at))}</td>
+        <td class="small muted mono num">${esc(fmtTs(s.last_active))}</td>
         <td><button class="btn sm" data-sess="${esc(s.session_id)}">看轮次</button></td>
       </tr>`).join("") : `<tr><td colspan="7" class="empty">暂无会话</td></tr>`;
       const from = state.sessions.total ? state.sessions.offset + 1 : 0;
@@ -957,16 +1123,16 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     $("#hot-cnt").textContent = `${hot.length} 条`;
     $("#stream-cnt").textContent = `${turns.length} 条`;
     $("#tb-hot").innerHTML = hot.length ? hot.map(h => `<tr>
-      <td class="mono">#${h.id ?? "-"}</td>
+      <td class="mono num muted">#${h.id ?? "-"}</td>
       <td><span class="badge b-blue">${esc(h.kind || "-")}</span></td>
       <td class="mono small">${esc(h.agent || "-")}</td>
-      <td class="clip">${esc(h.content || h.preview || "")}</td>
+      <td class="clip" title="${esc(h.content || h.preview || "")}">${esc(h.content || h.preview || "")}</td>
     </tr>`).join("") : `<tr><td colspan="4" class="empty">热缓存为空</td></tr>`;
     $("#tb-stream").innerHTML = turns.length ? turns.map(t => `<tr>
-      <td class="mono small clip" style="max-width:130px">${esc(t.session_id || "-")}</td>
+      <td class="mono small clip" style="max-width:130px" title="${esc(t.session || t.session_id || "")}">${esc(t.session || t.session_id || "-")}</td>
       <td class="mono small">${esc(t.machine || "-")} / ${esc(t.agent || "-")}</td>
-      <td class="clip" style="max-width:260px">${esc(t.user || t.u || t.content || "")}</td>
-      <td class="small muted mono">${esc(String(t.ts || "").slice(0, 19))}</td>
+      <td class="clip" style="max-width:250px" title="${esc(t.user || t.u || "")}">${esc(t.user || t.u || t.content || "")}</td>
+      <td class="small muted mono num">${esc(fmtTs(t.ts))}</td>
     </tr>`).join("") : `<tr><td colspan="4" class="empty">最近流为空</td></tr>`;
   }
 
@@ -996,8 +1162,9 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     clearInterval(state.timer);
     if ($("#chk-auto").checked) {
       state.timer = setInterval(() => {
-        if (!document.hidden && $("#auth-overlay").classList.contains("hidden")) {
+        if (!document.hidden && $("#auth-overlay").classList.contains("hidden") && $("#modal-overlay").classList.contains("hidden")) {
           loadCore(false).catch(() => {});
+          if (state.tab === "live") loadLive().catch(() => {});
         }
       }, 15000);
     }
@@ -1022,6 +1189,8 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     e.preventDefault();
     const val = $("#auth-input").value.trim();
     if (!val) return;
+    const btn = $("#auth-submit");
+    btn.disabled = true;
     state.token = val;
     try {
       await loadCore(true);
@@ -1032,35 +1201,52 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     } catch (err) {
       state.token = "";
       $("#auth-err").textContent = err.message || "认证失败";
+    } finally {
+      btn.disabled = false;
     }
   });
 
-  $("#f-client").addEventListener("change", () => {
-    const c = $("#f-client").value;
-    const def = CLIENT_META[c]?.defAgent || "";
+  $("#client-picker").addEventListener("click", e => {
+    const b = e.target.closest("button[data-pick]");
+    if (!b) return;
+    const prevDef = CLIENT_MAP[state.selectedClient]?.defAgent || "";
+    state.selectedClient = b.dataset.pick;
+    renderClientPicker();
     const cur = $("#f-agent").value.trim();
-    const isPreset = !cur || Object.values(CLIENT_META).some(m => m.defAgent === cur);
-    if (isPreset && def) $("#f-agent").value = def;
+    if (!cur || cur === prevDef || CLIENTS.some(c => c.defAgent === cur)) {
+      $("#f-agent").value = CLIENT_MAP[state.selectedClient]?.defAgent || "";
+    }
+    updateNamePreview();
+  });
+
+  ["#f-machine", "#f-agent", "#f-name"].forEach(sel => {
+    $(sel).addEventListener("input", updateNamePreview);
+    $(sel).addEventListener("keydown", e => { if (e.key === "Enter") $("#btn-issue").click(); });
   });
 
   $("#btn-issue").addEventListener("click", async () => {
-    const client = $("#f-client").value;
+    const client = state.selectedClient;
     const machine = $("#f-machine").value.trim();
-    const agent = $("#f-agent").value.trim() || (CLIENT_META[client]?.defAgent || "");
+    const agent = $("#f-agent").value.trim() || (CLIENT_MAP[client]?.defAgent || "");
     const role = $("#f-role").value;
     const name = $("#f-name").value.trim();
     if (!name && !agent) return toast("请填写主机 / Agent 标识或令牌名", "err");
+    const btn = $("#btn-issue");
+    btn.disabled = true;
     try {
       const res = await api("/v1/admin/tokens", {
         method: "POST",
         body: {name, machine, agent, client, role},
       });
       $("#f-name").value = "";
+      updateNamePreview();
       showSecret(res, "新令牌已签发");
       toast(`已签发 ${res.name}`, "ok");
       await loadCore(false);
     } catch (err) {
       toast(err.message, "err");
+    } finally {
+      btn.disabled = false;
     }
   });
 
@@ -1083,7 +1269,7 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
   });
   $("#tok-q").addEventListener("input", renderAgents);
 
-  $("#tb-tokens").addEventListener("click", async e => {
+  $("#tb-tokens").addEventListener("click", e => {
     const b = e.target.closest("button[data-act]");
     if (!b) return;
     const act = b.dataset.act;
@@ -1096,32 +1282,45 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     }
     if (act === "rotate") {
       const name = b.dataset.name;
-      if (!confirm(`确定轮换令牌「${name}」？旧令牌将立即失效。`)) return;
-      try {
-        const res = await api("/v1/admin/tokens", {
-          method: "POST",
-          body: {
-            name,
-            machine: b.dataset.machine || "",
-            agent: b.dataset.agent || "",
-            client: b.dataset.client || "",
-            role: b.dataset.role || "agent",
-          },
-        });
-        showSecret(res, "令牌已轮换");
-        toast(`已轮换 ${res.name}`, "ok");
-        await loadCore(false);
-      } catch (err) { toast(err.message, "err"); }
+      confirmModal(
+        "轮换 Agent 令牌",
+        `确认重新生成「${name}」的令牌？旧令牌将立即失效，客户端需更新为新令牌。`,
+        "确认轮换",
+        "warn",
+        async () => {
+          const res = await api("/v1/admin/tokens", {
+            method: "POST",
+            body: {
+              name,
+              machine: b.dataset.machine || "",
+              agent: b.dataset.agent || "",
+              client: b.dataset.client || "",
+              role: b.dataset.role || "agent",
+            },
+          });
+          showSecret(res, "令牌已轮换");
+          toast(`已轮换 ${res.name}`, "ok");
+          await loadCore(false);
+        }
+      );
       return;
     }
     if (act === "revoke") {
       const name = b.dataset.name;
-      if (!confirm(`确定撤销令牌「${name}」？该 Agent 将无法再访问服务。`)) return;
-      try {
-        await api("/v1/admin/tokens", {method: "DELETE", body: {name}});
-        toast(`已撤销 ${name}`, "ok");
-        await loadCore(false);
-      } catch (err) { toast(err.message, "err"); }
+      confirmModal(
+        "撤销 Agent 令牌",
+        `确认撤销「${name}」？撤销后使用该令牌的客户端将立即收到 401 拒绝。`,
+        "确认撤销",
+        "err",
+        async () => {
+          await api(`/v1/admin/tokens?name=${encodeURIComponent(name)}`, {
+            method: "DELETE",
+            body: {name},
+          });
+          toast(`已撤销 ${name}`, "ok");
+          await loadCore(false);
+        }
+      );
     }
   });
 
@@ -1134,12 +1333,8 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     switchTab("memories");
   });
 
-  $("#view-system").addEventListener("click", async e => {
-    const b = e.target.closest("button[data-op]");
-    if (!b) return;
-    const op = b.dataset.op;
-    if (op === "prune-run" && !confirm("确认执行真实过期数据清理？")) return;
-    if (op === "drain-force" && !confirm("确认全量重建所有活跃记忆向量？")) return;
+  async function runSystemOp(op, btn) {
+    btn.disabled = true;
     $("#op-out").textContent = "执行中…";
     try {
       let res;
@@ -1154,36 +1349,55 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     } catch (err) {
       $("#op-out").textContent = "ERROR: " + err.message;
       toast(err.message, "err");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
+  $("#view-system").addEventListener("click", e => {
+    const b = e.target.closest("button[data-op]");
+    if (!b) return;
+    const op = b.dataset.op;
+    if (op === "prune-run") {
+      confirmModal("执行过期清理", "将按服务端保留策略真实删除过期轮次/停用记忆，是否继续？", "执行清理", "err", () => runSystemOp(op, b));
+    } else if (op === "drain-force") {
+      confirmModal("全量重建向量", "将对所有活跃记忆重新计算并写入 Qdrant 向量，耗时较长，是否继续？", "开始重建", "warn", () => runSystemOp(op, b));
+    } else {
+      runSystemOp(op, b);
     }
   });
 
-  $("#btn-m-search").addEventListener("click", () => { state.mem.offset = 0; loadMemories().catch(e => toast(e.message, "err")); });
+  const runMem = () => loadMemories().catch(e => toast(e.message, "err"));
+  $("#btn-m-search").addEventListener("click", () => { state.mem.offset = 0; runMem(); });
+  ["#m-agent", "#m-machine", "#m-q"].forEach(s => $(s).addEventListener("keydown", e => { if (e.key === "Enter") { state.mem.offset = 0; runMem(); } }));
   $("#btn-m-reset").addEventListener("click", () => {
     $("#m-agent").value = ""; $("#m-machine").value = ""; $("#m-kind").value = "";
     $("#m-active").value = "1"; $("#m-q").value = "";
     state.mem.offset = 0;
-    loadMemories().catch(e => toast(e.message, "err"));
+    runMem();
   });
-  $("#m-prev").addEventListener("click", () => { state.mem.offset = Math.max(0, state.mem.offset - state.mem.limit); loadMemories(); });
-  $("#m-next").addEventListener("click", () => { state.mem.offset += state.mem.limit; loadMemories(); });
+  $("#m-prev").addEventListener("click", () => { state.mem.offset = Math.max(0, state.mem.offset - state.mem.limit); runMem(); });
+  $("#m-next").addEventListener("click", () => { state.mem.offset += state.mem.limit; runMem(); });
 
   $("#btn-open-new-mem").addEventListener("click", () => {
     openModal(
       "写入新记忆",
       `<div class="form-row">
         <div class="field"><label>类型</label>
-          <select id="nm-kind"><option value="note">note</option><option value="fact">fact</option><option value="preference">preference</option><option value="decision">decision</option><option value="event">event</option></select>
+          <select id="nm-kind"><option value="note">note</option><option value="fact">fact</option><option value="preference">preference</option><option value="decision">decision</option><option value="event">event</option><option value="todo">todo</option></select>
         </div>
-        <div class="field"><label>重要度 (1-10)</label><input id="nm-imp" type="number" min="1" max="10" value="5" style="width:90px"></div>
+        <div class="field" style="min-width:100px"><label>重要度 (1-10)</label><input id="nm-imp" type="number" min="1" max="10" value="5"></div>
         <div class="field grow"><label>标签 (逗号分隔)</label><input id="nm-tags" placeholder="ops,deploy"></div>
       </div>
       <div class="field"><label>内容</label><textarea id="nm-content" placeholder="输入要持久化的记忆内容…"></textarea></div>`,
-      `<button class="btn" id="nm-cancel">取消</button><button class="btn pri" id="nm-save">保存</button>`
+      `<button class="btn" id="nm-cancel">取消</button><button class="btn pri" id="nm-save">保存记忆</button>`
     );
     $("#nm-cancel").onclick = closeModal;
     $("#nm-save").onclick = async () => {
       const content = $("#nm-content").value.trim();
       if (!content) return toast("内容不能为空", "err");
+      const btn = $("#nm-save");
+      btn.disabled = true;
       try {
         await api("/v1/admin/remember", {
           method: "POST",
@@ -1198,7 +1412,10 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
         closeModal();
         toast("已写入记忆", "ok");
         await refreshCurrent(true);
-      } catch (err) { toast(err.message, "err"); }
+      } catch (err) {
+        btn.disabled = false;
+        toast(err.message, "err");
+      }
     };
   });
 
@@ -1224,21 +1441,30 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
           `记忆 #${m.id}`,
           `<div class="kv">
             <div class="kv-item"><span>类型 / 分类</span><span class="mono">${esc(m.kind)} / ${esc(m.memory_type || "-")}</span></div>
-            <div class="kv-item"><span>重要度</span><span class="mono">${m.importance}</span></div>
+            <div class="kv-item"><span>重要度</span><span class="mono num">${m.importance}</span></div>
             <div class="kv-item"><span>主机 / Agent</span><span class="mono">${esc(m.machine || "-")} / ${esc(m.agent || "-")}</span></div>
             <div class="kv-item"><span>来源 / 会话</span><span class="mono">${esc(m.source || "-")} / ${esc(m.session_id || "-")}</span></div>
             <div class="kv-item"><span>标签</span><span class="mono">${esc(m.tags || "-")}</span></div>
-            <div class="kv-item"><span>更新于</span><span class="mono">${esc(m.updated_at || "-")}</span></div>
+            <div class="kv-item"><span>更新于</span><span class="mono num">${esc(fmtTs(m.updated_at))}</span></div>
           </div>
           <pre class="code">${esc(m.content || "")}</pre>`,
-          `<button class="btn" id="md-copy">复制内容</button><button class="btn" id="md-close">关闭</button>`
+          `<button class="btn" id="md-copy">复制内容</button>
+           <button class="btn ${m.active ? "err" : "ok"}" id="md-toggle">${m.active ? "停用" : "恢复"}</button>
+           <button class="btn" id="md-close">关闭</button>`
         );
         $("#md-copy").onclick = () => copyText(m.content || "");
+        $("#md-toggle").onclick = async () => {
+          await api(m.active ? "/v1/admin/forget" : "/v1/admin/restore", {method: "POST", body: {id: m.id}});
+          closeModal();
+          toast(m.active ? `已停用 #${m.id}` : `已恢复 #${m.id}`, "ok");
+          await loadMemories();
+        };
         $("#md-close").onclick = closeModal;
       }
     } catch (err) { toast(err.message, "err"); }
   });
 
+  const runTurns = () => loadTurnsOrSessions().catch(e => toast(e.message, "err"));
   $("#turn-seg").addEventListener("click", e => {
     const b = e.target.closest("button[data-sub]");
     if (!b) return;
@@ -1246,22 +1472,20 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     $$("#turn-seg button").forEach(x => x.classList.toggle("active", x.dataset.sub === state.turnSub));
     $("#sub-turns").classList.toggle("hidden", state.turnSub !== "turns");
     $("#sub-sessions").classList.toggle("hidden", state.turnSub !== "sessions");
-    loadTurnsOrSessions().catch(err => toast(err.message, "err"));
+    runTurns();
   });
 
-  $("#btn-t-search").addEventListener("click", () => {
-    state.turns.offset = 0; state.sessions.offset = 0;
-    loadTurnsOrSessions().catch(e => toast(e.message, "err"));
-  });
+  $("#btn-t-search").addEventListener("click", () => { state.turns.offset = 0; state.sessions.offset = 0; runTurns(); });
+  ["#t-machine", "#t-session", "#t-q"].forEach(s => $(s).addEventListener("keydown", e => { if (e.key === "Enter") { state.turns.offset = 0; state.sessions.offset = 0; runTurns(); } }));
   $("#btn-t-reset").addEventListener("click", () => {
     $("#t-machine").value = ""; $("#t-session").value = ""; $("#t-q").value = "";
     state.turns.offset = 0; state.sessions.offset = 0;
-    loadTurnsOrSessions().catch(e => toast(e.message, "err"));
+    runTurns();
   });
-  $("#t-prev").addEventListener("click", () => { state.turns.offset = Math.max(0, state.turns.offset - state.turns.limit); loadTurnsOrSessions(); });
-  $("#t-next").addEventListener("click", () => { state.turns.offset += state.turns.limit; loadTurnsOrSessions(); });
-  $("#s-prev").addEventListener("click", () => { state.sessions.offset = Math.max(0, state.sessions.offset - state.sessions.limit); loadTurnsOrSessions(); });
-  $("#s-next").addEventListener("click", () => { state.sessions.offset += state.sessions.limit; loadTurnsOrSessions(); });
+  $("#t-prev").addEventListener("click", () => { state.turns.offset = Math.max(0, state.turns.offset - state.turns.limit); runTurns(); });
+  $("#t-next").addEventListener("click", () => { state.turns.offset += state.turns.limit; runTurns(); });
+  $("#s-prev").addEventListener("click", () => { state.sessions.offset = Math.max(0, state.sessions.offset - state.sessions.limit); runTurns(); });
+  $("#s-next").addEventListener("click", () => { state.sessions.offset += state.sessions.limit; runTurns(); });
 
   $("#tb-turns").addEventListener("click", async e => {
     const b = e.target.closest("button[data-tact='detail']");
@@ -1276,7 +1500,7 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
           <div class="kv-item"><span>会话</span><span class="mono">${esc(t.session_id || "-")}</span></div>
           <div class="kv-item"><span>主机 / Agent</span><span class="mono">${esc(t.machine || "-")} / ${esc(t.agent || "-")}</span></div>
           <div class="kv-item"><span>平台 / 作者</span><span class="mono">${esc(t.platform || "-")} / ${esc(t.author || "-")}</span></div>
-          <div class="kv-item"><span>时间</span><span class="mono">${esc(t.ts || "-")}</span></div>
+          <div class="kv-item"><span>时间</span><span class="mono num">${esc(fmtTs(t.ts))}</span></div>
         </div>
         <div class="small muted">User</div><pre class="code">${esc(t.user_content || "")}</pre>
         <div class="small muted">Assistant</div><pre class="code">${esc(t.assistant_content || "")}</pre>`,
@@ -1295,15 +1519,16 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
     $$("#turn-seg button").forEach(x => x.classList.toggle("active", x.dataset.sub === "turns"));
     $("#sub-turns").classList.remove("hidden");
     $("#sub-sessions").classList.add("hidden");
-    loadTurnsOrSessions().catch(err => toast(err.message, "err"));
+    runTurns();
   });
 
   async function doSearch() {
     const q = $("#q-search").value.trim();
     if (!q) return toast("请输入检索词", "err");
-    const lim = $("#q-limit").value;
+    const btn = $("#btn-q-search");
+    btn.disabled = true;
     try {
-      const data = await api(`/v1/admin/search?q=${encodeURIComponent(q)}&limit=${lim}`);
+      const data = await api(`/v1/admin/search?q=${encodeURIComponent(q)}&limit=${$("#q-limit").value}`);
       const mems = data.memories || [];
       const turns = data.turns || [];
       $("#search-res").innerHTML = `
@@ -1316,7 +1541,11 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
           <pre class="code">${turns.length ? turns.map(t => `#${t.id} (${t.session_id || "-"}) U: ${t.user_content || t.u || ""}\nA: ${t.assistant_content || t.a || ""}`).join("\n\n") : "无匹配"}</pre>
         </div>
       `;
-    } catch (err) { toast(err.message, "err"); }
+    } catch (err) {
+      toast(err.message, "err");
+    } finally {
+      btn.disabled = false;
+    }
   }
   $("#btn-q-search").addEventListener("click", doSearch);
   $("#q-search").addEventListener("keydown", e => { if (e.key === "Enter") doSearch(); });
@@ -1325,7 +1554,9 @@ pre.code{margin:0;background:#0a0f18;border:1px solid var(--line);border-radius:
   $("#modal-overlay").addEventListener("click", e => { if (e.target === $("#modal-overlay")) closeModal(); });
   document.addEventListener("keydown", e => { if (e.key === "Escape") closeModal(); });
 
-  $("#f-agent").value = CLIENT_META[$("#f-client").value].defAgent;
+  renderClientPicker();
+  $("#f-agent").value = CLIENT_MAP[state.selectedClient].defAgent;
+  updateNamePreview();
   setupAuto();
   if (state.token) {
     refreshCurrent(true);
