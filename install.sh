@@ -37,19 +37,30 @@ install_server() {
 
 install_hermes() {
   [ -f "$HERMES_SRC/plugin.yaml" ] || { echo "❌ 找不到 $HERMES_SRC/plugin.yaml"; exit 1; }
-  local rsync_args=(-a --delete --exclude='__pycache__/' --exclude='*.pyc' --exclude='tests/' --exclude='_sdk/')
   if [ "$MODE" = check ]; then
     echo "比较 hermes-atbrains: $HERMES_SRC → $HERMES_DST"
     if [ ! -d "$HERMES_DST" ]; then
       echo "  ⚠️ 安装副本不存在"
       return 0
     fi
-    rsync -na --itemize-changes "${rsync_args[@]}" "$HERMES_SRC/" "$HERMES_DST/" || true
+    if command -v rsync >/dev/null 2>&1; then
+      rsync -na --itemize-changes -a --delete --exclude='__pycache__/' --exclude='*.pyc' --exclude='tests/' --exclude='_sdk/' "$HERMES_SRC/" "$HERMES_DST/" || true
+    else
+      diff -rq -x '__pycache__' -x '*.pyc' -x 'tests' -x '_sdk' "$HERMES_SRC" "$HERMES_DST" || true
+    fi
     return 0
   fi
-  mkdir -p "$HERMES_DST/_sdk/atbrains_client"
-  rsync "${rsync_args[@]}" "$HERMES_SRC/" "$HERMES_DST/"
-  rsync -a --delete --exclude='__pycache__/' --exclude='*.pyc' "$SDK_SRC/" "$HERMES_DST/_sdk/atbrains_client/"
+  local py="${ATBRAINS_PYTHON:-$(command -v python3)}"
+  "$py" - "$HERMES_SRC" "$SDK_SRC" "$HERMES_DST" <<'PY'
+import shutil, sys
+from pathlib import Path
+
+src, sdk, dst = map(Path, sys.argv[1:4])
+if dst.exists():
+    shutil.rmtree(dst)
+shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", "tests", "_sdk"))
+shutil.copytree(sdk, dst / "_sdk" / "atbrains_client", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+PY
   echo "✅ 已安装 Hermes 薄适配器 → $HERMES_DST（纯标准库 HTTP 客户端，无 DB 驱动）"
   echo "   配置 $HERMES_DIR/atbrains.json: {\"service_url\": \"http://<server>:8787\"}"
   echo "   配置 $HERMES_DIR/.env: ATBRAINS_TOKEN=<令牌>"
