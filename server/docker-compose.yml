@@ -99,7 +99,17 @@ services:
       ATBRAINS_DISTILL_API_KEY: ${ATBRAINS_DISTILL_API_KEY:-}
       ATBRAINS_PROJECTION_TABLES_ENABLED: ${ATBRAINS_PROJECTION_TABLES_ENABLED:-0}
     ports:
-      - "${ATBRAINS_SERVER_BIND:-0.0.0.0}:${ATBRAINS_PORT:-8787}:${ATBRAINS_PORT:-8787}"
+      - "${ATBRAINS_SERVER_BIND:-127.0.0.1}:${ATBRAINS_PORT:-8787}:${ATBRAINS_PORT:-8787}"
     volumes:
-      # 服务端运行时持久化目录：存放 service-tokens.json、控制台 .token 与 access.log
       - ${ATBRAINS_SERVER_DATA_DIR:-./data/server}:/data
+
+  nginx:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    depends_on:
+      - atbrains-server
+    ports:
+      - "${ATBRAINS_WEB_BIND:-0.0.0.0}:${ATBRAINS_WEB_PORT:-8080}:80"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./atbrains_server/console:/usr/share/nginx/html:ro

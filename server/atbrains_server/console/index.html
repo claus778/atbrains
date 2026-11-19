@@ -135,6 +135,7 @@
     <button data-tab="sess" onclick="tab('sess')">会话</button>
     <button data-tab="recent" onclick="tab('recent')">动态</button>
     <button data-tab="search" onclick="tab('search')">检索</button>
+    <button data-tab="tok" onclick="tab('tok')">令牌</button>
     <button data-tab="act" onclick="tab('act')">操作</button>
   </div>
 
@@ -227,16 +228,40 @@
     <div id="sres"></div>
   </section>
 
-  <!-- ── 操作 ── -->
+  <section id="t-tok" style="display:none">
+    <div class="card" style="margin-bottom:14px">
+      <h3>签发 / 轮换令牌</h3>
+      <div class="toolbar" style="margin-bottom:0">
+        <input id="tkname" placeholder="身份名，如 laptop|codex" style="width:220px" onkeydown="if(event.key==='Enter'){event.preventDefault();addToken();}">
+        <select id="tkrole"><option value="agent">agent</option><option value="admin">admin</option></select>
+        <input id="tkmach" placeholder="覆盖 machine（可选）" style="width:160px">
+        <input id="tkagent" placeholder="覆盖 agent（可选）" style="width:160px">
+        <button class="primary" onclick="withBusy(this,()=>addToken())">生成令牌</button>
+        <button onclick="withBusy(this,()=>loadTokens(true))">刷新</button>
+        <span class="sub" id="tkcnt"></span>
+      </div>
+      <div id="tknew" class="hidden" style="margin-top:10px">
+        <div class="row">
+          <span class="sub">新令牌（仅显示一次）：</span>
+          <code id="tknewval" style="user-select:all"></code>
+          <button onclick="copyText($('#tknewval').textContent)">复制</button>
+        </div>
+      </div>
+    </div>
+    <div class="scroll"><table><thead><tr>
+      <th>名称</th><th style="width:100px">角色</th><th style="width:200px">掩码</th><th style="width:160px">操作</th>
+    </tr></thead><tbody id="tktb"></tbody></table></div>
+  </section>
+
   <section id="t-act" style="display:none">
     <div class="grid g3">
       <div class="card">
-        <h3>向量层</h3>
+        <h3>向量与体检</h3>
         <div class="row">
-          <button class="primary" onclick="withBusy(this,()=>doDrain())">立即回填向量</button>
+          <button class="primary" onclick="withBusy(this,()=>doDrain(false))">增量回填向量</button>
+          <button onclick="withBusy(this,()=>doDrain(true))">全量重建向量</button>
           <button onclick="withBusy(this,()=>doDoctor())">系统体检</button>
         </div>
-        <div class="hint">回填为增量模式:只补缺失的向量,不重嵌已有的。定时器每 3 分钟自动跑一次。</div>
       </div>
       <div class="card">
         <h3>新增记忆</h3>
@@ -247,7 +272,6 @@
           <input id="newt" placeholder="tags,逗号分隔" style="flex:1;min-width:120px">
           <button class="primary" onclick="withBusy(this,()=>doRemember())">保存</button>
         </div>
-        <div class="hint">写入 MariaDB + Redis 热点,向量由定时器在 3 分钟内补齐。</div>
       </div>
       <div class="card">
         <h3>按 ID 操作</h3>
@@ -257,14 +281,13 @@
           <button id="qbForget" class="danger" onclick="quick('forget')">停用</button>
           <button id="qbRestore" class="good" onclick="quick('restore')">恢复</button>
         </div>
-        <div class="hint">从对话/日志里拿到 ID 后,可在这里直接查看、停用(软删除)、恢复。</div>
       </div>
       <div class="card">
-        <h3>清理</h3>
+        <h3>归档清理</h3>
         <div class="row">
-          <button onclick="withBusy(this,()=>doPrune())">归档清理预演</button>
+          <button onclick="withBusy(this,()=>doPrune(true))">预演（只读）</button>
+          <button class="danger" onclick="withBusy(this,()=>doPrune(false))">执行清理</button>
         </div>
-        <div class="hint">预演不写库。停用/恢复请在「记忆」页操作(软删除,可随时恢复)。</div>
       </div>
     </div>
     <pre id="actout" style="margin-top:14px;display:none"></pre>
@@ -319,12 +342,16 @@ function toast(msg, ms = 4200) { const t = $('#toast'); t.textContent = msg; t.c
   clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), ms); }
 
 async function api(path, opts = {}) {
-  const r = await fetch(path, {headers: {'X-Auth-Token': TOK, ...(opts.headers || {})}, ...opts});
+  const hdrs = {'X-Auth-Token': TOK, 'Authorization': 'Bearer ' + TOK, ...(opts.headers || {})};
+  const r = await fetch(path, {...opts, headers: hdrs});
   if (!r.ok) throw new Error((await r.text()).slice(0, 300));
   return r.json();
 }
 async function post(path, body) {
   return api(path, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body || {})});
+}
+async function del(path) {
+  return api(path, {method: 'DELETE'});
 }
 async function withBusy(btn, fn) {
   if (!btn || btn.disabled) return;
@@ -390,13 +417,15 @@ function renderCards(d) {
     <div class="kv"><span>覆盖率</span><b>${cov.with_vector ?? '?'} / ${cov.active_memories ?? '?'}</b></div>
     ${covBar}</div>`);
 
+  const agents = (d.stats && d.stats.agents) || [];
+  const agentTxt = agents.slice(0, 4).map(a => `${a.agent || '?'}:${a.active}`).join(' · ') || '—';
   cards.push(`<div class="card"><h3>服务端</h3>
     <div class="big" style="font-size:17px">
       <span class="pill ${v.enabled ? 'on' : 'off'}">${v.enabled ? '向量启用' : '向量关闭'}</span>
       <span class="sub">${esc(d.server_version || '')}</span></div>
     <div class="kv"><span>协议版本</span><b>${esc(d.version || '?')}</b></div>
-    <div class="kv"><span>活跃主张</span><b>${st.claims_active ?? '?'}</b></div>
-    <div class="kv"><span>情节 / 图谱边</span><b>${st.episodes ?? '?'} / ${st.graph_edges ?? '?'}</b></div>
+    <div class="kv"><span>活跃主张 / 情节</span><b>${st.claims_active ?? '?'} / ${st.episodes ?? '?'}</b></div>
+    <div class="kv"><span>按 Agent 活跃</span><b>${esc(agentTxt)}</b></div>
     <div class="kv"><span>嵌入模型</span><b>${esc(String(v.embed_model || '?').split('/').pop())}</b></div></div>`);
 
   $('#cards').innerHTML = cards.join('');
@@ -425,7 +454,7 @@ function pageMove(st, mode) {
 function switchTab(name) {
   S.tab = name;
   document.querySelectorAll('.tabs button').forEach(b => b.classList.toggle('on', b.dataset.tab === name));
-  ['mem', 'turn', 'sess', 'recent', 'search', 'act'].forEach(k => {
+  ['mem', 'turn', 'sess', 'recent', 'search', 'tok', 'act'].forEach(k => {
     const el = $('#t-' + k); if (el) el.style.display = (k === name ? '' : 'none');
   });
 }
@@ -435,6 +464,7 @@ function tab(name) {
   if (name === 'turn') loadTurns();
   if (name === 'sess') loadSess();
   if (name === 'recent') loadRecent();
+  if (name === 'tok') loadTokens();
 }
 
 /* ── 记忆 ── */
@@ -581,12 +611,60 @@ async function doSearch() {
   } catch (e) { $('#sres').innerHTML = `<div class="muted">检索失败:${esc(e.message)}</div>`; }
 }
 
-/* ── 操作 ── */
+async function loadTokens(manual) {
+  if (!TOK) return;
+  $('#tkcnt').textContent = '加载中…';
+  try {
+    const d = await api('/v1/admin/tokens');
+    const items = d.tokens || [];
+    $('#tkcnt').textContent = `共 ${items.length} 个`;
+    $('#tktb').innerHTML = items.map(t => `<tr>
+      <td><code>${esc(t.name)}</code></td>
+      <td><span class="pill ${t.role === 'admin' ? 'on' : 'off'}">${esc(t.role)}</span></td>
+      <td><code>${esc(t.masked)}</code></td>
+      <td><div class="row">
+        <button data-name="${esc(t.name)}" data-role="${esc(t.role)}" onclick="withBusy(this,()=>rotateToken(this.dataset.name,this.dataset.role))">轮换</button>
+        <button class="danger" data-name="${esc(t.name)}" onclick="withBusy(this,()=>rmToken(this.dataset.name))">吊销</button>
+      </div></td>
+    </tr>`).join('') || '<tr><td colspan="4" class="muted">无令牌</td></tr>';
+    if (manual) toast('已刷新令牌表');
+  } catch (e) { $('#tkcnt').textContent = ''; toast('加载令牌失败:' + cut(e.message, 160)); }
+}
+async function addToken() {
+  const name = $('#tkname').value.trim();
+  if (!name) { toast('名称不能为空'); return; }
+  const d = await post('/v1/admin/tokens', {
+    name,
+    role: $('#tkrole').value,
+    machine: $('#tkmach').value.trim(),
+    agent: $('#tkagent').value.trim(),
+  });
+  $('#tknewval').textContent = d.token || '';
+  $('#tknew').classList.remove('hidden');
+  $('#tkname').value = ''; $('#tkmach').value = ''; $('#tkagent').value = '';
+  toast('已签发令牌: ' + d.name);
+  loadTokens();
+}
+async function rotateToken(name, role) {
+  if (!confirm(`轮换 ${name} 的令牌？旧令牌会立即失效。`)) return;
+  const d = await post('/v1/admin/tokens', {name, role});
+  $('#tknewval').textContent = d.token || '';
+  $('#tknew').classList.remove('hidden');
+  toast('已轮换: ' + name);
+  loadTokens();
+}
+async function rmToken(name) {
+  if (!confirm(`吊销令牌 ${name}？`)) return;
+  await del('/v1/admin/tokens?name=' + encodeURIComponent(name));
+  toast('已吊销: ' + name);
+  loadTokens();
+}
+
 function setActout(t) { const el = $('#actout'); el.style.display = 'block'; el.textContent = t; }
-async function doDrain() {
-  setActout('$ 立即回填向量\n⏳ 回填中…(可能数秒到数分钟,请稍候)');
-  const d = await post('/v1/admin/drain');
-  setActout('$ 立即回填向量\n' + JSON.stringify(d, null, 2));
+async function doDrain(force) {
+  setActout(force ? '$ 全量重建向量\n⏳ 执行中…' : '$ 增量回填向量\n⏳ 执行中…');
+  const d = await post('/v1/admin/drain', {force: !!force});
+  setActout('$ 向量回填\n' + JSON.stringify(d, null, 2));
   toast(d.ok ? '向量回填完成' : '向量回填异常'); refresh();
 }
 async function doDoctor() {
@@ -595,18 +673,20 @@ async function doDoctor() {
   setActout('$ 系统体检\n' + JSON.stringify(d, null, 2).slice(0, 4000));
   toast(d.ok ? '体检完成' : '体检有异常'); refresh();
 }
-async function doPrune() {
-  setActout('$ 归档清理预演\n⏳ 执行中…');
-  const d = await post('/v1/admin/prune', {dry_run: true});
-  setActout('$ 归档清理预演(不写库)\n' + JSON.stringify(d.result ?? d, null, 2).slice(0, 4000));
-  toast('预演完成');
+async function doPrune(dry) {
+  if (!dry && !confirm('确认执行归档清理？将按配置停用过期记忆并删除超期归档。')) return;
+  setActout(dry ? '$ 归档清理预演\n⏳ 执行中…' : '$ 归档清理执行\n⏳ 执行中…');
+  const d = await post('/v1/admin/prune', {dry_run: !!dry});
+  setActout((dry ? '$ 预演结果\n' : '$ 清理结果\n') + JSON.stringify(d.result ?? d, null, 2).slice(0, 4000));
+  toast(dry ? '预演完成' : '清理完成');
+  if (!dry) refresh();
 }
 async function doRemember() {
   const content = $('#newc').value.trim();
   if (!content) { toast('内容不能为空'); return; }
   const d = await post('/v1/admin/remember', {content, kind: $('#newk').value,
     importance: +$('#newi').value, tags: $('#newt').value});
-  toast(`已保存 id=${d.saved && d.saved.id} · 向量将在 3 分钟内自动补齐`);
+  toast(`已保存 id=${d.saved && d.saved.id}`);
   $('#newc').value = ''; $('#newt').value = '';
   loadMem(); refresh();
 }
