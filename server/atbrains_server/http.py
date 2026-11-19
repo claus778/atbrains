@@ -297,6 +297,8 @@ def main() -> None:
     print(f"atbrains /v1 API      → http://{host}:{port}/v1/health", flush=True)
     print(f"atbrains /mcp         → http://{host}:{port}/mcp", flush=True)
     print(f"控制台口令文件         {runtime.console_token.path} (权限 600)", flush=True)
+    if os.environ.get("ATBRAINS_PRINT_CONSOLE_TOKEN", "1").strip().lower() not in ("0", "false", "no", "off"):
+        print(f"控制台 Token (:{port})  {runtime.console_token.get()}", flush=True)
     print(f"服务令牌表             {runtime.service.tokens.path} ({len(runtime.service.tokens.load())} 个身份, 权限 600)", flush=True)
     try:
         server.serve_forever()
