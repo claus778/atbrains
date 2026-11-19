@@ -286,16 +286,17 @@ class GraphMixin:
         self.ensure_schema()
         row = self._exec(
             "SELECT "
-            "(SELECT COUNT(*) FROM brain_memories WHERE active = 1) AS active, "
+            "(SELECT COUNT(*) FROM brain_memories WHERE active = 1 AND superseded_by IS NULL) AS active, "
             "(SELECT COUNT(*) FROM brain_vector_index v JOIN brain_memories m ON m.id = v.mem_id "
-            " WHERE m.active = 1 AND v.status = 'ok') AS ok, "
+            " WHERE m.active = 1 AND m.superseded_by IS NULL AND v.status = 'ok') AS ok, "
             "(SELECT COUNT(*) FROM brain_vector_index v JOIN brain_memories m ON m.id = v.mem_id "
-            " WHERE m.active = 1 AND v.status = 'error') AS err, "
+            " WHERE m.active = 1 AND m.superseded_by IS NULL AND v.status = 'error') AS err, "
             "(SELECT COUNT(*) FROM brain_memories m LEFT JOIN brain_vector_index v "
-            " ON v.mem_id = m.id WHERE m.active = 1 AND v.mem_id IS NULL) AS missing, "
+            " ON v.mem_id = m.id WHERE m.active = 1 AND m.superseded_by IS NULL AND v.mem_id IS NULL) AS missing, "
             "(SELECT COUNT(*) FROM brain_vector_index v JOIN brain_memories m ON m.id = v.mem_id "
-            " WHERE m.active = 1 AND v.status = 'ok' AND (v.model <> %s OR v.content_hash IS NULL "
+            " WHERE m.active = 1 AND m.superseded_by IS NULL AND v.status = 'ok' AND (v.model <> %s OR v.content_hash IS NULL "
             " OR v.content_hash <> m.content_hash)) AS stale, "
+            "(SELECT COUNT(*) FROM brain_memories WHERE active = 1 AND superseded_by IS NOT NULL) AS superseded, "
             "(SELECT MAX(embedded_at) FROM brain_vector_index WHERE status = 'ok') AS last_ok",
             (str(self.cfg.get("embed_model"))[:64],), fetch=True)[0]
         out["memories"] = {k: (v if k == "last_ok" else int(v or 0)) for k, v in row.items()}

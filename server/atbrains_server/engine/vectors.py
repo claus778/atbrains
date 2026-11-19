@@ -517,14 +517,20 @@ class VectorsMixin:
                 if offset is None or not pts:
                     break
             self.ensure_schema()
-            rows = self._exec("SELECT id FROM brain_memories WHERE active = 1", fetch=True)
+            rows = self._exec(
+                "SELECT id FROM brain_memories WHERE active = 1 AND superseded_by IS NULL", fetch=True)
             active = {int(x["id"]) for x in rows}
+            sup = self._exec(
+                "SELECT COUNT(*) AS c FROM brain_memories WHERE active = 1 AND superseded_by IS NOT NULL",
+                fetch=True)
             res["coverage"] = {
                 "active_memories": len(active),
                 "with_vector": len(active & ids),
                 "missing_count": len(active - ids),
                 "missing": sorted(active - ids)[:50],
                 "stale_vectors": sorted(ids - active)[:50],
+                # 被取代的条目按设计不入向量、也不参与召回，单列计数避免误报「缺向量」
+                "superseded_excluded": int((sup or [{}])[0].get("c") or 0),
             }
         except Exception as exc:  # noqa: BLE001
             res["error"] = f"{type(exc).__name__}: {exc}"
