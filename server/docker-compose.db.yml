@@ -1,0 +1,62 @@
+name: atbrains-db
+
+services:
+  mariadb:
+    image: mariadb:11
+    restart: unless-stopped
+    environment:
+      MARIADB_ROOT_PASSWORD: ${ATBRAINS_MARIADB_ROOT_PASSWORD:-change-me-root}
+      MARIADB_DATABASE: ${ATBRAINS_MARIADB_DB:-agent_memory}
+      MARIADB_USER: ${ATBRAINS_MARIADB_USER:-agent}
+      MARIADB_PASSWORD: ${ATBRAINS_MARIADB_PASSWORD:-change-me-db}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+00:00
+    ports:
+      - "${ATBRAINS_MARIADB_BIND:-127.0.0.1}:${ATBRAINS_MARIADB_HOST_PORT:-57306}:3306"
+    volumes:
+      # MariaDB 数据文件持久化目录（可通过 .env 修改为宿主机任意路径，如 /root/mariadb）
+      - ${ATBRAINS_MARIADB_DATA_DIR:-./data/mariadb}:/var/lib/mysql
+      # 可选：挂载自定义 MariaDB 配置或首次建库 SQL
+      # - ./my.cnf:/etc/mysql/conf.d/atbrains.cnf:ro
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${ATBRAINS_REDIS_PASSWORD:-change-me-redis}
+    ports:
+      - "${ATBRAINS_REDIS_BIND:-127.0.0.1}:${ATBRAINS_REDIS_HOST_PORT:-9079}:6379"
+    volumes:
+      # Redis AOF / RDB 持久化目录（可通过 .env 修改为宿主机任意路径，如 /root/redis）
+      - ${ATBRAINS_REDIS_DATA_DIR:-./data/redis}:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "${ATBRAINS_REDIS_PASSWORD:-change-me-redis}", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    restart: unless-stopped
+    ports:
+      - "${ATBRAINS_QDRANT_BIND:-127.0.0.1}:${ATBRAINS_QDRANT_HOST_PORT:-6333}:6333"
+    volumes:
+      # Qdrant 向量存储目录（可通过 .env 修改为宿主机任意路径，如 /root/qdrant）
+      - ${ATBRAINS_QDRANT_DATA_DIR:-./data/qdrant}:/qdrant/storage
+      # 可选：挂载 Qdrant 配置文件（开启 api-key 鉴权等）
+      # - /etc/qdrant/production.yaml:/qdrant/config/production.yaml:ro
+
+networks:
+  default:
+    name: ${ATBRAINS_DOCKER_NETWORK:-atbrains-net}

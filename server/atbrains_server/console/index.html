@@ -122,6 +122,16 @@ textarea{width:100%;min-height:100px;resize:vertical}
 .field{display:flex;flex-direction:column;gap:5px;min-width:150px}
 .field.grow{flex:1;min-width:200px}
 .field label{font-size:12px;font-weight:500;color:var(--muted)}
+.label-row{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.link-btn{background:none;border:none;padding:0;font-size:11.5px;font-weight:500;color:var(--blue);cursor:pointer}
+.link-btn:hover{text-decoration:underline}
+
+.attr-tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+.attr-tag{display:inline-flex;align-items:center;gap:3px;padding:1.5px 7px;border-radius:6px;background:#f2f2f7;color:var(--fg2);font-size:11px;line-height:1.45;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.attr-tag b{font-weight:600;color:var(--fg)}
+.attr-list{display:flex;flex-direction:column;gap:8px}
+.attr-row{display:grid;grid-template-columns:minmax(110px,1fr) minmax(140px,1.5fr) auto;gap:8px;align-items:center}
+.edit-hint{display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;padding:10px 13px;border-radius:var(--r-sm);background:var(--surface-sub);border:1px solid var(--line);font-size:12.5px;color:var(--muted)}
 
 .seg{display:inline-flex;background:#e8e8ed;border-radius:11px;padding:3px;gap:2px;flex-wrap:wrap}
 .seg button{background:transparent;border:none;border-radius:8.5px;padding:6px 14px;font-size:13px;font-weight:500;color:var(--fg2);cursor:pointer;transition:.15s}
@@ -147,6 +157,10 @@ textarea{width:100%;min-height:100px;resize:vertical}
 .b-violet{background:var(--violet-bg);color:var(--violet)}
 .b-teal{background:var(--teal-bg);color:var(--teal)}
 .b-dim{background:#f0f0f4;color:var(--muted)}
+.protect-box{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:11px 13px;border-radius:var(--r-sm);background:var(--surface-sub);border:1px solid var(--line)}
+.protect-box .pb-title{font-size:13px;font-weight:500;color:var(--fg)}
+.protect-box .pb-desc{font-size:12px;color:var(--muted)}
+.name-row{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
 
 .tbl-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--r-md)}
 table{width:100%;border-collapse:collapse;font-size:13px;background:#fff}
@@ -317,6 +331,10 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
       </div>
       <div class="chips" id="client-picker"></div>
       <div class="form-row">
+        <div class="field hidden" id="f-client-custom-wrap">
+          <label>自定义客户端标识</label>
+          <input id="f-client-custom" placeholder="如 vscode / openclaw">
+        </div>
         <div class="field">
           <label>主机 / 节点 (machine)</label>
           <input id="f-machine" placeholder="如 x260 / macbook / prod">
@@ -325,16 +343,13 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
           <label>Agent 标识 (agent)</label>
           <input id="f-agent" placeholder="如 hermes / codex">
         </div>
-        <div class="field">
-          <label>权限角色 (role)</label>
-          <select id="f-role">
-            <option value="agent">agent · 标准隔离</option>
-            <option value="admin">admin · 管理权限</option>
-          </select>
-        </div>
         <div class="field grow">
           <label>自定义名称（可选，留空自动拼 machine|agent）</label>
           <input id="f-name" placeholder="留空自动生成">
+        </div>
+        <div class="field grow">
+          <label>备注（可选）</label>
+          <input id="f-note" placeholder="如 生产环境 / 客厅主力机">
         </div>
         <button class="btn pri" id="btn-issue">签发令牌</button>
       </div>
@@ -365,7 +380,7 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
         <h2>已签发令牌与连接状态</h2>
         <div class="form-row" style="gap:8px">
           <div class="pills" id="client-filters"></div>
-          <input id="tok-q" placeholder="搜索名称 / 主机 / IP" style="width:200px">
+          <input id="tok-q" placeholder="搜索名称 / 主机 / 属性 / IP" style="width:220px">
         </div>
       </div>
       <div class="tbl-wrap">
@@ -375,7 +390,6 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
               <th>状态</th>
               <th>客户端</th>
               <th>身份 (machine | agent)</th>
-              <th>角色</th>
               <th>掩码</th>
               <th>记忆 (活/总)</th>
               <th>通道 / IP / 请求</th>
@@ -574,8 +588,8 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
       <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2.1"><path d="M12 2a7 7 0 0 1 7 7c0 2.5-1.3 4.7-3.3 6l-.7 3H9l-.7-3A7 7 0 0 1 12 2Z"/><path d="M9 21h6"/></svg>
     </div>
     <h2>登录 atbrains</h2>
-    <p>输入容器启动日志输出的控制台 Token（<span class="mono">.token</span>）或任意 <span class="mono">admin</span> 令牌</p>
-    <input id="auth-input" type="password" placeholder="粘贴管理员令牌…" autocomplete="current-password" required>
+    <p>输入容器启动日志输出的控制台 Token（<span class="mono">.token</span>）</p>
+    <input id="auth-input" type="password" placeholder="粘贴控制台令牌…" autocomplete="current-password" required>
     <div id="auth-err" class="small" style="color:var(--err);min-height:18px"></div>
     <button class="btn pri" id="auth-submit" type="submit">继续</button>
   </form>
@@ -773,6 +787,7 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
         <span class="sw" style="background:${c.color}"></span>${esc(c.label)}
       </button>`
     ).join("");
+    $("#f-client-custom-wrap").classList.toggle("hidden", state.selectedClient !== "custom");
   }
 
   function updateNamePreview() {
@@ -820,7 +835,7 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
     state.lastSecret = info;
     $("#secret-title").textContent = `${actionLabel}：${info.name}`;
     $("#secret-client").textContent = (CLIENT_MAP[info.client]?.label) || info.client || "custom";
-    $("#secret-name").textContent = `${info.machine || "-"} | ${info.agent || "-"} · ${info.role}`;
+    $("#secret-name").textContent = `${info.machine || "-"} | ${info.agent || "-"}`;
     $("#secret-val").textContent = info.token;
     $("#secret-snip").textContent = buildSnippet(info);
     $("#secret-panel").classList.remove("hidden");
@@ -962,43 +977,59 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
     const filtered = toks.filter(t => {
       if (state.clientFilter !== "all" && (t.client || "unknown") !== state.clientFilter) return false;
       if (!q) return true;
-      return [t.name, t.machine, t.agent, t.client, t.last_ip, t.last_ua].some(x => String(x || "").toLowerCase().includes(q));
+      const attrParts = Object.entries(t.attrs || {}).flatMap(([k, v]) => [k, v]);
+      return [t.name, t.machine, t.agent, t.client, t.note, t.last_ip, t.last_ua, ...attrParts]
+        .some(x => String(x || "").toLowerCase().includes(q));
     });
 
     const memMap = agentMemMap();
     const tb = $("#tb-tokens");
     if (!filtered.length) {
-      tb.innerHTML = `<tr><td colspan="9" class="empty">没有匹配的令牌</td></tr>`;
+      tb.innerHTML = `<tr><td colspan="8" class="empty">没有匹配的令牌</td></tr>`;
       return;
     }
     tb.innerHTML = filtered.map(t => {
       const stat = t.online
         ? `<span class="badge b-ok"><i class="dot ok pulse"></i>在线</span>`
         : (t.requests ? `<span class="badge b-dim"><i class="dot"></i>离线</span>` : `<span class="badge b-dim">未接入</span>`);
-      const roleB = t.role === "admin" ? `<span class="badge b-warn">admin</span>` : `<span class="badge b-dim">agent</span>`;
       const am = memMap[String(t.agent || "").toLowerCase()];
       const memTxt = am ? `<span class="mono num"><b>${am.active}</b> <span class="dim">/ ${am.total}</span></span>` : `<span class="dim mono num">0 / 0</span>`;
       const chBadge = t.last_channel ? `<span class="badge b-blue">${esc(t.last_channel)}</span>` : "";
       const actInfo = t.requests
         ? `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">${chBadge}<span class="mono small">${esc(t.last_ip || "-")}</span><span class="muted small num">${t.requests} 次</span></div><div class="small dim clip" style="max-width:210px;margin-top:2px" title="${esc((t.last_path || "") + " " + (t.last_ua || ""))}">${esc(t.last_path || "")} ${esc(t.last_ua || "")}</div>`
         : `<span class="dim">-</span>`;
+      const nameTags = t.protected
+        ? `<span class="badge b-dim" title="已开启防误删保护，需在编辑中关闭后才能撤销">已保护</span>`
+        : "";
+      const noteHtml = t.note
+        ? `<div class="small muted clip" style="max-width:260px;margin-top:2px" title="${esc(t.note)}">${esc(t.note)}</div>`
+        : "";
+      const attrEntries = Object.entries(t.attrs || {});
+      const attrsHtml = attrEntries.length
+        ? `<div class="attr-tags">${attrEntries.map(([k, v]) => `<span class="attr-tag" title="${esc(v ? `${k}: ${v}` : k)}"><b>${esc(k)}</b>${v ? `: ${esc(v)}` : ""}</span>`).join("")}</div>`
+        : "";
+      const revokeBtn = t.protected
+        ? `<button class="btn sm" disabled title="已开启防误删保护，请先在编辑中关闭保护后再撤销">受保护</button>`
+        : `<button class="btn sm err" data-act="revoke" data-name="${esc(t.name)}">撤销</button>`;
       return `<tr>
         <td>${stat}</td>
         <td>${clientBadge(t.client)}</td>
         <td>
-          <div style="font-weight:600">${esc(t.name)}</div>
+          <div class="name-row"><span style="font-weight:600">${esc(t.name)}</span>${nameTags}</div>
           <div class="small muted mono">${esc(t.machine || "-")} | ${esc(t.agent || "-")}</div>
+          ${noteHtml}
+          ${attrsHtml}
         </td>
-        <td>${roleB}</td>
         <td class="mono small muted">${esc(t.masked)}</td>
         <td>${memTxt}</td>
         <td>${actInfo}</td>
         <td title="${esc(fmtTs(t.last_seen))}"><span class="small muted">${esc(fmtAgo(t.last_seen))}</span></td>
         <td>
           <div class="act-grp">
+            <button class="btn sm" data-act="edit" data-name="${esc(t.name)}">编辑</button>
             <button class="btn sm" data-act="mem" data-agent="${esc(t.agent)}" data-machine="${esc(t.machine)}">记忆</button>
-            <button class="btn sm warn" data-act="rotate" data-name="${esc(t.name)}" data-machine="${esc(t.machine)}" data-agent="${esc(t.agent)}" data-client="${esc(t.client)}" data-role="${esc(t.role)}">轮换</button>
-            <button class="btn sm err" data-act="revoke" data-name="${esc(t.name)}">撤销</button>
+            <button class="btn sm warn" data-act="rotate" data-name="${esc(t.name)}">轮换</button>
+            ${revokeBtn}
           </div>
         </td>
       </tr>`;
@@ -1064,7 +1095,7 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
       api("/v1/admin/tokens"),
     ]);
     state.overview = ov;
-    state.tokens = tok.tokens || [];
+    state.tokens = (tok.tokens || []).filter(t => t.role !== "admin");
     renderHeaderHealth();
     renderOverview();
     renderTokens();
@@ -1213,6 +1244,166 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
     refreshCurrent(false);
   }
 
+  function openEditTokenModal(tokenName) {
+    const t = (state.tokens || []).find(x => x.name === tokenName);
+    if (!t) return toast("未找到该客户端令牌", "err");
+    const rawClient = String(t.client || "").trim().toLowerCase();
+    let editClient = rawClient ? (CLIENT_MAP[rawClient] ? rawClient : "custom") : "";
+    const initCustom = rawClient && !CLIENT_MAP[rawClient] ? rawClient : "";
+
+    const renderAttrRow = (k = "", v = "") => `
+      <div class="attr-row">
+        <input class="et-ak" placeholder="属性名，如 env / owner / model" value="${esc(k)}">
+        <input class="et-av" placeholder="属性值，如 prod" value="${esc(v)}">
+        <button type="button" class="btn sm ghost et-adel" title="删除属性">✕</button>
+      </div>`;
+
+    const initAttrs = Object.entries(t.attrs || {});
+    openModal(
+      `编辑客户端属性 · ${t.name}`,
+      `<div class="edit-hint">
+        <span>修改属性不会变更或吊销现有 Token，保存后立即生效</span>
+        <span class="mono small">${esc(t.masked)}</span>
+      </div>
+      <div class="field">
+        <label>客户端类型 (client)</label>
+        <div class="chips" id="et-client-picker" style="margin-bottom:0"></div>
+      </div>
+      <div class="field ${editClient === "custom" ? "" : "hidden"}" id="et-client-custom-wrap">
+        <label>自定义客户端标识</label>
+        <input id="et-client-custom" placeholder="如 vscode / openclaw（留空则为 custom）" value="${esc(initCustom)}">
+      </div>
+      <div class="form-row">
+        <div class="field grow">
+          <label>主机 / 节点 (machine)</label>
+          <input id="et-machine" placeholder="如 x260 / macbook / prod" value="${esc(t.machine || "")}">
+        </div>
+        <div class="field grow">
+          <label>Agent 标识 (agent)</label>
+          <input id="et-agent" placeholder="如 hermes / codex" value="${esc(t.agent || "")}">
+        </div>
+      </div>
+      <div class="form-row">
+        <div class="field grow">
+          <div class="label-row">
+            <label>令牌标识名 (name)</label>
+            <button type="button" class="link-btn" id="et-sync-name">按 machine|agent 同步</button>
+          </div>
+          <input id="et-name" placeholder="如 x260|hermes" value="${esc(t.name)}">
+        </div>
+      </div>
+      <div class="field">
+        <label>备注 (note)</label>
+        <input id="et-note" placeholder="用途、部署位置、环境说明…" value="${esc(t.note || "")}">
+      </div>
+      <div class="protect-box">
+        <div>
+          <div class="pb-title">防误删保护</div>
+          <div class="pb-desc">开启后禁止在控制台直接撤销该客户端令牌，防止关键客户端误删</div>
+        </div>
+        <label class="switch">
+          <input type="checkbox" id="et-protected" ${t.protected ? "checked" : ""}>
+          <span>开启保护</span>
+        </label>
+      </div>
+      <div class="field">
+        <div class="label-row">
+          <label>自定义属性 (Key / Value)</label>
+          <button type="button" class="link-btn" id="et-add-attr">+ 添加属性</button>
+        </div>
+        <div class="attr-list" id="et-attrs-list">
+          ${initAttrs.length ? initAttrs.map(([k, v]) => renderAttrRow(k, v)).join("") : ""}
+        </div>
+      </div>`,
+      `<button class="btn" id="et-cancel">取消</button><button class="btn pri" id="et-save">保存属性</button>`
+    );
+
+    const renderEditChips = () => {
+      $("#et-client-picker").innerHTML = CLIENTS.map(c =>
+        `<button type="button" class="chip ${editClient === c.id ? "active" : ""}" data-epick="${esc(c.id)}">
+          <span class="sw" style="background:${c.color}"></span>${esc(c.label)}
+        </button>`
+      ).join("");
+      $("#et-client-custom-wrap").classList.toggle("hidden", editClient !== "custom");
+    };
+    renderEditChips();
+
+    $("#et-client-picker").addEventListener("click", e => {
+      const b = e.target.closest("button[data-epick]");
+      if (!b) return;
+      editClient = b.dataset.epick;
+      renderEditChips();
+      if (editClient === "custom") $("#et-client-custom").focus();
+    });
+
+    $("#et-sync-name").addEventListener("click", () => {
+      const m = $("#et-machine").value.trim();
+      const a = $("#et-agent").value.trim();
+      if (!m && !a) return toast("请先填写主机或 Agent 标识", "err");
+      $("#et-name").value = m && a ? `${m}|${a}` : (a || m);
+    });
+
+    $("#et-add-attr").addEventListener("click", () => {
+      $("#et-attrs-list").insertAdjacentHTML("beforeend", renderAttrRow());
+      const rows = $$("#et-attrs-list .et-ak");
+      if (rows.length) rows[rows.length - 1].focus();
+    });
+
+    $("#et-attrs-list").addEventListener("click", e => {
+      const btn = e.target.closest(".et-adel");
+      if (btn) btn.closest(".attr-row")?.remove();
+    });
+
+    $("#et-cancel").onclick = closeModal;
+    const doSave = async () => {
+      const newName = $("#et-name").value.trim();
+      if (!newName) return toast("令牌标识名不能为空", "err");
+      if (newName === "server" || newName === "admin") {
+        return toast("server / admin 为系统保留名称，请使用其他标识", "err");
+      }
+      const machine = $("#et-machine").value.trim();
+      const agent = $("#et-agent").value.trim();
+      const note = $("#et-note").value.trim();
+      const isProtected = $("#et-protected").checked;
+      const effClient = editClient === "custom"
+        ? ($("#et-client-custom").value.trim().toLowerCase() || "custom")
+        : editClient;
+      const attrs = {};
+      for (const row of $$("#et-attrs-list .attr-row")) {
+        const k = row.querySelector(".et-ak")?.value.trim() || "";
+        const v = row.querySelector(".et-av")?.value.trim() || "";
+        if (k) attrs[k] = v;
+      }
+      const btn = $("#et-save");
+      btn.disabled = true;
+      try {
+        const res = await api("/v1/admin/tokens", {
+          method: "PATCH",
+          body: {
+            name: t.name,
+            new_name: newName,
+            machine,
+            agent,
+            client: effClient,
+            note,
+            protected: isProtected,
+            attrs,
+          },
+        });
+        closeModal();
+        toast(`已更新 ${res.name} 的客户端属性`, "ok");
+        await loadCore(false);
+      } catch (err) {
+        btn.disabled = false;
+        toast(err.message || "保存失败", "err");
+      }
+    };
+    $("#et-save").onclick = doSave;
+    ["#et-machine", "#et-agent", "#et-name", "#et-note", "#et-client-custom"].forEach(sel => {
+      $(sel)?.addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); doSave(); } });
+    });
+  }
+
   function openNewMemoryModal() {
     openModal(
       "写入新记忆",
@@ -1319,26 +1510,34 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
     updateNamePreview();
   });
 
-  ["#f-machine", "#f-agent", "#f-name"].forEach(sel => {
+  ["#f-machine", "#f-agent", "#f-name", "#f-note", "#f-client-custom"].forEach(sel => {
     $(sel).addEventListener("input", updateNamePreview);
     $(sel).addEventListener("keydown", e => { if (e.key === "Enter") $("#btn-issue").click(); });
   });
 
   $("#btn-issue").addEventListener("click", async () => {
-    const client = state.selectedClient;
+    const client = state.selectedClient === "custom"
+      ? ($("#f-client-custom").value.trim().toLowerCase() || "custom")
+      : state.selectedClient;
     const machine = $("#f-machine").value.trim();
-    const agent = $("#f-agent").value.trim() || (CLIENT_MAP[client]?.defAgent || "");
-    const role = $("#f-role").value;
+    const agent = $("#f-agent").value.trim() || (CLIENT_MAP[state.selectedClient]?.defAgent || "");
     const name = $("#f-name").value.trim();
-    if (!name && !agent) return toast("请填写主机 / Agent 标识或令牌名", "err");
+    const note = $("#f-note").value.trim();
+    const effName = name || (machine && agent ? `${machine}|${agent}` : agent);
+    if (!effName) return toast("请填写主机 / Agent 标识或令牌名", "err");
+    if (effName === "server" || effName === "admin") {
+      return toast("server / admin 为系统保留名称，请使用其他客户端标识", "err");
+    }
     const btn = $("#btn-issue");
     btn.disabled = true;
     try {
       const res = await api("/v1/admin/tokens", {
         method: "POST",
-        body: {name, machine, agent, client, role},
+        body: {name, machine, agent, client, role: "agent", note},
       });
       $("#f-name").value = "";
+      $("#f-note").value = "";
+      $("#f-client-custom").value = "";
       updateNamePreview();
       showSecret(res, "新令牌已签发");
       toast(`已签发 ${res.name}`, "ok");
@@ -1366,6 +1565,10 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
     const b = e.target.closest("button[data-act]");
     if (!b) return;
     const act = b.dataset.act;
+    if (act === "edit") {
+      openEditTokenModal(b.dataset.name);
+      return;
+    }
     if (act === "mem") {
       $("#m-agent").value = b.dataset.agent || "";
       $("#m-machine").value = b.dataset.machine || "";
@@ -1378,6 +1581,7 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
     }
     if (act === "rotate") {
       const name = b.dataset.name;
+      const tokObj = (state.tokens || []).find(x => x.name === name) || {};
       confirmModal(
         "轮换 Agent 令牌",
         `确认重新生成「${name}」的令牌？旧令牌将立即失效，客户端需更新配置。`,
@@ -1388,10 +1592,13 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
             method: "POST",
             body: {
               name,
-              machine: b.dataset.machine || "",
-              agent: b.dataset.agent || "",
-              client: b.dataset.client || "",
-              role: b.dataset.role || "agent",
+              machine: tokObj.machine || "",
+              agent: tokObj.agent || "",
+              client: tokObj.client || "",
+              role: "agent",
+              note: tokObj.note || "",
+              attrs: tokObj.attrs || {},
+              protected: !!tokObj.protected,
             },
           });
           showSecret(res, "令牌已轮换");

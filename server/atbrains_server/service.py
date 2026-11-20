@@ -23,7 +23,7 @@ from . import PROTOCOL_VERSION, __version__
 from .config import resolve_config
 from .context import RequestContext, ScopedStore
 from .store import AtbrainsStore
-from .tokens import TokenIdentity, TokenStore, header_value, infer_client
+from .tokens import BUILTIN_ADMIN_NAMES, TokenIdentity, TokenStore, header_value, infer_client
 from .tools_registry import as_bool, as_int, as_list, clean_rows, context_markdown, context_packet
 
 # 异常消息脱敏:即便某个驱动把连接串塞进了报错里,也不能把口令下发
@@ -38,6 +38,10 @@ class BadRequest(ValueError):
 
 class Forbidden(PermissionError):
     """权限不足（非 admin 令牌调用 /v1/admin/*）→ 403。"""
+
+
+class NotFound(LookupError):
+    """目标资源不存在 → 404。"""
 
 
 def _safe_error(exc: BaseException) -> str:
@@ -113,7 +117,7 @@ class MemoryService:
         "/v1/admin/drain": (("POST",), "_admin_drain"),
         "/v1/admin/doctor": (("POST",), "_admin_doctor"),
         "/v1/admin/prune": (("POST",), "_admin_prune"),
-        "/v1/admin/tokens": (("GET", "POST", "DELETE"), "_admin_tokens"),
+        "/v1/admin/tokens": (("GET", "POST", "PUT", "PATCH", "DELETE"), "_admin_tokens"),
     }
     _OPEN = frozenset({"/v1/health"})
     _ADMIN_PREFIX = "/v1/admin/"
@@ -295,6 +299,8 @@ class MemoryService:
             return 400, {"ok": False, "error": str(e)}
         except PermissionError as e:
             return 403, {"ok": False, "error": str(e)}
+        except NotFound as e:
+            return 404, {"ok": False, "error": str(e)}
         except Exception as e:  # noqa: BLE001
             return 500, {"ok": False, "error": _safe_error(e)}
 
@@ -720,7 +726,7 @@ class MemoryService:
             with self._activity_lock:
                 acts = {k: dict(v) for k, v in self._activity.items()}
             items = []
-            for name, ent in sorted(self.tokens.entries().items()):
+            for name, ent in self.tokens.entries().items():
                 info = self.tokens.resolve_entry(name, ent)
                 act = acts.get(name) or {}
                 last_ts = float(act.get("last_ts") or 0)
@@ -731,6 +737,11 @@ class MemoryService:
                     "client": info["client"] or str(act.get("detected_client") or ""),
                     "role": info["role"],
                     "masked": info["masked"],
+                    "note": info["note"],
+                    "attrs": info["attrs"],
+                    "builtin": bool(info["builtin"]),
+                    "protected": bool(info["protected"]),
+                    "is_current": bool(ident.name == name),
                     "online": bool(last_ts and (now - last_ts) <= 300.0),
                     "requests": int(act.get("requests") or 0),
                     "last_seen": str(act.get("last_seen") or ""),
@@ -739,6 +750,7 @@ class MemoryService:
                     "last_ua": str(act.get("last_ua") or ""),
                     "last_path": str(act.get("last_path") or ""),
                 })
+            items.sort(key=lambda x: (not x["builtin"], x["role"] != "admin", x["name"]))
             return {"ok": True, "tokens": items}
         if method == "POST":
             machine = str(body.get("machine") or "").strip()
@@ -746,6 +758,16 @@ class MemoryService:
             client = str(body.get("client") or "").strip().lower()
             role = str(body.get("role") or "").strip().lower()
             name = str(body.get("name") or "").strip()
+            note = str(body["note"]).strip() if "note" in body and body["note"] is not None else None
+            protected = bool(body["protected"]) if "protected" in body and body["protected"] is not None else None
+            attrs: Optional[dict[str, Any]] = None
+            if "attrs" in body:
+                if body["attrs"] is None:
+                    attrs = {}
+                elif isinstance(body["attrs"], dict):
+                    attrs = body["attrs"]
+                else:
+                    raise BadRequest("attrs 必须是对象")
             if not name:
                 if machine and agent:
                     name = f"{machine}|{agent}"
@@ -753,8 +775,19 @@ class MemoryService:
                     name = agent
             if not name:
                 raise BadRequest("name 或 machine/agent 不能为空")
-            eff_client = infer_client(agent, client)
-            tok = self.tokens.add(name, role=role, machine=machine, agent=agent, client=eff_client)
+            if name in BUILTIN_ADMIN_NAMES and role == "agent":
+                raise BadRequest(f"{name} 为系统内置管理员令牌，不能作为普通客户端令牌签发")
+            eff_client = infer_client(agent, client, role=role)
+            tok = self.tokens.add(
+                name,
+                role=role,
+                machine=machine,
+                agent=agent,
+                client=eff_client,
+                note=note,
+                attrs=attrs,
+                protected=protected,
+            )
             ent = self.tokens.entries().get(name) or {"token": tok, "role": role or "agent"}
             info = self.tokens.resolve_entry(name, ent)
             return {
@@ -764,13 +797,80 @@ class MemoryService:
                 "agent": info["agent"],
                 "client": info["client"],
                 "role": info["role"],
+                "note": info["note"],
+                "attrs": info["attrs"],
+                "builtin": bool(info["builtin"]),
+                "protected": bool(info["protected"]),
                 "token": tok,
+            }
+        if method in ("PUT", "PATCH"):
+            name = str(body.get("name") or _qparam(query, "name", "")).strip()
+            if not name:
+                raise BadRequest("name 不能为空")
+            new_name = str(body["new_name"]).strip() if "new_name" in body and body["new_name"] is not None else None
+            machine = str(body["machine"]).strip() if "machine" in body and body["machine"] is not None else None
+            agent = str(body["agent"]).strip().lower() if "agent" in body and body["agent"] is not None else None
+            client = str(body["client"]).strip().lower() if "client" in body and body["client"] is not None else None
+            role = str(body["role"]).strip().lower() if "role" in body and body["role"] is not None else None
+            if role is not None and role not in ("", "agent", "admin"):
+                raise BadRequest("role 必须是 agent 或 admin")
+            if ident.name == name and role == "agent":
+                raise BadRequest("不能将当前正在使用的管理员令牌降级为 agent")
+            note = str(body["note"]).strip() if "note" in body and body["note"] is not None else None
+            protected = bool(body["protected"]) if "protected" in body and body["protected"] is not None else None
+            attrs_upd: Optional[dict[str, Any]] = None
+            if "attrs" in body:
+                if body["attrs"] is None:
+                    attrs_upd = {}
+                elif isinstance(body["attrs"], dict):
+                    attrs_upd = body["attrs"]
+                else:
+                    raise BadRequest("attrs 必须是对象")
+            try:
+                info = self.tokens.update(
+                    name,
+                    new_name=new_name,
+                    role=role,
+                    machine=machine,
+                    agent=agent,
+                    client=client,
+                    note=note,
+                    attrs=attrs_upd,
+                    protected=protected,
+                )
+            except KeyError as exc:
+                raise NotFound(str(exc.args[0] if exc.args else exc)) from None
+            except ValueError as exc:
+                raise BadRequest(str(exc)) from None
+            with self._activity_lock:
+                act = self._activity.pop(name, None) if info["name"] != name else self._activity.get(name)
+                if act is not None:
+                    if client is not None:
+                        act["detected_client"] = info["client"]
+                    self._activity[info["name"]] = act
+            return {
+                "ok": True,
+                "name": info["name"],
+                "machine": info["machine"],
+                "agent": info["agent"],
+                "client": info["client"],
+                "role": info["role"],
+                "masked": info["masked"],
+                "note": info["note"],
+                "attrs": info["attrs"],
+                "builtin": bool(info["builtin"]),
+                "protected": bool(info["protected"]),
             }
         if method == "DELETE":
             name = str(body.get("name") or _qparam(query, "name", "")).strip()
             if not name:
                 raise BadRequest("name 不能为空")
-            removed = self.tokens.remove(name)
+            if ident.name == name:
+                raise BadRequest("不能删除当前正在使用的管理员令牌")
+            try:
+                removed = self.tokens.remove(name)
+            except ValueError as exc:
+                raise BadRequest(str(exc)) from None
             with self._activity_lock:
                 self._activity.pop(name, None)
             return {"ok": True, "removed": removed}

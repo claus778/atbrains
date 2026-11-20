@@ -254,6 +254,20 @@ def make_handler(runtime: ServerRuntime):
                 return self._v1("POST", q, read_body=True)
             return self._send(404, jdump({"error": "not found"}))
 
+        def do_PUT(self):
+            u = urlparse(self.path)
+            q = parse_qs(u.query)
+            if u.path.startswith("/v1/"):
+                return self._v1("PUT", q, read_body=True)
+            return self._send(404, jdump({"error": "not found"}))
+
+        def do_PATCH(self):
+            u = urlparse(self.path)
+            q = parse_qs(u.query)
+            if u.path.startswith("/v1/"):
+                return self._v1("PATCH", q, read_body=True)
+            return self._send(404, jdump({"error": "not found"}))
+
         def do_DELETE(self):
             u = urlparse(self.path)
             q = parse_qs(u.query)

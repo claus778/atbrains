@@ -1,60 +1,11 @@
+# 仅管理应用容器（atbrains-server + nginx）。
+# 首次部署请先启动一次数据库栈：
+#   docker compose -f docker-compose.db.yml up -d
+# 此后每次更新代码只需执行：
+#   docker compose up -d --build
+# 即使执行 docker compose down，也不会停止或重建 MariaDB / Redis / Qdrant 容器。
+
 services:
-  mariadb:
-    image: mariadb:11
-    restart: unless-stopped
-    environment:
-      MARIADB_ROOT_PASSWORD: ${ATBRAINS_MARIADB_ROOT_PASSWORD:-change-me-root}
-      MARIADB_DATABASE: ${ATBRAINS_MARIADB_DB:-agent_memory}
-      MARIADB_USER: ${ATBRAINS_MARIADB_USER:-agent}
-      MARIADB_PASSWORD: ${ATBRAINS_MARIADB_PASSWORD:-change-me-db}
-    command:
-      - --character-set-server=utf8mb4
-      - --collation-server=utf8mb4_unicode_ci
-      - --default-time-zone=+00:00
-    ports:
-      - "${ATBRAINS_MARIADB_BIND:-127.0.0.1}:${ATBRAINS_MARIADB_HOST_PORT:-57306}:3306"
-    volumes:
-      # MariaDB 数据文件持久化目录（可通过 .env 修改为宿主机任意路径，如 /root/mariadb）
-      - ${ATBRAINS_MARIADB_DATA_DIR:-./data/mariadb}:/var/lib/mysql
-      # 可选：挂载自定义 MariaDB 配置或首次建库 SQL
-      # - ./my.cnf:/etc/mysql/conf.d/atbrains.cnf:ro
-    healthcheck:
-      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  redis:
-    image: redis:7-alpine
-    restart: unless-stopped
-    command:
-      - redis-server
-      - --appendonly
-      - "yes"
-      - --requirepass
-      - ${ATBRAINS_REDIS_PASSWORD:-change-me-redis}
-    ports:
-      - "${ATBRAINS_REDIS_BIND:-127.0.0.1}:${ATBRAINS_REDIS_HOST_PORT:-9079}:6379"
-    volumes:
-      # Redis AOF / RDB 持久化目录（可通过 .env 修改为宿主机任意路径，如 /root/redis）
-      - ${ATBRAINS_REDIS_DATA_DIR:-./data/redis}:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${ATBRAINS_REDIS_PASSWORD:-change-me-redis}", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  qdrant:
-    image: qdrant/qdrant:latest
-    restart: unless-stopped
-    ports:
-      - "${ATBRAINS_QDRANT_BIND:-127.0.0.1}:${ATBRAINS_QDRANT_HOST_PORT:-6333}:6333"
-    volumes:
-      # Qdrant 向量存储目录（可通过 .env 修改为宿主机任意路径，如 /root/qdrant）
-      - ${ATBRAINS_QDRANT_DATA_DIR:-./data/qdrant}:/qdrant/storage
-      # 可选：挂载 Qdrant 配置文件（开启 api-key 鉴权等）
-      # - /etc/qdrant/production.yaml:/qdrant/config/production.yaml:ro
-
   atbrains-server:
     build:
       context: .
@@ -63,13 +14,6 @@ services:
         PIP_INDEX_URL: ${PIP_INDEX_URL:-}
     image: ${ATBRAINS_SERVER_IMAGE:-atbrains-server:latest}
     restart: unless-stopped
-    depends_on:
-      mariadb:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      qdrant:
-        condition: service_started
     environment:
       ATBRAINS_HOST: 0.0.0.0
       ATBRAINS_PORT: ${ATBRAINS_PORT:-8787}
@@ -77,13 +21,13 @@ services:
       ATBRAINS_AUTO_MIGRATE: ${ATBRAINS_AUTO_MIGRATE:-1}
       ATBRAINS_BACKGROUND_WORKERS: ${ATBRAINS_BACKGROUND_WORKERS:-1}
       ATBRAINS_PRINT_CONSOLE_TOKEN: ${ATBRAINS_PRINT_CONSOLE_TOKEN:-1}
-      ATBRAINS_MARIADB_HOST: mariadb
-      ATBRAINS_MARIADB_PORT: 3306
+      ATBRAINS_MARIADB_HOST: ${ATBRAINS_MARIADB_HOST:-mariadb}
+      ATBRAINS_MARIADB_PORT: ${ATBRAINS_MARIADB_PORT:-3306}
       ATBRAINS_MARIADB_USER: ${ATBRAINS_MARIADB_USER:-agent}
       ATBRAINS_MARIADB_DB: ${ATBRAINS_MARIADB_DB:-agent_memory}
       ATBRAINS_MARIADB_PASSWORD: ${ATBRAINS_MARIADB_PASSWORD:-change-me-db}
-      ATBRAINS_REDIS_HOST: redis
-      ATBRAINS_REDIS_PORT: 6379
+      ATBRAINS_REDIS_HOST: ${ATBRAINS_REDIS_HOST:-redis}
+      ATBRAINS_REDIS_PORT: ${ATBRAINS_REDIS_PORT:-6379}
       ATBRAINS_REDIS_DB: ${ATBRAINS_REDIS_DB:-0}
       ATBRAINS_REDIS_PASSWORD: ${ATBRAINS_REDIS_PASSWORD:-change-me-redis}
       ATBRAINS_QDRANT_URL: ${ATBRAINS_QDRANT_URL:-http://qdrant:6333}
@@ -114,3 +58,8 @@ services:
     volumes:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
       - ./atbrains_server/console:/usr/share/nginx/html:ro
+
+networks:
+  default:
+    external: true
+    name: ${ATBRAINS_DOCKER_NETWORK:-atbrains-net}

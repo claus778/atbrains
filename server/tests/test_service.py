@@ -224,7 +224,24 @@ class TokenStoreTest(unittest.TestCase):
             ident_srv = ts.authorize({"Authorization": f"Bearer {srv_tok}"}, channel="v1")
             self.assertIsNotNone(ident_srv)
             assert ident_srv
-            self.assertEqual((ident_srv.machine, ident_srv.agent, ident_srv.role), ("server", "admin", "admin"))
+            self.assertEqual((ident_srv.machine, ident_srv.agent, ident_srv.role, ident_srv.client), ("server", "admin", "admin", "admin"))
+            srv_info = ts.resolve_entry("server", ts.entries()["server"])
+            self.assertTrue(srv_info["builtin"])
+            self.assertTrue(srv_info["protected"])
+            # 系统内置 server 令牌禁止删除、重命名、降权或关闭防误删保护
+            with self.assertRaises(ValueError):
+                ts.remove("server")
+            with self.assertRaises(ValueError):
+                ts.update("server", new_name="other-server")
+            with self.assertRaises(ValueError):
+                ts.update("server", role="agent")
+            with self.assertRaises(ValueError):
+                ts.update("server", protected=False)
+            # 但允许更新内置 server 令牌的备注与自定义属性
+            srv_upd = ts.update("server", note="核心管理通道", attrs={"env": "prod"})
+            self.assertEqual(srv_upd["note"], "核心管理通道")
+            self.assertEqual(srv_upd["attrs"], {"env": "prod"})
+            self.assertTrue(srv_upd["protected"])
 
             ident_cdx = ts.authorize({"Authorization": f"Bearer {codex_tok}"}, channel="v1")
             assert ident_cdx
@@ -238,11 +255,43 @@ class TokenStoreTest(unittest.TestCase):
             assert ident_adm
             self.assertEqual((ident_adm.machine, ident_adm.agent, ident_adm.role), ("ops", "cli", "admin"))
 
-            hermes_tok = ts.add("x260|hermes", machine="x260", agent="hermes", client="hermes")
+            hermes_tok = ts.add("x260|hermes", machine="x260", agent="hermes", client="hermes", note="主力机", attrs={"env": "prod"})
             ident_h = ts.authorize({"Authorization": f"Bearer {hermes_tok}"}, channel="v1")
             assert ident_h
             self.assertEqual((ident_h.machine, ident_h.agent, ident_h.client), ("x260", "hermes", "hermes"))
             self.assertEqual(ident_cdx.client, "codex")
+
+            # 编辑客户端属性：保留原 token 不变，支持修改 client/machine/agent/role/note/attrs 与重命名
+            updated = ts.update(
+                "x260|hermes",
+                new_name="studio|cursor-pro",
+                machine="studio",
+                agent="cursor-pro",
+                client="cursor",
+                role="admin",
+                note="工作室主力",
+                attrs={"env": "dev", "model": "claude-4"},
+            )
+            self.assertEqual(updated["name"], "studio|cursor-pro")
+            self.assertEqual(updated["machine"], "studio")
+            self.assertEqual(updated["agent"], "cursor-pro")
+            self.assertEqual(updated["client"], "cursor")
+            self.assertEqual(updated["role"], "admin")
+            self.assertEqual(updated["note"], "工作室主力")
+            self.assertEqual(updated["attrs"], {"env": "dev", "model": "claude-4"})
+            # 旧名称已移除，但原 Bearer Token 依然有效并映射至新身份
+            self.assertNotIn("x260|hermes", ts.entries())
+            ident_upd = ts.authorize({"Authorization": f"Bearer {hermes_tok}"}, channel="v1")
+            assert ident_upd
+            self.assertEqual(
+                (ident_upd.name, ident_upd.machine, ident_upd.agent, ident_upd.client, ident_upd.role),
+                ("studio|cursor-pro", "studio", "cursor-pro", "cursor", "admin"),
+            )
+            # 重名冲突与不存在目标应报错
+            with self.assertRaises(ValueError):
+                ts.update("studio|cursor-pro", new_name="laptop|codex")
+            with self.assertRaises(KeyError):
+                ts.update("nonexistent|token", note="x")
 
 
 class HttpAndMcpServiceTest(unittest.TestCase):
@@ -377,12 +426,13 @@ class HttpAndMcpServiceTest(unittest.TestCase):
                 hdr_console = {"X-Auth-Token": console_tok}
                 code, issued = self._req(
                     p, "POST", "/v1/admin/tokens",
-                    {"machine": "x260", "agent": "hermes", "client": "hermes", "role": "agent"},
+                    {"machine": "x260", "agent": "hermes", "client": "hermes", "role": "agent", "note": "客厅开发机"},
                     hdr_console,
                 )
                 self.assertEqual(code, 200)
                 self.assertEqual(issued["name"], "x260|hermes")
                 self.assertEqual(issued["client"], "hermes")
+                self.assertEqual(issued["note"], "客厅开发机")
                 hdr_h = {
                     "Authorization": f"Bearer {issued['token']}",
                     "X-Real-IP": "10.0.0.42",
@@ -403,11 +453,72 @@ class HttpAndMcpServiceTest(unittest.TestCase):
                 self.assertEqual(rec_h["client"], "hermes")
                 self.assertEqual(rec_h["machine"], "x260")
                 self.assertEqual(rec_h["agent"], "hermes")
+                self.assertEqual(rec_h["note"], "客厅开发机")
                 self.assertEqual(rec_h["last_channel"], "mcp")
                 self.assertEqual(rec_h["last_ip"], "10.0.0.42")
                 self.assertEqual(rec_h["requests"], 2)
                 self.assertTrue(rec_h["online"])
-                code, rm = self._req(p, "DELETE", "/v1/admin/tokens", {"name": "x260|hermes"}, hdr_console)
+
+                # PATCH /v1/admin/tokens 编辑客户端属性（不旋转原令牌，迁移活跃记录，立即生效）
+                code, patched = self._req(
+                    p, "PATCH", "/v1/admin/tokens",
+                    {
+                        "name": "x260|hermes",
+                        "new_name": "desk|claude-code",
+                        "machine": "desk",
+                        "agent": "claude-code",
+                        "client": "claude-code",
+                        "role": "agent",
+                        "note": "主力桌面端",
+                        "attrs": {"env": "prod", "owner": "alice"},
+                    },
+                    hdr_console,
+                )
+                self.assertEqual(code, 200)
+                self.assertEqual(patched["name"], "desk|claude-code")
+                self.assertEqual(patched["client"], "claude-code")
+                self.assertEqual(patched["note"], "主力桌面端")
+                self.assertEqual(patched["attrs"], {"env": "prod", "owner": "alice"})
+                self.assertNotIn("token", patched)
+                # 原 Bearer Token 无需轮换即生效，且识别为新身份
+                code, st_after = self._req(p, "POST", "/v1/memory/status", {"light": True}, hdr_h)
+                self.assertEqual(code, 200)
+                self.assertEqual((st_after["machine"], st_after["agent"]), ("desk", "claude-code"))
+                code, tlist2 = self._req(p, "GET", "/v1/admin/tokens", headers=hdr_console)
+                by_name2 = {t["name"]: t for t in tlist2["tokens"]}
+                self.assertNotIn("x260|hermes", by_name2)
+                rec_d = by_name2["desk|claude-code"]
+                self.assertEqual(rec_d["client"], "claude-code")
+                self.assertEqual(rec_d["note"], "主力桌面端")
+                self.assertEqual(rec_d["attrs"], {"env": "prod", "owner": "alice"})
+                self.assertEqual(rec_d["requests"], 3)
+                # 编辑不存在的令牌返回 404；非 admin 调用 PATCH 返回 403
+                code, _ = self._req(p, "PATCH", "/v1/admin/tokens", {"name": "no-such-client", "note": "x"}, hdr_console)
+                self.assertEqual(code, 404)
+                code, _ = self._req(p, "PATCH", "/v1/admin/tokens", {"name": "desk|claude-code", "note": "x"}, hdr_agent)
+                self.assertEqual(code, 403)
+                # 系统内置 server 令牌：明确标记为 client=admin / builtin=True / protected=True，且禁止删除或降权
+                rec_srv = by_name2["server"]
+                self.assertEqual(rec_srv["client"], "admin")
+                self.assertEqual(rec_srv["role"], "admin")
+                self.assertTrue(rec_srv["builtin"])
+                self.assertTrue(rec_srv["protected"])
+                code, _ = self._req(p, "DELETE", "/v1/admin/tokens", {"name": "server"}, hdr_console)
+                self.assertEqual(code, 400)
+                code, _ = self._req(p, "PATCH", "/v1/admin/tokens", {"name": "server", "role": "agent"}, hdr_console)
+                self.assertEqual(code, 400)
+                code, _ = self._req(p, "POST", "/v1/admin/tokens", {"name": "server", "role": "agent"}, hdr_console)
+                self.assertEqual(code, 400)
+                # 开启防误删保护的客户端令牌也禁止删除，关闭保护后才可删除
+                code, prot_on = self._req(p, "PATCH", "/v1/admin/tokens", {"name": "desk|claude-code", "protected": True}, hdr_console)
+                self.assertEqual(code, 200)
+                self.assertTrue(prot_on["protected"])
+                code, _ = self._req(p, "DELETE", "/v1/admin/tokens", {"name": "desk|claude-code"}, hdr_console)
+                self.assertEqual(code, 400)
+                code, prot_off = self._req(p, "PATCH", "/v1/admin/tokens", {"name": "desk|claude-code", "protected": False}, hdr_console)
+                self.assertEqual(code, 200)
+                self.assertFalse(prot_off["protected"])
+                code, rm = self._req(p, "DELETE", "/v1/admin/tokens", {"name": "desk|claude-code"}, hdr_console)
                 self.assertEqual(code, 200)
                 self.assertTrue(rm["removed"])
 

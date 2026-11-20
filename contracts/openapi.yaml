@@ -204,13 +204,21 @@ paths:
         "200": { description: Prune counts }
   /v1/admin/tokens:
     get:
-      summary: List issued tokens (masked)
+      summary: List issued tokens (masked) with client attributes
       responses:
         "200": { description: Token inventory }
     post:
       summary: Issue or rotate an agent/admin token
       responses:
         "200": { description: Created token (shown once) }
+    patch:
+      summary: Update client attributes for an existing token without rotating it
+      responses:
+        "200": { description: Updated token metadata }
+    put:
+      summary: Update client attributes for an existing token without rotating it
+      responses:
+        "200": { description: Updated token metadata }
     delete:
       summary: Revoke a token by name
       responses:

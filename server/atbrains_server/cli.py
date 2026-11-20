@@ -202,7 +202,12 @@ def cmd_token_add(args) -> int:
 
 def cmd_token_rm(args) -> int:
     ts = _tokens(args.config_home)
-    if not ts.remove(args.machine):
+    try:
+        removed = ts.remove(args.machine)
+    except ValueError as exc:
+        _p(f"❌ {exc}")
+        return 1
+    if not removed:
         _p(f"❌ {args.machine} 没有令牌")
         return 1
     _p(f"✅ 已删除 {args.machine} 的令牌")

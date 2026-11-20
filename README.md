@@ -8,6 +8,11 @@
 cd server
 cp .env.example .env
 # 编辑 .env 设置数据库密码与宿主机数据持久化目录
+
+# 1) 首次创建数据库容器（MariaDB / Redis / Qdrant，仅需执行一次）
+docker compose -f docker-compose.db.yml up -d
+
+# 2) 构建并启动应用容器（以后重新部署只需执行此命令，不会动数据库容器）
 docker compose up -d --build
 ```
 
