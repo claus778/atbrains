@@ -39,9 +39,10 @@ export class AtbrainsClient {
    * @param {number} [opts.timeoutMs] 召回等轻请求超时
    * @param {number} [opts.writeTimeoutMs] 归档等写请求超时
    */
-  constructor({ baseUrl, token, timeoutMs = 1200, writeTimeoutMs = 4000 }) {
+  constructor({ baseUrl, token, clientName = 'dsh', timeoutMs = 1200, writeTimeoutMs = 4000 }) {
     this.baseUrl = normalizeBaseUrl(baseUrl)
-    this.token = String(token || '')
+    this.token = String(token || '').trim()
+    this.clientName = String(clientName || 'dsh').trim().toLowerCase() || 'dsh'
     this.timeoutMs = Math.max(200, Number(timeoutMs) || 1200)
     this.writeTimeoutMs = Math.max(500, Number(writeTimeoutMs) || 4000)
   }
@@ -53,6 +54,8 @@ export class AtbrainsClient {
       headers: {
         accept: 'application/json',
         authorization: `Bearer ${this.token}`,
+        'x-atbrains-client': this.clientName,
+        'user-agent': 'dsh-atbrains/1.0',
       },
       signal: AbortSignal.timeout(timeoutMs),
     }

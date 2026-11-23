@@ -79,6 +79,7 @@ def _first_env_or_dotenv(env_paths: list[Path], keys: tuple[str, ...]) -> str:
 class ClientConfig:
     base_url: str = ""
     token: str = ""
+    client_name: str = ""
     timeout_ms: int = 1200
     write_timeout_ms: int = 4000
     spool_dir: str = ""
@@ -87,6 +88,97 @@ class ClientConfig:
     recall_cache_max: int = 128
     expected_protocol_major: int = 2
     config_home: str = ""
+
+
+def mask_token(token: str) -> str:
+    t = str(token or "").strip()
+    if not t:
+        return "(未设置)"
+    return f"{t[:4]}…{t[-4:]}" if len(t) > 12 else "…"
+
+
+def _upsert_dotenv(env_path: Path, key: str, value: str) -> None:
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    lines: list[str] = []
+    if env_path.exists():
+        try:
+            lines = env_path.read_text(encoding="utf-8-sig", errors="replace").splitlines()
+        except OSError:
+            lines = []
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    needs_quote = any(c in value for c in (' ', '\t', '#', '"', "'"))
+    new_line = f'{key}="{escaped}"' if needs_quote else f"{key}={value}"
+    replaced = False
+    out_lines: list[str] = []
+    for line in lines:
+        s = line.strip()
+        check = s[7:].lstrip() if s.startswith("export ") else s
+        if not s.startswith("#") and "=" in check:
+            k, _, _ = check.partition("=")
+            if k.strip() == key:
+                if not replaced:
+                    out_lines.append(new_line)
+                    replaced = True
+                continue
+        out_lines.append(line)
+    if not replaced:
+        out_lines.append(new_line)
+    content = "\n".join(out_lines).rstrip("\n") + "\n"
+    tmp = env_path.with_name(env_path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(content)
+    os.replace(tmp, env_path)
+    os.chmod(env_path, 0o600)
+
+
+def save_client_token(
+    token: str,
+    *,
+    config_home: Optional[str] = None,
+    base_url: Optional[str] = None,
+    json_filename: str = "client.json",
+    env_key: str = "ATBRAINS_TOKEN",
+) -> dict[str, str]:
+    """安全持久化客户端 Bearer Token 到 `.env`（权限 600），可选同步写入 `service_url`。"""
+    tok = str(token or "").strip()
+    if len(tok) >= 2 and tok[0] == tok[-1] and tok[0] in ('"', "'"):
+        tok = tok[1:-1].strip()
+    if not tok:
+        raise ValueError("token 不能为空")
+    if "\n" in tok or "\r" in tok:
+        raise ValueError("token 不能包含换行符")
+    home = Path(config_home).expanduser() if config_home else (
+        Path(os.environ.get("ATBRAINS_HOME")).expanduser()
+        if os.environ.get("ATBRAINS_HOME")
+        else Path(os.environ.get("XDG_CONFIG_HOME") or (Path.home() / ".config")).expanduser() / "atbrains"
+    )
+    home.mkdir(parents=True, exist_ok=True)
+    env_path = home / ".env"
+    _upsert_dotenv(env_path, env_key, tok)
+
+    json_path = home / json_filename
+    eff_url = normalize_base_url(base_url or "")
+    if eff_url:
+        existing: dict[str, Any] = {}
+        if json_path.exists():
+            try:
+                parsed = json.loads(json_path.read_text(encoding="utf-8-sig"))
+                if isinstance(parsed, dict):
+                    existing = parsed
+            except Exception:  # noqa: BLE001
+                existing = {}
+        existing["service_url"] = eff_url
+        tmp = json_path.with_name(json_path.name + ".tmp")
+        tmp.write_text(json.dumps(existing, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, json_path)
+    return {
+        "config_home": str(home),
+        "env_path": str(env_path),
+        "json_path": str(json_path),
+        "base_url": eff_url,
+        "masked": mask_token(tok),
+    }
 
 
 def _candidate_homes(config_home: Optional[str] = None) -> list[Path]:
@@ -116,6 +208,7 @@ def resolve_client_config(
     *,
     base_url: Optional[str] = None,
     token: Optional[str] = None,
+    client_name: Optional[str] = None,
     timeout_ms: Optional[int] = None,
     write_timeout_ms: Optional[int] = None,
     spool_dir: Optional[str] = None,
@@ -194,9 +287,16 @@ def resolve_client_config(
     if not sp_dir and raw.get("spool_dir"):
         sp_dir = str(raw["spool_dir"])
 
+    cname = (
+        str(client_name or "").strip().lower()
+        or _first_env_or_dotenv(env_paths, ("ATBRAINS_CLIENT",)).lower()
+        or str(raw.get("client") or raw.get("client_name") or "").strip().lower()
+    )[:32]
+
     return ClientConfig(
         base_url=url,
         token=tok,
+        client_name=cname,
         timeout_ms=max(200, t_ms),
         write_timeout_ms=max(500, wt_ms),
         spool_dir=sp_dir,

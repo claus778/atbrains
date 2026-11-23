@@ -19,6 +19,7 @@ import asyncio
 import json
 import os
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Optional
 
@@ -38,7 +39,12 @@ def _ensure_sdk() -> None:
 
 _ensure_sdk()
 
-from atbrains_client import AtbrainsClient, resolve_client_config  # noqa: E402
+from atbrains_client import (  # noqa: E402
+    AtbrainsClient,
+    AtbrainsClientError,
+    resolve_client_config,
+    save_client_token,
+)
 
 try:
     from astrbot.api import logger  # noqa: E402
@@ -93,6 +99,7 @@ def _build_client(plugin_config: Optional[dict[str, Any]] = None) -> AtbrainsCli
         config_home,
         base_url=str(pc.get("base_url") or pc.get("service_url") or "") or None,
         token=str(pc.get("token") or pc.get("service_token") or "") or None,
+        client_name=AGENT_NAME,
         timeout_ms=int(pc["timeout_ms"]) if pc.get("timeout_ms") else None,
         write_timeout_ms=int(pc["write_timeout_ms"]) if pc.get("write_timeout_ms") else None,
         spool_dir=str(pc.get("spool_dir") or "") or None,
@@ -115,8 +122,15 @@ class AtbrainsMemory(Star):
         self._warned_write = False
         if self.client.configured:
             logger.info(f"[atbrains] HTTP 客户端已就绪 → {self.client.base_url} (agent={AGENT_NAME})")
+            threading.Thread(target=self._startup_checkin, name="atbrains-astrbot-checkin", daemon=True).start()
         else:
             logger.warning("[atbrains] 未配置 service_url 或 token，记忆功能处于待机状态")
+
+    def _startup_checkin(self) -> None:
+        try:
+            self.client.status(light=True)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(f"[atbrains] 启动在线上报跳过：{exc}")
 
     @filter.on_llm_request()
     async def on_llm_request(self, event: AstrMessageEvent, req: ProviderRequest) -> None:
@@ -295,6 +309,41 @@ def _selftest() -> int:
     return 0
 
 
+def _cli_tokset(argv: list[str]) -> int:
+    import argparse
+
+    p = argparse.ArgumentParser(prog="astrbot-atbrains")
+    p.add_argument("--tokset", required=True, help="Bearer 令牌")
+    p.add_argument("--url", default="", help="可选：服务端地址")
+    p.add_argument("--home", default=None, help="可选：配置目录（默认 ~/.config/atbrains）")
+    p.add_argument("--no-verify", action="store_true")
+    args = p.parse_args(argv)
+    saved = save_client_token(
+        args.tokset,
+        config_home=args.home,
+        base_url=args.url or None,
+        json_filename="client.json",
+        env_key="ATBRAINS_TOKEN",
+    )
+    print(f"✅ 已保存 Token ({saved['masked']}) → {saved['env_path']} (权限 600)")
+    if saved.get("base_url"):
+        print(f"✅ 已保存服务地址 {saved['base_url']} → {saved['json_path']}")
+    if args.no_verify:
+        return 0
+    cfg = resolve_client_config(args.home, client_name=AGENT_NAME)
+    if not cfg.base_url:
+        return 0
+    try:
+        info = AtbrainsClient(base_url=cfg.base_url, token=args.tokset, client_name=AGENT_NAME).verify()
+    except AtbrainsClientError as exc:
+        print(f"❌ 令牌校验失败：{exc}", file=sys.stderr)
+        return 1
+    print(f"✅ 校验通过 ({info['latency_ms']}ms) · 身份 {info.get('machine') or '-'} | {info.get('agent') or '-'} · 已上报在线")
+    return 0
+
+
 if __name__ == "__main__":
     if "--selftest" in sys.argv:
         raise SystemExit(_selftest())
+    if "--tokset" in sys.argv:
+        raise SystemExit(_cli_tokset(sys.argv[1:]))

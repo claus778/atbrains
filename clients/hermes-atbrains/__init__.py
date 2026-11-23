@@ -82,7 +82,7 @@ def _hermes_home(hermes_home: Optional[str] = None) -> Path:
 
 def _resolve_client_cfg(hermes_home: Optional[str] = None) -> ClientConfig:
     home = _hermes_home(hermes_home)
-    cfg = resolve_client_config(str(home))
+    cfg = resolve_client_config(str(home), client_name="hermes")
     if not cfg.spool_dir:
         cfg.spool_dir = str(home / "atbrains-spool")
     return cfg
@@ -125,7 +125,7 @@ class AtbrainsMemoryProvider(MemoryProvider):
         if missing:
             return (
                 "atbrains 客户端缺少配置 " + ", ".join(missing)
-                + "（写入 ~/.hermes/atbrains.json 与 ~/.hermes/.env，或运行 `hermes memory setup`）。"
+                + "（可运行 `hermes atbrains-memory tokset <token> --url <url>`，或手动写入 ~/.hermes/atbrains.json 与 ~/.hermes/.env）。"
             )
         return ""
 
@@ -142,11 +142,26 @@ class AtbrainsMemoryProvider(MemoryProvider):
                 self._cfg = cfg
                 if cfg.base_url and cfg.token:
                     self._client = AtbrainsClient.from_config(cfg)
+                    self._checkin_async(self._client)
                 else:
                     self._client = None
             except Exception as exc:  # noqa: BLE001
                 logger.warning("atbrains: 客户端初始化失败 (%s)", exc)
                 self._client = None
+
+    @staticmethod
+    def _checkin_async(cli: AtbrainsClient) -> None:
+        """启动时异步轻探活一次，向服务端校验令牌并立即上报在线状态。"""
+        def _probe() -> None:
+            try:
+                cli.status(light=True)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("atbrains: 启动在线上报跳过: %s", exc)
+
+        try:
+            threading.Thread(target=_probe, name="atbrains-checkin", daemon=True).start()
+        except Exception:  # noqa: BLE001
+            pass
 
     def _require_client(self) -> AtbrainsClient:
         if self._client is None:

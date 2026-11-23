@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import hmac
+import json
+import os
 import re
 import threading
 import time
@@ -145,8 +147,59 @@ class MemoryService:
         self._workers_started = False
         self._activity: dict[str, dict[str, Any]] = {}
         self._activity_lock = threading.Lock()
+        self._activity_path = self.tokens.path.with_name("token-activity.json")
+        self._activity_last_save = 0.0
+        try:
+            ttl = float(os.environ.get("ATBRAINS_ONLINE_TTL_SEC") or 300)
+        except (TypeError, ValueError):
+            ttl = 300.0
+        self._online_ttl_sec = max(30.0, ttl)
+        self._load_activity()
         if start_workers:
             self.start_workers()
+
+    def _load_activity(self) -> None:
+        try:
+            raw = json.loads(self._activity_path.read_text(encoding="utf-8"))
+        except Exception:  # noqa: BLE001
+            return
+        if not isinstance(raw, dict):
+            return
+        loaded: dict[str, dict[str, Any]] = {}
+        for k, v in raw.items():
+            if not isinstance(v, dict):
+                continue
+            loaded[str(k)] = {
+                "first_seen": str(v.get("first_seen") or ""),
+                "last_ts": float(v.get("last_ts") or 0),
+                "last_seen": str(v.get("last_seen") or ""),
+                "last_ip": str(v.get("last_ip") or ""),
+                "last_channel": str(v.get("last_channel") or ""),
+                "last_ua": str(v.get("last_ua") or ""),
+                "detected_client": str(v.get("detected_client") or ""),
+                "last_path": str(v.get("last_path") or ""),
+                "requests": int(v.get("requests") or 0),
+            }
+        with self._activity_lock:
+            self._activity = loaded
+
+    def _save_activity_locked(self, *, force: bool = False) -> None:
+        now = time.monotonic()
+        if not force and (now - self._activity_last_save) < 10.0:
+            return
+        p = self._activity_path
+        try:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            blob = json.dumps(self._activity, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+            tmp = p.with_name(p.name + ".tmp")
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(blob)
+            os.replace(tmp, p)
+            os.chmod(p, 0o600)
+            self._activity_last_save = now
+        except Exception:  # noqa: BLE001
+            pass
 
     @property
     def engine(self) -> Any:
@@ -172,22 +225,16 @@ class MemoryService:
         return ident.name if ident else None
 
     def _authorize_admin(self, headers: Any) -> Optional[TokenIdentity]:
+        if self._console_token_fn is not None:
+            expected = str(self._console_token_fn() or "").strip()
+            got = header_value(headers, "X-Auth-Token").strip()
+            if expected and got and hmac.compare_digest(got.encode("utf-8"), expected.encode("utf-8")):
+                return TokenIdentity(name="console", machine="", agent="console", role="admin")
         ident = self.authorize_identity(headers, channel="v1")
         if ident is not None:
             if ident.role != "admin":
                 raise Forbidden("需要 admin 权限令牌")
             return ident
-        if self._console_token_fn is not None:
-            expected = str(self._console_token_fn() or "")
-            got = ""
-            for k, v in (headers or {}).items():
-                if str(k).lower() == "x-auth-token":
-                    got = str(v or "")
-                    break
-            got = got.strip()
-            expected = expected.strip()
-            if expected and got and hmac.compare_digest(got.encode("utf-8"), expected.encode("utf-8")):
-                return TokenIdentity(name="console", machine="", agent="console", role="admin")
         return None
 
     # ---------------------------------------------------------- store 与 worker
@@ -231,7 +278,7 @@ class MemoryService:
             xff = header_value(headers, "X-Forwarded-For").strip()
             ip = xff.split(",")[0].strip() if xff else str(remote_ip or "").strip()
         ua = header_value(headers, "User-Agent").strip()[:120]
-        hdr_client = header_value(headers, "X-Atbrains-Client").strip().lower()[:32]
+        hdr_client = infer_client("", header_value(headers, "X-Atbrains-Client"))
         detected = hdr_client or ident.client
         if not detected and ua:
             low = ua.lower()
@@ -252,16 +299,25 @@ class MemoryService:
         with self._activity_lock:
             prev = self._activity.get(ident.name)
             reqs = int(prev.get("requests", 0)) + 1 if prev else 1
+            eff_detected = detected or (prev.get("detected_client", "") if prev else "")
+            changed = (
+                prev is None
+                or prev.get("last_ip") != ip
+                or prev.get("last_channel") != str(channel or "")
+                or prev.get("detected_client") != eff_detected
+            )
             self._activity[ident.name] = {
+                "first_seen": str(prev.get("first_seen") or seen) if prev else seen,
                 "last_ts": now,
                 "last_seen": seen,
                 "last_ip": ip,
                 "last_channel": str(channel or ""),
                 "last_ua": ua,
-                "detected_client": detected or (prev.get("detected_client", "") if prev else ""),
+                "detected_client": eff_detected,
                 "last_path": str(path or "")[:64],
                 "requests": reqs,
             }
+            self._save_activity_locked(force=changed)
 
     def handle(
         self,
@@ -292,7 +348,7 @@ class MemoryService:
                 return 200, getattr(self, handler)(method, ident, payload, query)
             ident = self.authorize_identity(headers, channel="v1")
             if ident is None:
-                return 401, {"error": "unauthorized"}
+                return 401, {"ok": False, "error": "unauthorized"}
             self.record_activity(ident, channel="v1", headers=headers, path=path, remote_ip=remote_ip)
             return 200, getattr(self, handler)(ident, payload, query)
         except BadRequest as e:
@@ -491,8 +547,10 @@ class MemoryService:
         light = bool(body.get("light")) or _qparam(query, "light", "").strip().lower() in ("1", "true", "yes")
         out: dict[str, Any] = {
             "ok": True,
+            "name": ident.name,
             "machine": st.machine,
             "agent": st.agent,
+            "client": ident.client,
             "role": ident.role,
             "ping": st.ping(),
         }
@@ -723,6 +781,7 @@ class MemoryService:
     def _admin_tokens(self, method: str, ident: TokenIdentity, body: dict, query: dict) -> dict:
         if method == "GET":
             now = time.time()
+            ttl = self._online_ttl_sec
             with self._activity_lock:
                 acts = {k: dict(v) for k, v in self._activity.items()}
             items = []
@@ -730,6 +789,9 @@ class MemoryService:
                 info = self.tokens.resolve_entry(name, ent)
                 act = acts.get(name) or {}
                 last_ts = float(act.get("last_ts") or 0)
+                online = bool(last_ts and (now - last_ts) <= ttl)
+                ago_sec = max(0, int(now - last_ts)) if last_ts else None
+                status = "online" if online else ("offline" if (last_ts or int(act.get("requests") or 0) > 0) else "never")
                 items.append({
                     "name": info["name"],
                     "machine": info["machine"],
@@ -742,16 +804,20 @@ class MemoryService:
                     "builtin": bool(info["builtin"]),
                     "protected": bool(info["protected"]),
                     "is_current": bool(ident.name == name),
-                    "online": bool(last_ts and (now - last_ts) <= 300.0),
+                    "online": online,
+                    "status": status,
                     "requests": int(act.get("requests") or 0),
+                    "first_seen": str(act.get("first_seen") or ""),
+                    "last_ts": last_ts,
                     "last_seen": str(act.get("last_seen") or ""),
+                    "ago_sec": ago_sec,
                     "last_ip": str(act.get("last_ip") or ""),
                     "last_channel": str(act.get("last_channel") or ""),
                     "last_ua": str(act.get("last_ua") or ""),
                     "last_path": str(act.get("last_path") or ""),
                 })
             items.sort(key=lambda x: (not x["builtin"], x["role"] != "admin", x["name"]))
-            return {"ok": True, "tokens": items}
+            return {"ok": True, "server_ts": now, "online_ttl_sec": int(ttl), "tokens": items}
         if method == "POST":
             machine = str(body.get("machine") or "").strip()
             agent = str(body.get("agent") or "").strip().lower()
@@ -848,6 +914,7 @@ class MemoryService:
                     if client is not None:
                         act["detected_client"] = info["client"]
                     self._activity[info["name"]] = act
+                    self._save_activity_locked(force=True)
             return {
                 "ok": True,
                 "name": info["name"],
@@ -872,6 +939,7 @@ class MemoryService:
             except ValueError as exc:
                 raise BadRequest(str(exc)) from None
             with self._activity_lock:
-                self._activity.pop(name, None)
+                if self._activity.pop(name, None) is not None:
+                    self._save_activity_locked(force=True)
             return {"ok": True, "removed": removed}
         raise BadRequest(f"unsupported method: {method}")

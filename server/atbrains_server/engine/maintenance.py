@@ -227,6 +227,23 @@ class MaintenanceMixin:
         except Exception as exc:  # noqa: BLE001
             out["agents"] = []
             logger.debug("atbrains: agent 统计失败: %s", str(exc)[:160])
+        # 按 (machine, agent) 精细拆分（同 agent 多节点各自准确计数）
+        try:
+            id_rows: Any = self._exec(
+                "SELECT machine, agent, COUNT(*) AS total, SUM(active = 1) AS active "
+                "FROM brain_memories GROUP BY machine, agent ORDER BY total DESC", fetch=True)
+            out["identities"] = [
+                {
+                    "machine": r["machine"] or "",
+                    "agent": r["agent"] or "",
+                    "total": int(r["total"] or 0),
+                    "active": int(r["active"] or 0),
+                }
+                for r in id_rows
+            ]
+        except Exception as exc:  # noqa: BLE001
+            out["identities"] = []
+            logger.debug("atbrains: identity 统计失败: %s", str(exc)[:160])
         try:
             r = self.redis()
             out["redis"] = {
@@ -389,7 +406,7 @@ class MaintenanceMixin:
     def overview(self, *, fresh: bool = False) -> dict[str, Any]:
         """管理台与 CLI 总览（复用 vector_status SQL 计数，不在轮询路径做 Qdrant 全量 scroll）。"""
         out: dict[str, Any] = {
-            "ts": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "version": PROTOCOL_VERSION,
             "server_version": __version__,
         }

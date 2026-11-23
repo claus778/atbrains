@@ -15,8 +15,10 @@ from atbrains_client import (  # noqa: E402
     AtbrainsClient,
     AtbrainsClientError,
     OfflineSpool,
+    mask_token,
     normalize_base_url,
     resolve_client_config,
+    save_client_token,
 )
 
 
@@ -49,6 +51,28 @@ class ConfigTest(unittest.TestCase):
             cfg = resolve_client_config(str(p))
             self.assertEqual(cfg.base_url, "http://srv:8787")
             self.assertEqual(cfg.token, "srv-tok-xyz")
+
+    def test_save_client_token_preserves_env_and_json(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p / ".env").write_text("# comment\nOTHER_VAR=keep\nATBRAINS_TOKEN=old-tok\n", encoding="utf-8")
+            (p / "atbrains.json").write_text(json.dumps({"timeout_ms": 1500}), encoding="utf-8")
+            saved = save_client_token(
+                "new-secret-token-123456",
+                config_home=str(p),
+                base_url="http://mem.example:8080/v1/",
+                json_filename="atbrains.json",
+            )
+            self.assertEqual(saved["base_url"], "http://mem.example:8080")
+            self.assertEqual(saved["masked"], mask_token("new-secret-token-123456"))
+            env_text = (p / ".env").read_text(encoding="utf-8")
+            self.assertIn("OTHER_VAR=keep", env_text)
+            self.assertIn("ATBRAINS_TOKEN=new-secret-token-123456", env_text)
+            self.assertNotIn("old-tok", env_text)
+            cfg = resolve_client_config(str(p))
+            self.assertEqual(cfg.base_url, "http://mem.example:8080")
+            self.assertEqual(cfg.token, "new-secret-token-123456")
+            self.assertEqual(cfg.timeout_ms, 1500)
 
 
 class SpoolTest(unittest.TestCase):
@@ -100,7 +124,10 @@ class HttpClientTest(unittest.TestCase):
             def do_POST(self):
                 n = int(self.headers.get("Content-Length") or 0)
                 body = json.loads(self.rfile.read(n).decode() or "{}")
-                calls.append(("POST", self.path, body))
+                calls.append(("POST", self.path, body, self.headers.get("X-Atbrains-Client") or ""))
+                if self.path == "/v1/memory/status":
+                    self._json(200, {"ok": True, "name": "box|sdk", "machine": "box", "agent": "sdk", "client": "python-sdk", "role": "agent", "ping": {"redis": True, "mariadb": True}})
+                    return
                 if self.path == "/v1/memory/recall":
                     self._json(200, {"ok": True, "text": "[mem] ok", "count": 1, "items": [{"id": 1}]})
                     return
@@ -132,12 +159,17 @@ class HttpClientTest(unittest.TestCase):
                     recall_cache_ttl=60,
                 )
                 self.assertTrue(cli.protocol_ok())
+                ver = cli.verify()
+                self.assertTrue(ver["ok"])
+                self.assertEqual(ver["machine"], "box")
+                self.assertEqual(ver["client"], "python-sdk")
                 r1 = cli.recall("test query")
                 r2 = cli.recall("test query")
                 self.assertEqual(r1["count"], 1)
                 self.assertEqual(r2["count"], 1)
-                # 第二次命中客户端缓存
-                self.assertEqual(sum(1 for _, p, _ in calls if p == "/v1/memory/recall"), 1)
+                # 第二次命中客户端缓存，且每次请求都携带 X-Atbrains-Client
+                self.assertEqual(sum(1 for _, p, _, _ in calls if p == "/v1/memory/recall"), 1)
+                self.assertTrue(all(hdr == "python-sdk" for _, _, _, hdr in calls))
 
                 # 瞬时 503 写入自动进离线队列
                 fail_writes["on"] = True
@@ -150,7 +182,7 @@ class HttpClientTest(unittest.TestCase):
                 res = cli.remember("online fact", kind="fact")
                 self.assertEqual(res["saved"]["id"], 42)
                 self.assertEqual(cli.spool_status()["pending"], 0)
-                remembered = [b["content"] for _, p, b in calls if p == "/v1/memory/remember"]
+                remembered = [b["content"] for _, p, b, _ in calls if p == "/v1/memory/remember"]
                 self.assertIn("offline fact", remembered)
                 self.assertIn("online fact", remembered)
         finally:

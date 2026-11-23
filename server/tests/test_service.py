@@ -260,6 +260,14 @@ class TokenStoreTest(unittest.TestCase):
             assert ident_h
             self.assertEqual((ident_h.machine, ident_h.agent, ident_h.client), ("x260", "hermes", "hermes"))
             self.assertEqual(ident_cdx.client, "codex")
+            # 令牌解析容错：多空格、引号、X-Memory-Token 均能通过 O(1)+恒定时间校验
+            ident_q = ts.authorize({"Authorization": f'  Bearer   "{hermes_tok}"  '}, channel="v1")
+            assert ident_q
+            self.assertEqual(ident_q.name, "x260|hermes")
+            ident_hdr = ts.authorize({"X-Memory-Token": hermes_tok}, channel="v1")
+            assert ident_hdr
+            self.assertEqual(ident_hdr.name, "x260|hermes")
+            self.assertIsNone(ts.validate_token("invalid-token"))
 
             # 编辑客户端属性：保留原 token 不变，支持修改 client/machine/agent/role/note/attrs 与重命名
             updated = ts.update(
@@ -376,9 +384,16 @@ class HttpAndMcpServiceTest(unittest.TestCase):
                 self.assertGreaterEqual(len(toks["tokens"]), 2)
                 code, _ = self._req(p, "GET", "/v1/admin/tokens", headers={"X-Auth-Token": console_tok})
                 self.assertEqual(code, 200)
-                # 控制台令牌不能冒充 Bearer 访问 /v1/memory/*
-                code, _ = self._req(p, "POST", "/v1/memory/status", {}, {"Authorization": f"Bearer {console_tok}"})
+                # 控制台令牌不能冒充 Bearer 访问 /v1/memory/*，且 401 统一带 ok=False
+                code, unauth = self._req(p, "POST", "/v1/memory/status", {}, {"Authorization": f"Bearer {console_tok}"})
                 self.assertEqual(code, 401)
+                self.assertIs(unauth.get("ok"), False)
+                # 携带有效 X-Auth-Token 时，即使附带非 admin Authorization 也能通过管理鉴权
+                code, _ = self._req(
+                    p, "GET", "/v1/admin/tokens",
+                    headers={"X-Auth-Token": console_tok, "Authorization": f"Bearer {agent_tok}"},
+                )
+                self.assertEqual(code, 200)
 
                 # 4. /mcp JSON-RPC
                 code, mcp_list = self._req(p, "POST", "/mcp",
@@ -480,11 +495,14 @@ class HttpAndMcpServiceTest(unittest.TestCase):
                 self.assertEqual(patched["note"], "主力桌面端")
                 self.assertEqual(patched["attrs"], {"env": "prod", "owner": "alice"})
                 self.assertNotIn("token", patched)
-                # 原 Bearer Token 无需轮换即生效，且识别为新身份
+                # 原 Bearer Token 无需轮换即生效，且识别为新身份（/v1/memory/status 同时返回 name 与 client）
                 code, st_after = self._req(p, "POST", "/v1/memory/status", {"light": True}, hdr_h)
                 self.assertEqual(code, 200)
-                self.assertEqual((st_after["machine"], st_after["agent"]), ("desk", "claude-code"))
+                self.assertEqual((st_after["machine"], st_after["agent"], st_after["client"], st_after["name"]),
+                                 ("desk", "claude-code", "claude-code", "desk|claude-code"))
                 code, tlist2 = self._req(p, "GET", "/v1/admin/tokens", headers=hdr_console)
+                self.assertIn("server_ts", tlist2)
+                self.assertGreaterEqual(int(tlist2.get("online_ttl_sec") or 0), 30)
                 by_name2 = {t["name"]: t for t in tlist2["tokens"]}
                 self.assertNotIn("x260|hermes", by_name2)
                 rec_d = by_name2["desk|claude-code"]
@@ -492,6 +510,23 @@ class HttpAndMcpServiceTest(unittest.TestCase):
                 self.assertEqual(rec_d["note"], "主力桌面端")
                 self.assertEqual(rec_d["attrs"], {"env": "prod", "owner": "alice"})
                 self.assertEqual(rec_d["requests"], 3)
+                self.assertEqual(rec_d["status"], "online")
+                self.assertIsNotNone(rec_d["ago_sec"])
+                # 重启恢复：新建 MemoryService 实例应从 token-activity.json 恢复在线状态与请求计数
+                svc_restarted = MemoryService(
+                    config_home=tmp,
+                    tokens_path=data_dir / "service-tokens.json",
+                    start_workers=False,
+                    console_token_fn=rt.console_token.get,
+                    store_factory=lambda cfg: FakeStore(cfg),
+                )
+                rc_code, rc_payload = svc_restarted.handle("GET", "/v1/admin/tokens", {}, {}, hdr_console)
+                self.assertEqual(rc_code, 200)
+                rec_after_restart = {t["name"]: t for t in rc_payload["tokens"]}["desk|claude-code"]
+                self.assertTrue(rec_after_restart["online"])
+                self.assertEqual(rec_after_restart["status"], "online")
+                self.assertEqual(rec_after_restart["last_ip"], "10.0.0.42")
+                self.assertGreaterEqual(rec_after_restart["requests"], 2)
                 # 编辑不存在的令牌返回 404；非 admin 调用 PATCH 返回 403
                 code, _ = self._req(p, "PATCH", "/v1/admin/tokens", {"name": "no-such-client", "note": "x"}, hdr_console)
                 self.assertEqual(code, 404)

@@ -53,6 +53,7 @@ class AtbrainsClient:
         base_url: str = "",
         token: str = "",
         *,
+        client_name: str = "",
         timeout_ms: int = 1200,
         write_timeout_ms: int = 4000,
         spool_dir: str = "",
@@ -63,6 +64,7 @@ class AtbrainsClient:
     ) -> None:
         self.base_url = normalize_base_url(base_url)
         self.token = str(token or "").strip()
+        self.client_name = str(client_name or "").strip().lower()[:32]
         self.timeout_ms = max(200, int(timeout_ms))
         self.write_timeout_ms = max(500, int(write_timeout_ms))
         self.expected_protocol_major = int(expected_protocol_major)
@@ -83,6 +85,7 @@ class AtbrainsClient:
         return cls(
             base_url=cfg.base_url,
             token=cfg.token,
+            client_name=cfg.client_name,
             timeout_ms=cfg.timeout_ms,
             write_timeout_ms=cfg.write_timeout_ms,
             spool_dir=cfg.spool_dir,
@@ -209,7 +212,12 @@ class AtbrainsClient:
             raise AtbrainsClientError("未配置 atbrains Bearer 令牌", transient=False)
         url = f"{self.base_url}{path}"
         timeout_s = max(0.05, float(timeout_ms or self.timeout_ms) / 1000.0)
-        headers: dict[str, str] = {"Accept": "application/json", "User-Agent": "atbrains-client/1.0"}
+        ua = f"atbrains-client/1.0 ({self.client_name})" if self.client_name else "atbrains-client/1.0"
+        headers: dict[str, str] = {
+            "Accept": "application/json",
+            "User-Agent": ua,
+            "X-Atbrains-Client": self.client_name or "python-sdk",
+        }
         if auth:
             headers["Authorization"] = f"Bearer {self.token}"
         raw_body: Optional[bytes] = None
@@ -309,6 +317,23 @@ class AtbrainsClient:
 
     def status(self, *, light: bool = False) -> dict[str, Any]:
         return self.request("POST", "/v1/memory/status", {"light": bool(light)})
+
+    def verify(self) -> dict[str, Any]:
+        """校验令牌有效性与服务端连通性（同时上报本客户端在线）。"""
+        t0 = time.monotonic()
+        st = self.status(light=True)
+        dt = int((time.monotonic() - t0) * 1000)
+        return {
+            "ok": bool(st.get("ok", True)),
+            "url": self.base_url,
+            "name": str(st.get("name") or ""),
+            "machine": str(st.get("machine") or ""),
+            "agent": str(st.get("agent") or ""),
+            "client": str(st.get("client") or self.client_name or ""),
+            "role": str(st.get("role") or "agent"),
+            "ping": st.get("ping") or {},
+            "latency_ms": dt,
+        }
 
     # ---------------------------------------------------------- 记忆读写与召回
 

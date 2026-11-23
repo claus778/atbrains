@@ -70,7 +70,7 @@ class AstrBotAdapterTest(unittest.TestCase):
                 self._send(200, {"ok": True, "version": "2.1.0"})
 
             def do_POST(self):
-                seen.append(self.path)
+                seen.append((self.path, self.headers.get("X-Atbrains-Client") or ""))
                 n = int(self.headers.get("Content-Length") or 0)
                 _ = json.loads(self.rfile.read(n).decode() or "{}")
                 if self.path == "/v1/memory/recall":
@@ -119,9 +119,11 @@ class AstrBotAdapterTest(unittest.TestCase):
                     self.assertIn("SSH=7622", search_out)
 
                 asyncio.run(run())
-                self.assertIn("/v1/memory/recall", seen)
-                self.assertIn("/v1/memory/turn", seen)
-                self.assertIn("/v1/memory/remember", seen)
+                paths = [p for p, _ in seen]
+                self.assertIn("/v1/memory/recall", paths)
+                self.assertIn("/v1/memory/turn", paths)
+                self.assertIn("/v1/memory/remember", paths)
+                self.assertTrue(all(hdr == "astrbot" for _, hdr in seen))
         finally:
             srv.shutdown()
             srv.server_close()

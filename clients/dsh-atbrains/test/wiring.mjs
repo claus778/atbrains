@@ -184,6 +184,12 @@ const preStep = (sessionId, messages = [userMsg]) =>
   check('agent 与 platform 不符时告警', mismatch.text.includes('token-add'))
   const match = await identityCommandResult(runtimeWith('dsh'), 'show')
   check('agent 一致时不告警', match.text.includes('agent=dsh') && !match.text.includes('token-add'))
+
+  // /atbrains tokset 命令：写入 token.json 并热更新客户端令牌 + 校验在线
+  const rtTok = runtimeWith('dsh')
+  const tokRes = await identityCommandResult(rtTok, 'tokset dsh-secret-token-99999 http://127.0.0.1:8080')
+  check('命令 tokset 成功', tokRes.kind === 'success' && tokRes.text.includes('校验通过') && !tokRes.text.includes('dsh-secret-token-99999'))
+  check('tokset 热更新 client.token 与 baseUrl', rtTok.client.token === 'dsh-secret-token-99999' && rtTok.client.baseUrl === 'http://127.0.0.1:8080')
 }
 
 // 归档：服务不可达也不许抛

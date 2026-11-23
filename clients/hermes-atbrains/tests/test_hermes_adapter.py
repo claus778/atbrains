@@ -46,7 +46,13 @@ class HermesAdapterTest(unittest.TestCase):
             def do_POST(self):
                 n = int(self.headers.get("Content-Length") or 0)
                 body = json.loads(self.rfile.read(n).decode() or "{}")
-                seen.append((self.path, body))
+                seen.append((self.path, body, self.headers.get("X-Atbrains-Client") or "", self.headers.get("Authorization") or ""))
+                if self.path == "/v1/memory/status":
+                    if self.headers.get("Authorization") == "Bearer bad-tok":
+                        self._send(401, {"ok": False, "error": "unauthorized"})
+                        return
+                    self._send(200, {"ok": True, "name": "dev|hermes", "machine": "dev", "agent": "hermes", "client": "hermes", "role": "agent", "ping": {"redis": True, "mariadb": True}})
+                    return
                 if self.path == "/v1/memory/recall":
                     self._send(200, {"ok": True, "text": "[mem] 端口是 7622", "count": 1,
                                      "items": [{"id": 9, "kind": "fact"}], "claims": [], "turns": []})
@@ -105,7 +111,7 @@ class HermesAdapterTest(unittest.TestCase):
                 r_ho = json.loads(prov.handle_tool_call("atbrains_handoff", {"note": "接力"}))
                 self.assertTrue(r_ho["ok"])
 
-                paths = [p for p, _ in seen]
+                paths = [p for p, _, _, _ in seen]
                 self.assertIn("/v1/memory/recall", paths)
                 self.assertIn("/v1/memory/turn", paths)
                 self.assertIn("/v1/memory/deactivate", paths)
@@ -113,6 +119,27 @@ class HermesAdapterTest(unittest.TestCase):
                 self.assertIn("/v1/memory/session/touch", paths)
                 self.assertIn("/v1/context", paths)
                 self.assertIn("/v1/handoff", paths)
+                # Hermes 适配器必须上报 X-Atbrains-Client: hermes
+                self.assertTrue(all(hdr == "hermes" for _, _, hdr, _ in seen))
+
+                # 验证 cli.py tokset / tokshow 命令
+                cli_spec = importlib.util.spec_from_file_location("hermes_atbrains.cli", ROOT / "cli.py")
+                assert cli_spec and cli_spec.loader
+                cli_mod = importlib.util.module_from_spec(cli_spec)
+                cli_mod.__package__ = "hermes_atbrains"
+                sys.modules["hermes_atbrains.cli"] = cli_mod
+                cli_spec.loader.exec_module(cli_mod)
+
+                import argparse
+                parser = argparse.ArgumentParser()
+                cli_mod.register_cli(parser)
+                home2 = Path(tmp) / "h2"
+                args_ok = parser.parse_args(["tokset", "tok-h-new", "--url", f"http://127.0.0.1:{srv.server_port}", "--home", str(home2)])
+                self.assertEqual(cli_mod._cmd_tokset(args_ok), 0)
+                self.assertIn("ATBRAINS_TOKEN=tok-h-new", (home2 / ".env").read_text(encoding="utf-8"))
+                self.assertIn(f"http://127.0.0.1:{srv.server_port}", (home2 / "atbrains.json").read_text(encoding="utf-8"))
+                args_bad = parser.parse_args(["tokset", "bad-tok", "--url", f"http://127.0.0.1:{srv.server_port}", "--home", str(home2)])
+                self.assertEqual(cli_mod._cmd_tokset(args_bad), 1)
         finally:
             srv.shutdown()
             srv.server_close()

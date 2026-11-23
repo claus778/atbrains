@@ -17,8 +17,9 @@
  *   · 状态写在 $DSH_HOME/atbrains/identity.json，升级覆盖 lib/ 不会丢。
  */
 import { randomUUID } from 'node:crypto'
-import { readFileSync } from 'node:fs'
-import { AtbrainsClient } from './client.js'
+import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { AtbrainsClient, normalizeBaseUrl } from './client.js'
 
 // 离线单元测试环境下可能未安装宿主提供的 @deepseek-ai/schemastery，提供最小占位
 let z
@@ -197,20 +198,58 @@ function sessionKeyOf(session, fallback) {
  * 组装运行时。测试可以直接拿 runtime.recall / runtime.archive 驱动，
  * 也可以注入 client 替换网络层。
  */
+function maskToken(tok) {
+  const s = String(tok || '').trim()
+  if (!s) return '(未设置)'
+  return s.length > 12 ? `${s.slice(0, 4)}…${s.slice(-4)}` : '…'
+}
+
+function readSavedTokenFile(file) {
+  try {
+    const data = JSON.parse(readFileSync(file, 'utf8'))
+    if (data && typeof data === 'object') {
+      return {
+        token: String(data.token || '').trim(),
+        baseUrl: String(data.baseUrl || '').trim(),
+      }
+    }
+  } catch {
+    /* 不存在或无法解析时忽略 */
+  }
+  return { token: '', baseUrl: '' }
+}
+
+function writeSavedTokenFile(file, { token, baseUrl = '' }) {
+  mkdirSync(dirname(file), { recursive: true })
+  const payload = { token: String(token || '').trim() }
+  if (baseUrl) payload.baseUrl = normalizeBaseUrl(baseUrl)
+  const tmp = `${file}.tmp`
+  writeFileSync(tmp, JSON.stringify(payload, null, 2) + '\n', { mode: 0o600 })
+  renameSync(tmp, file)
+  try {
+    chmodSync(file, 0o600)
+  } catch {
+    /* Windows 等平台不支持 chmod 时忽略 */
+  }
+}
+
 export function createRuntime(ctx, rawConfig, { clientFactory } = {}) {
   const logger = ctx?.logger
   const config = { ...DEFAULTS, ...(rawConfig || {}) }
-  const token = String(config.token || process.env[config.tokenEnv] || '').trim()
-  if (!token && !clientFactory) {
-    logger?.error?.(`[atbrains] 未找到令牌：环境变量 ${config?.tokenEnv} 为空，插件不工作`)
-    return { enabled: false }
-  }
   const identity = createIdentityController({
     config,
     pluginVersion: PLUGIN_VERSION,
     logger,
     file: config.identityFile,
   })
+  const tokenFile = join(dirname(identity.get().file), 'token.json')
+  const savedTok = readSavedTokenFile(tokenFile)
+  const token = String(config.token || process.env[config.tokenEnv] || savedTok.token || '').trim()
+  const effBaseUrl = savedTok.baseUrl && !rawConfig?.baseUrl ? savedTok.baseUrl : config.baseUrl
+  if (!token && !clientFactory) {
+    logger?.error?.(`[atbrains] 未找到令牌：环境变量 ${config?.tokenEnv} 为空，插件不工作`)
+    return { enabled: false }
+  }
   const identityState = identity.get()
   if (identityState.pending) {
     logger?.warn?.(
@@ -222,10 +261,11 @@ export function createRuntime(ctx, rawConfig, { clientFactory } = {}) {
     )
   }
   const client = clientFactory
-    ? clientFactory(config)
+    ? clientFactory({ ...config, baseUrl: effBaseUrl })
     : new AtbrainsClient({
-        baseUrl: config.baseUrl,
+        baseUrl: effBaseUrl,
         token,
+        clientName: 'dsh',
         timeoutMs: config.timeoutMs,
         writeTimeoutMs: config.writeTimeoutMs,
       })
@@ -404,12 +444,37 @@ export function createRuntime(ctx, rawConfig, { clientFactory } = {}) {
     })
   }
 
+  async function setToken(newToken, newBaseUrl = '') {
+    const tok = String(newToken || '').trim().replace(/^["']|["']$/g, '')
+    if (!tok) throw new Error('token 不能为空')
+    const nextUrl = newBaseUrl ? normalizeBaseUrl(newBaseUrl) : (client.baseUrl || effBaseUrl)
+    writeSavedTokenFile(tokenFile, { token: tok, baseUrl: newBaseUrl ? nextUrl : '' })
+    client.token = tok
+    if (newBaseUrl) client.baseUrl = nextUrl
+    serverIdentityCache = null
+    let verified = null
+    let verifyError = ''
+    try {
+      const s = await client.status({ light: true })
+      verified = {
+        machine: String(s?.machine || ''),
+        agent: String(s?.agent || ''),
+        client: String(s?.client || 'dsh'),
+      }
+      if (verified.machine || verified.agent) serverIdentityCache = { machine: verified.machine, agent: verified.agent }
+    } catch (err) {
+      verifyError = String(err?.message || err)
+    }
+    return { file: tokenFile, masked: maskToken(tok), baseUrl: client.baseUrl, verified, verifyError }
+  }
+
   return {
     enabled: true,
     client,
     identity,
     expectedAgent: String(config.platform || ''),
     serverIdentity,
+    setToken,
     recall: (payload, decision) => recall(payload, decision),
     setup: (payload, decision) => setup(payload, decision),
     archive,
@@ -423,6 +488,32 @@ export function createRuntime(ctx, rawConfig, { clientFactory } = {}) {
 
 /** `/atbrains` 命令体：直接返回 UI 文本，不进模型历史。 */
 export async function identityCommandResult(runtime, rawInput) {
+  const trimmed = String(rawInput || '').trim()
+  const tokMatch = /^(?:tokset|token-set|set-token)(?:\s+(.*))?$/i.exec(trimmed)
+  if (tokMatch) {
+    const parts = String(tokMatch[1] || '').trim().split(/\s+/).filter(Boolean)
+    const tok = parts[0] || ''
+    const url = parts[1] || ''
+    if (!tok) {
+      return { kind: 'error', text: '用法：/atbrains tokset <token> [service_url]' }
+    }
+    if (typeof runtime.setToken !== 'function') {
+      return { kind: 'error', text: '当前运行时不支持 tokset' }
+    }
+    try {
+      const res = await runtime.setToken(tok, url)
+      const lines = [`✅ 已保存 Token (${res.masked}) → ${res.file} (权限 600)`]
+      if (url) lines.push(`✅ 已更新服务地址 → ${res.baseUrl}`)
+      if (res.verified) {
+        lines.push(`✅ 校验通过 · 身份 ${res.verified.machine || '-'} | ${res.verified.agent || '-'} (${res.verified.client}) · 已上报在线`)
+      } else if (res.verifyError) {
+        lines.push(`⚠️ 令牌已保存，但连通性校验失败：${res.verifyError}`)
+      }
+      return { kind: 'success', text: lines.join('\n') }
+    } catch (error) {
+      return { kind: 'error', text: `设置 Token 失败：${String(error?.message || error)}` }
+    }
+  }
   const parsed = parseIdentityInput(rawInput)
   const identity = runtime.identity
   // 语法错误不探服务端；其余路径顺带展示令牌身份（失败静默，不影响命令结果）
@@ -611,6 +702,8 @@ export function apply(ctx, rawConfig) {
     `[atbrains] 已启用 → ${runtime.client.baseUrl}（召回 + ${config.archiveEnabled ? '自动归档' : '不归档'}；` +
       `${identityState.pending ? '身份待设置' : `身份 ${identityState.machine}/${identityState.author || '-'}`}）`,
   )
+  // 启动时非阻塞上报一次轻状态，让控制台立即显示在线
+  runtime.serverIdentity?.().catch(() => {})
 
   ctx.effect(() => {
     const offSurfaces = registerIdentitySurfaces(ctx, runtime)

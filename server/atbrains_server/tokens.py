@@ -4,6 +4,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 import fcntl
+import hashlib
 import hmac
 import json
 import os
@@ -80,11 +81,20 @@ def header_value(headers: Any, name: str) -> str:
     return ""
 
 
+def _clean_token_value(raw: str) -> str:
+    s = str(raw or "").strip()
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in ('"', "'"):
+        s = s[1:-1].strip()
+    return s
+
+
 def extract_bearer_token(headers: Any) -> str:
-    auth = header_value(headers, "Authorization")
-    if auth[:7].lower() == "bearer ":
-        return auth[7:].strip()
-    return header_value(headers, "X-Memory-Token").strip()
+    auth = header_value(headers, "Authorization").strip()
+    if auth:
+        parts = auth.split(None, 1)
+        if len(parts) == 2 and parts[0].lower() == "bearer":
+            return _clean_token_value(parts[1])
+    return _clean_token_value(header_value(headers, "X-Memory-Token"))
 
 
 def default_tokens_path(data_dir: Optional[Path] = None) -> Path:
@@ -101,7 +111,7 @@ class TokenStore:
     def __init__(self, path: Optional[Path] = None) -> None:
         self._explicit_path = path
         self._lock = threading.Lock()
-        self._cache: Optional[tuple[Path, Optional[int], dict[str, dict[str, Any]]]] = None
+        self._cache: Optional[tuple[Path, Optional[int], dict[str, dict[str, Any]], dict[bytes, str]]] = None
 
     @property
     def path(self) -> Path:
@@ -190,26 +200,36 @@ class TokenStore:
         os.replace(tmp, p)
         os.chmod(p, 0o600)
 
-    def entries(self) -> dict[str, dict[str, Any]]:
+    def _load_cache_locked(self) -> tuple[dict[str, dict[str, Any]], dict[bytes, str]]:
         p = self.path
+        try:
+            mtime: Optional[int] = p.stat().st_mtime_ns
+        except OSError:
+            mtime = None
+        if self._cache is not None and self._cache[0] == p and self._cache[1] == mtime:
+            return self._cache[2], self._cache[3]
+        raw = self._read_raw()
+        out: dict[str, dict[str, Any]] = {}
+        index: dict[bytes, str] = {}
+        for k, v in raw.items():
+            entry = self._normalize_entry(str(k), v)
+            if entry is not None:
+                name = str(k)
+                out[name] = entry
+                tok = str(entry.get("token") or "")
+                if tok:
+                    digest = hashlib.sha256(tok.encode("utf-8", "replace")).digest()
+                    index.setdefault(digest, name)
+        try:
+            mtime = p.stat().st_mtime_ns
+        except OSError:
+            pass
+        self._cache = (p, mtime, out, index)
+        return out, index
+
+    def entries(self) -> dict[str, dict[str, Any]]:
         with self._lock:
-            try:
-                mtime: Optional[int] = p.stat().st_mtime_ns
-            except OSError:
-                mtime = None
-            if self._cache is not None and self._cache[0] == p and self._cache[1] == mtime:
-                return {k: self._clone_entry(v) for k, v in self._cache[2].items()}
-            raw = self._read_raw()
-            out: dict[str, dict[str, Any]] = {}
-            for k, v in raw.items():
-                entry = self._normalize_entry(str(k), v)
-                if entry is not None:
-                    out[str(k)] = entry
-            try:
-                mtime = p.stat().st_mtime_ns
-            except OSError:
-                pass
-            self._cache = (p, mtime, out)
+            out, _ = self._load_cache_locked()
             return {k: self._clone_entry(v) for k, v in out.items()}
 
     def load(self) -> dict[str, str]:
@@ -432,20 +452,44 @@ class TokenStore:
             "protected": protected,
         }
 
+    def validate_token(self, token: str) -> Optional[TokenIdentity]:
+        got = _clean_token_value(token)
+        if not got:
+            return None
+        enc = got.encode("utf-8", "replace")
+        digest = hashlib.sha256(enc).digest()
+        with self._lock:
+            entries, index = self._load_cache_locked()
+            cand_name = index.get(digest)
+            if cand_name is not None:
+                entry = entries.get(cand_name)
+                if entry is not None:
+                    known = str(entry.get("token") or "")
+                    if known and hmac.compare_digest(enc, known.encode("utf-8", "replace")):
+                        info = self.resolve_entry(cand_name, entry)
+                        return TokenIdentity(
+                            name=info["name"],
+                            machine=info["machine"],
+                            agent=info["agent"],
+                            role=info["role"],
+                            client=info["client"],
+                        )
+            # 兜底全量恒定时间比对（仅在存在重复明文令牌等极端情况时触发）
+            for name, entry in entries.items():
+                known = str(entry.get("token") or "")
+                if known and hmac.compare_digest(enc, known.encode("utf-8", "replace")):
+                    info = self.resolve_entry(name, entry)
+                    return TokenIdentity(
+                        name=info["name"],
+                        machine=info["machine"],
+                        agent=info["agent"],
+                        role=info["role"],
+                        client=info["client"],
+                    )
+        return None
+
     def authorize(self, headers: Any, *, channel: str = "v1") -> Optional[TokenIdentity]:
         got = extract_bearer_token(headers)
         if not got:
             return None
-        enc = got.encode("utf-8", "replace")
-        for name, entry in self.entries().items():
-            known = entry.get("token") or ""
-            if known and hmac.compare_digest(enc, known.encode("utf-8", "replace")):
-                info = self.resolve_entry(name, entry)
-                return TokenIdentity(
-                    name=info["name"],
-                    machine=info["machine"],
-                    agent=info["agent"],
-                    role=info["role"],
-                    client=info["client"],
-                )
-        return None
+        return self.validate_token(got)

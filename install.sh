@@ -62,8 +62,8 @@ shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc", 
 shutil.copytree(sdk, dst / "_sdk" / "atbrains_client", ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 PY
   echo "✅ 已安装 Hermes 薄适配器 → $HERMES_DST（纯标准库 HTTP 客户端，无 DB 驱动）"
-  echo "   配置 $HERMES_DIR/atbrains.json: {\"service_url\": \"http://<server>:8787\"}"
-  echo "   配置 $HERMES_DIR/.env: ATBRAINS_TOKEN=<令牌>"
+  echo "   快速配置: hermes atbrains-memory tokset <令牌> --url http://<server>:8080"
+  echo "   或手动写: $HERMES_DIR/atbrains.json 与 $HERMES_DIR/.env (ATBRAINS_TOKEN)"
 }
 
 if [ "$TARGET" = all ] || [ "$TARGET" = server ]; then

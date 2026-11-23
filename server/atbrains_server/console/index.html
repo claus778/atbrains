@@ -635,6 +635,8 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
     clientFilter: "all",
     overview: null,
     tokens: [],
+    onlineTtlSec: 300,
+    tokensLoadedAt: 0,
     lastSecret: null,
     mem: {offset: 0, limit: 50, total: 0},
     turns: {offset: 0, limit: 30, total: 0},
@@ -657,29 +659,61 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
     return (i ? n.toFixed(1) : n) + " " + u[i];
   }
 
+  function _fmtDateLocal(d) {
+    const p = x => String(x).padStart(2, "0");
+    return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+  }
+
   function fmtTs(v) {
     if (v == null || v === "") return "-";
-    if (typeof v === "number" || /^\d+(\.\d+)?$/.test(String(v).trim())) {
+    const raw = String(v).trim();
+    if (!raw) return "-";
+    if (typeof v === "number" || /^\d+(\.\d+)?$/.test(raw)) {
       const n = Number(v);
       if (!n) return "-";
       const d = new Date(n > 1e12 ? n : n * 1000);
-      if (!isNaN(d.getTime())) {
-        const p = x => String(x).padStart(2, "0");
-        return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-      }
+      if (!isNaN(d.getTime())) return _fmtDateLocal(d);
     }
-    return String(v).replace("T", " ").replace("Z", "").slice(0, 19);
+    // ISO 带时区（Z 或 ±HH:MM）或 MariaDB UTC 串（YYYY-MM-DD HH:MM:SS）统一按 UTC 转为浏览器本地时间
+    const iso = /^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(raw)
+      ? raw.replace(" ", "T") + "Z"
+      : raw;
+    const d = new Date(iso);
+    if (!isNaN(d.getTime())) return _fmtDateLocal(d);
+    return raw.replace("T", " ").replace("Z", "").slice(0, 19);
   }
 
-  function fmtAgo(iso) {
-    if (!iso) return "从未连接";
-    const t = Date.parse(iso);
-    if (isNaN(t)) return iso;
-    const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+  function fmtAgo(iso, agoSec = null) {
+    if ((agoSec === null || agoSec === undefined) && !iso) return "从未连接";
+    let s;
+    if (agoSec !== null && agoSec !== undefined && isFinite(Number(agoSec))) {
+      const drift = state.tokensLoadedAt ? Math.max(0, Math.floor((Date.now() - state.tokensLoadedAt) / 1000)) : 0;
+      s = Math.max(0, Math.floor(Number(agoSec)) + drift);
+    } else {
+      const t = Date.parse(iso);
+      if (isNaN(t)) return iso;
+      s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    }
     if (s < 60) return s + " 秒前";
     if (s < 3600) return Math.floor(s / 60) + " 分钟前";
     if (s < 86400) return Math.floor(s / 3600) + " 小时前";
     return Math.floor(s / 86400) + " 天前";
+  }
+
+  function statusBadge(t) {
+    const st = t.status || (t.online ? "online" : ((t.last_seen || t.requests) ? "offline" : "never"));
+    if (st === "online") return `<span class="badge b-ok"><i class="dot ok pulse"></i>在线</span>`;
+    if (st === "offline") return `<span class="badge b-dim"><i class="dot"></i>离线</span>`;
+    return `<span class="badge b-dim">未接入</span>`;
+  }
+
+  function qdrantState(ov) {
+    const qd = ov?.qdrant || {};
+    const vec = ov?.vector || {};
+    const err = qd.error || vec.error || "";
+    const ok = !err && (qd.status === "green" || qd.status === "ok" || qd.points != null);
+    const label = err ? "异常" : (qd.status || (ok ? "正常" : "未知"));
+    return {qd, err, ok, label};
   }
 
   function clientBadge(client) {
@@ -804,13 +838,13 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
     const mach = info.machine || "host";
     const ag = info.agent || c;
     if (c === "hermes") {
-      return `# 1) ~/.hermes/atbrains.json\n{\n  "service_url": "${base}"\n}\n\n# 2) ~/.hermes/.env\nATBRAINS_TOKEN=${tok}`;
+      return `# 方式 A（推荐，一行命令自动写入并校验连通性）\nhermes atbrains-memory tokset "${tok}" --url "${base}"\n\n# 方式 B（手动编辑配置文件）\n# ~/.hermes/atbrains.json → {"service_url": "${base}"}\n# ~/.hermes/.env          → ATBRAINS_TOKEN=${tok}`;
     }
     if (c === "astrbot") {
-      return `# AstrBot 环境变量或 ~/.config/atbrains/client.json + .env\nATBRAINS_URL=${base}\nATBRAINS_TOKEN=${tok}\n# 身份绑定: ${mach} | ${ag}`;
+      return `# 方式 A：AstrBot 插件配置面板填入 base_url 与 token\n# 方式 B：命令行写入 ~/.config/atbrains/client.json + .env\npython3 clients/astrbot-atbrains/main.py --tokset "${tok}" --url "${base}"\n\n# 或环境变量（身份绑定: ${mach} | ${ag}）\nATBRAINS_URL=${base}\nATBRAINS_TOKEN=${tok}`;
     }
     if (c === "dsh") {
-      return `# 1) 环境变量\nexport ATBRAINS_MCP_TOKEN="${tok}"\n\n# 2) cordis.patch.yml\nbaseUrl: "${base}"`;
+      return `# 方式 A：在 DSH 对话中直接运行命令（无需重启）\n/atbrains tokset ${tok} ${base}\n\n# 方式 B：环境变量 + cordis.patch.yml\nexport ATBRAINS_MCP_TOKEN="${tok}"\n# baseUrl: "${base}"`;
     }
     if (c === "claude-code" || c === "codex" || c === "cursor" || c === "mcp") {
       return JSON.stringify({
@@ -842,26 +876,34 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
     $("#secret-panel").scrollIntoView({behavior: "smooth", block: "nearest"});
   }
 
-  function agentMemMap() {
-    const map = {};
-    for (const r of (state.overview?.stats?.agents || [])) {
-      map[String(r.agent || "").toLowerCase()] = r;
+  function buildMemLookup() {
+    const idRows = state.overview?.stats?.identities;
+    if (Array.isArray(idRows)) {
+      const byPair = {};
+      for (const r of idRows) {
+        const key = `${String(r.machine || "").toLowerCase()}|${String(r.agent || "").toLowerCase()}`;
+        byPair[key] = r;
+      }
+      return (machine, agent) => byPair[`${String(machine || "").toLowerCase()}|${String(agent || "").toLowerCase()}`] || null;
     }
-    return map;
+    const byAgent = {};
+    for (const r of (state.overview?.stats?.agents || [])) {
+      byAgent[String(r.agent || "").toLowerCase()] = r;
+    }
+    return (_machine, agent) => byAgent[String(agent || "").toLowerCase()] || null;
   }
 
   function renderHeaderHealth() {
     const ov = state.overview || {};
     const ping = ov.ping || {};
-    const qd = ov.qdrant || {};
-    const qOk = qd.status === "green" || qd.status === "ok" || (!qd.error && qd.points != null);
+    const qs = qdrantState(ov);
     $("#srv-ver").textContent = `v${ov.server_version || "-"}`;
     $("#srv-ver").title = `服务端 v${ov.server_version || "-"} · 协议 ${ov.version || "-"}`;
     $("#srv-ts").textContent = fmtTs(ov.ts);
     $("#d-db").className = "dot " + (ping.mariadb ? "ok" : "err");
     $("#d-rd").className = "dot " + (ping.redis ? "ok" : "err");
-    $("#d-qd").className = "dot " + (qOk ? "ok" : (qd.error ? "err" : "warn"));
-    const allOk = ping.mariadb && ping.redis && qOk;
+    $("#d-qd").className = "dot " + (qs.ok ? "ok" : (qs.err ? "err" : "warn"));
+    const allOk = ping.mariadb && ping.redis && qs.ok;
     $("#health-txt").textContent = allOk ? "正常" : "异常";
     $("#cnt-tokens").textContent = String((state.tokens || []).length);
     $("#cnt-mem").textContent = String(ov.stats?.mysql?.memories_active ?? "-");
@@ -872,20 +914,24 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
     const ping = ov.ping || {};
     const my = ov.stats?.mysql || {};
     const rd = ov.stats?.redis || {};
-    const qd = ov.qdrant || {};
+    const qs = qdrantState(ov);
+    const qd = qs.qd;
     const cov = qd.coverage || {};
     const actN = Number(cov.active_memories || 0);
     const vecN = Number(cov.with_vector || 0);
     const pct = actN ? Math.min(100, Math.round((vecN / actN) * 100)) : 100;
     const toks = state.tokens || [];
     const onlineCnt = toks.filter(t => t.online).length;
+    const connectedCnt = toks.filter(t => t.online || t.last_seen || t.requests).length;
+    const neverCnt = Math.max(0, toks.length - connectedCnt);
     const totalReqs = toks.reduce((s, t) => s + Number(t.requests || 0), 0);
+    const winMin = Math.max(1, Math.round((state.onlineTtlSec || 300) / 60));
 
     $("#ov-kpis").innerHTML = `
       <div class="card kpi">
-        <div class="k-lbl">在线 Agent (5 分钟内)</div>
+        <div class="k-lbl">在线客户端 (${winMin} 分钟内)</div>
         <div class="k-val num" style="color:${onlineCnt ? "var(--ok)" : "var(--fg)"}">${onlineCnt} <span style="font-size:16px;font-weight:500;color:var(--dim)">/ ${toks.length}</span></div>
-        <div class="k-sub num">累计处理请求 ${totalReqs} 次</div>
+        <div class="k-sub num">已接入 ${connectedCnt} · 未接入 ${neverCnt} · 请求 ${totalReqs} 次</div>
       </div>
       <div class="card kpi">
         <div class="k-lbl">活跃记忆</div>
@@ -905,7 +951,6 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
       </div>
     `;
 
-    const qOk = qd.status === "green" || qd.status === "ok" || (!qd.error && qd.points != null);
     $("#ov-engines").innerHTML = `
       <div class="eng-row">
         <div>
@@ -926,7 +971,7 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
           <div style="font-weight:600">Qdrant</div>
           <div class="small muted num">集合 ${esc(qd.collection || "-")} · ${qd.dim || "-"} 维 · ${qd.points ?? 0} 向量点</div>
         </div>
-        <span class="badge ${qOk ? "b-ok" : (qd.error ? "b-err" : "b-warn")}"><i class="dot ${qOk ? "ok" : (qd.error ? "err" : "warn")}"></i>${esc(qd.status || (qd.error ? "异常" : "就绪"))}</span>
+        <span class="badge ${qs.ok ? "b-ok" : (qs.err ? "b-err" : "b-warn")}"><i class="dot ${qs.ok ? "ok" : (qs.err ? "err" : "warn")}"></i>${esc(qs.label)}</span>
       </div>
     `;
 
@@ -942,19 +987,18 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
       </tr>`;
     }).join("") : `<tr><td colspan="4" class="empty">暂无记忆数据</td></tr>`;
 
-    const sorted = [...toks].sort((a, b) => (b.online - a.online) || ((b.requests || 0) - (a.requests || 0))).slice(0, 6);
+    const sorted = [...toks].sort(
+      (a, b) => (Number(b.online) - Number(a.online)) || ((b.last_ts || 0) - (a.last_ts || 0)) || ((b.requests || 0) - (a.requests || 0))
+    ).slice(0, 6);
     $("#tb-recent-agents").innerHTML = sorted.length ? sorted.map(t => {
-      const stat = t.online
-        ? `<span class="badge b-ok"><i class="dot ok pulse"></i>在线</span>`
-        : (t.requests ? `<span class="badge b-dim">离线</span>` : `<span class="badge b-dim">未接入</span>`);
       const ch = t.last_channel ? `<span class="badge b-blue">${esc(t.last_channel)}</span> ` : "";
       return `<tr>
-        <td>${stat}</td>
+        <td>${statusBadge(t)}</td>
         <td>${clientBadge(t.client)}</td>
         <td><span style="font-weight:600">${esc(t.name)}</span> <span class="small muted mono">${esc(t.machine || "-")} | ${esc(t.agent || "-")}</span></td>
         <td class="mono small">${ch}${esc(t.last_ip || "-")}</td>
         <td class="mono num">${t.requests || 0}</td>
-        <td class="small muted" title="${esc(fmtTs(t.last_seen))}">${esc(fmtAgo(t.last_seen))}</td>
+        <td class="small muted" title="${esc(fmtTs(t.last_seen))}">${esc(fmtAgo(t.last_seen, t.ago_sec))}</td>
       </tr>`;
     }).join("") : `<tr><td colspan="6" class="empty">暂无已签发令牌，点击右上角「签发 Agent 令牌」开始接入</td></tr>`;
   }
@@ -982,21 +1026,18 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
         .some(x => String(x || "").toLowerCase().includes(q));
     });
 
-    const memMap = agentMemMap();
+    const memLookup = buildMemLookup();
     const tb = $("#tb-tokens");
     if (!filtered.length) {
       tb.innerHTML = `<tr><td colspan="8" class="empty">没有匹配的令牌</td></tr>`;
       return;
     }
     tb.innerHTML = filtered.map(t => {
-      const stat = t.online
-        ? `<span class="badge b-ok"><i class="dot ok pulse"></i>在线</span>`
-        : (t.requests ? `<span class="badge b-dim"><i class="dot"></i>离线</span>` : `<span class="badge b-dim">未接入</span>`);
-      const am = memMap[String(t.agent || "").toLowerCase()];
+      const am = memLookup(t.machine, t.agent);
       const memTxt = am ? `<span class="mono num"><b>${am.active}</b> <span class="dim">/ ${am.total}</span></span>` : `<span class="dim mono num">0 / 0</span>`;
       const chBadge = t.last_channel ? `<span class="badge b-blue">${esc(t.last_channel)}</span>` : "";
-      const actInfo = t.requests
-        ? `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">${chBadge}<span class="mono small">${esc(t.last_ip || "-")}</span><span class="muted small num">${t.requests} 次</span></div><div class="small dim clip" style="max-width:210px;margin-top:2px" title="${esc((t.last_path || "") + " " + (t.last_ua || ""))}">${esc(t.last_path || "")} ${esc(t.last_ua || "")}</div>`
+      const actInfo = (t.requests || t.last_seen)
+        ? `<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap">${chBadge}<span class="mono small">${esc(t.last_ip || "-")}</span><span class="muted small num">${t.requests || 0} 次</span></div><div class="small dim clip" style="max-width:210px;margin-top:2px" title="${esc((t.last_path || "") + " " + (t.last_ua || ""))}">${esc(t.last_path || "")} ${esc(t.last_ua || "")}</div>`
         : `<span class="dim">-</span>`;
       const nameTags = t.protected
         ? `<span class="badge b-dim" title="已开启防误删保护，需在编辑中关闭后才能撤销">已保护</span>`
@@ -1012,7 +1053,7 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
         ? `<button class="btn sm" disabled title="已开启防误删保护，请先在编辑中关闭保护后再撤销">受保护</button>`
         : `<button class="btn sm err" data-act="revoke" data-name="${esc(t.name)}">撤销</button>`;
       return `<tr>
-        <td>${stat}</td>
+        <td>${statusBadge(t)}</td>
         <td>${clientBadge(t.client)}</td>
         <td>
           <div class="name-row"><span style="font-weight:600">${esc(t.name)}</span>${nameTags}</div>
@@ -1023,7 +1064,7 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
         <td class="mono small muted">${esc(t.masked)}</td>
         <td>${memTxt}</td>
         <td>${actInfo}</td>
-        <td title="${esc(fmtTs(t.last_seen))}"><span class="small muted">${esc(fmtAgo(t.last_seen))}</span></td>
+        <td title="${esc(fmtTs(t.last_seen))}"><span class="small muted">${esc(fmtAgo(t.last_seen, t.ago_sec))}</span></td>
         <td>
           <div class="act-grp">
             <button class="btn sm" data-act="edit" data-name="${esc(t.name)}">编辑</button>
@@ -1041,7 +1082,8 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
     const ping = ov.ping || {};
     const my = ov.stats?.mysql || {};
     const rd = ov.stats?.redis || {};
-    const qd = ov.qdrant || {};
+    const qs = qdrantState(ov);
+    const qd = qs.qd;
     const cov = qd.coverage || {};
     const actN = Number(cov.active_memories || 0);
     const vecN = Number(cov.with_vector || 0);
@@ -1073,7 +1115,7 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
         ${ping.redis_error ? `<div class="small" style="color:var(--err);margin-top:10px">${esc(ping.redis_error)}</div>` : ""}
       </div>
       <div class="card">
-        <div class="card-hd"><h2>Qdrant 向量库</h2><span class="badge ${qd.error ? "b-err" : "b-ok"}">${esc(qd.status || (qd.error ? "ERROR" : "READY"))}</span></div>
+        <div class="card-hd"><h2>Qdrant 向量库</h2><span class="badge ${qs.ok ? "b-ok" : (qs.err ? "b-err" : "b-warn")}">${esc(qs.err ? "ERROR" : (qd.status || (qs.ok ? "READY" : "WARN")))}</span></div>
         <div class="kv">
           <div class="kv-item"><span>集合</span><span class="mono">${esc(qd.collection || "-")}</span></div>
           <div class="kv-item"><span>向量点数</span><span class="mono num">${qd.points ?? 0}</span></div>
@@ -1084,7 +1126,7 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
           <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:6px"><span class="muted">向量覆盖率</span><span class="mono num">${pct}%</span></div>
           <div class="bar"><span style="width:${pct}%"></span></div>
         </div>
-        ${qd.error ? `<div class="small" style="color:var(--err);margin-top:8px">${esc(qd.error)}</div>` : ""}
+        ${qs.err ? `<div class="small" style="color:var(--err);margin-top:8px">${esc(qs.err)}</div>` : ""}
       </div>
     `;
   }
@@ -1095,6 +1137,8 @@ pre.code{margin:0;background:var(--code-bg);color:var(--code-fg);border-radius:v
       api("/v1/admin/tokens"),
     ]);
     state.overview = ov;
+    state.onlineTtlSec = Number(tok.online_ttl_sec || 300);
+    state.tokensLoadedAt = Date.now();
     state.tokens = (tok.tokens || []).filter(t => t.role !== "admin");
     renderHeaderHealth();
     renderOverview();
