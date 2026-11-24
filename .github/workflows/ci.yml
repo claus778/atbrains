@@ -6,43 +6,49 @@ on:
   pull_request:
 
 jobs:
-  python-tests:
+  server-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
-      - name: Install packages
+      - name: Install atbrains-server
         run: |
           python -m pip install --upgrade pip
-          pip install -e ./sdk/python -e ./server
-      - name: Compile check
+          pip install -e ./atbrains-server
+      - name: Compile & unit tests (atbrains-server)
+        working-directory: atbrains-server
         run: |
-          python -m compileall -q server/atbrains_server sdk/python/atbrains_client clients/hermes-atbrains clients/astrbot-atbrains tools ops
-      - name: Run pure, service, SDK, and adapter unit tests
-        run: |
-          python server/tests/test_pure.py
-          python server/tests/test_service.py
-          python sdk/python/tests/test_client.py
-          python clients/hermes-atbrains/tests/test_hermes_adapter.py
-          python clients/astrbot-atbrains/tests/test_astrbot_adapter.py
-      - name: Packaging smoke test
-        run: |
-          python tools/package-astrbot-client.py --no-verify
-          python tools/package-hermes-client.py
+          python -m compileall -q atbrains_server tools ops
+          python tests/test_pure.py
+          python tests/test_service.py
           python tools/export-schema.py --from-code > /tmp/schema-check.sql
           test -s /tmp/schema-check.sql
 
-  node-tests:
+  clients-tests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+      - name: Install & test Python SDK and adapters
+        working-directory: atbrains-clients
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ./sdk/python
+          python -m compileall -q sdk/python/atbrains_client clients/hermes-atbrains clients/astrbot-atbrains tools
+          python sdk/python/tests/test_client.py
+          python clients/hermes-atbrains/tests/test_hermes_adapter.py
+          python clients/astrbot-atbrains/tests/test_astrbot_adapter.py
+          python tools/package-astrbot-client.py --no-verify
+          python tools/package-hermes-client.py
       - name: Run dsh-atbrains offline tests
-        working-directory: clients/dsh-atbrains
+        working-directory: atbrains-clients/clients/dsh-atbrains
         run: |
           npm test
           node test/timestamp.mjs
@@ -81,10 +87,10 @@ jobs:
         with:
           python-version: "3.13"
       - name: Install packages
-        run: pip install -e ./sdk/python -e ./server
+        run: pip install -e ./atbrains-clients/sdk/python -e ./atbrains-server
       - name: Run MariaDB + Redis + Qdrant end-to-end tests
         env:
           ATBRAINS_IT_MARIADB_PORT: "57306"
           ATBRAINS_IT_REDIS_PORT: "9079"
           ATBRAINS_IT_QDRANT_PORT: "6333"
-        run: python server/tests/test_integration.py
+        run: python atbrains-server/tests/test_integration.py

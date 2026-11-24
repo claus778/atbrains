@@ -1,33 +1,28 @@
-# Python 缓存
+# Python 缓存与构建物
 __pycache__/
 *.pyc
-
-# 运行时机密:控制台访问 token(首次启动自动生成,权限 600)
-plugin/console/.token
-
-# 日志与临时文件
-*.log
-plugin/service-tokens.json
-
-# dsh 客户端插件的依赖（peer 由 dsh 提供，本地测试时才装）
-clients/*/node_modules/
-*.bak
-
-# 打包产物与构建期生成物
-dist/
-clients/*/_sdk/
-clients/*/data/
-server/data/
-server/.env
-deploy/data/
-deploy/.env
+*.pyo
 *.egg-info/
 build/
-# 第三方依赖不入库：服务端用 pip/uv 安装或 `make vendor` 生成；客户端 SDK 纯标准库，无需 vendor
-**/vendor/
-**/_vendor/
+dist/
 .venv/
 .pytest_cache/
 .ruff_cache/
-*.egg-info/
-build/
+
+# 运行时数据与机密（绝不入库）
+atbrains-server/data/
+atbrains-server/deploy/data/
+atbrains-server/.env
+atbrains-server/deploy/.env
+service-tokens.json
+token-activity.json
+.token
+*.log
+*.bak
+
+# 客户端运行态与依赖
+atbrains-clients/clients/*/_sdk/
+atbrains-clients/clients/*/data/
+atbrains-clients/clients/*/node_modules/
+**/vendor/
+**/_vendor/

@@ -1,4 +1,4 @@
-"""ops 脚本共用引导：优先使用已安装的 `atbrains_server`，否则回退仓库 `server/`。"""
+"""ops 脚本共用引导：优先使用已安装的 `atbrains_server`，否则回退项目根目录。"""
 from __future__ import annotations
 
 import sys
@@ -11,7 +11,7 @@ def load_server():
         from atbrains_server.store import AtbrainsStore
         return AtbrainsStore, resolve_config
     except ImportError:
-        server_dir = Path(__file__).resolve().parent.parent / "server"
+        server_dir = Path(__file__).resolve().parent.parent
         if str(server_dir) not in sys.path:
             sys.path.insert(0, str(server_dir))
         from atbrains_server.config import resolve_config  # noqa: E402

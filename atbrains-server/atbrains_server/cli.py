@@ -323,15 +323,8 @@ def cmd_restore(args) -> int:
 
 
 def _mcp_clients_mod():
-    try:
-        from atbrains_client import mcp_clients
-        return mcp_clients
-    except ImportError:
-        sdk_root = Path(__file__).resolve().parents[2] / "sdk" / "python"
-        if sdk_root.is_dir() and str(sdk_root) not in sys.path:
-            sys.path.insert(0, str(sdk_root))
-        from atbrains_client import mcp_clients  # type: ignore
-        return mcp_clients
+    from . import mcp_clients
+    return mcp_clients
 
 
 def _mcp_spec(args):

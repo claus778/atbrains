@@ -12,13 +12,9 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO = ROOT.parent
-SDK_DIR = REPO / "sdk" / "python"
-for p in (str(ROOT), str(SDK_DIR)):
-    if p not in sys.path:
-        sys.path.insert(0, p)
-
-from atbrains_client.schemas import TOOLS as SDK_TOOLS  # noqa: E402
+REPO = ROOT
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 from atbrains_server.context import RequestContext, owns_record  # noqa: E402
 from atbrains_server.http import ServerRuntime, make_handler  # noqa: E402
 from atbrains_server.mcp import AtbrainsMCP  # noqa: E402
@@ -208,8 +204,13 @@ class ParityTest(unittest.TestCase):
         route_paths = set(MemoryService._ROUTES.keys())
         self.assertEqual(spec_paths, route_paths)
 
-    def test_tool_schemas_parity(self) -> None:
-        self.assertEqual(SERVER_TOOLS, SDK_TOOLS)
+    def test_tool_schemas_valid(self) -> None:
+        self.assertEqual(len(SERVER_TOOLS), 12)
+        names = [t["name"] for t in SERVER_TOOLS]
+        self.assertEqual(len(names), len(set(names)))
+        for tool in SERVER_TOOLS:
+            self.assertIn("description", tool)
+            self.assertEqual(tool.get("inputSchema", {}).get("type"), "object")
 
 
 class TokenStoreTest(unittest.TestCase):

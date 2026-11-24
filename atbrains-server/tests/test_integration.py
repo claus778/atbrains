@@ -22,13 +22,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO = ROOT.parent
-SDK_DIR = REPO / "sdk" / "python"
+SDK_DIR = ROOT.parent / "atbrains-clients" / "sdk" / "python"
 for p in (str(ROOT), str(SDK_DIR)):
-    if p not in sys.path:
+    if Path(p).is_dir() and p not in sys.path:
         sys.path.insert(0, p)
 
-from atbrains_client import AtbrainsClient  # noqa: E402
+try:
+    from atbrains_client import AtbrainsClient  # noqa: E402
+except ImportError:
+    AtbrainsClient = None  # type: ignore[assignment]
 from atbrains_server import PROTOCOL_VERSION, AtbrainsStore  # noqa: E402
 from atbrains_server.config import DEFAULT_CONFIG  # noqa: E402
 from atbrains_server.http import create_http_server  # noqa: E402
@@ -179,6 +181,8 @@ class EndToEndIntegrationTest(unittest.TestCase):
             cls.embed_srv = None
 
     def test_full_universal_multi_agent_flow(self) -> None:
+        if AtbrainsClient is None:
+            self.skipTest("需安装 atbrains-client 包以运行完整端到端集成测试")
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
             cfg = {

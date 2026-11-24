@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# atbrains 安装脚本（通用记忆服务端 + 可选 Hermes 薄客户端适配器）
+# atbrains-clients 安装脚本（零依赖 Python SDK + Hermes 薄客户端适配器）
 #
-#   ./install.sh server          安装 atbrains-server + atbrains-client 到 Python 环境
-#   ./install.sh hermes          安装 Hermes 薄适配器（含纯标准库 SDK，零数据库驱动/密码）
-#   ./install.sh check           检查 Hermes 适配器安装副本与仓库差异
-#   ./install.sh all             同时安装 server 与 hermes 适配器
+#   ./install.sh sdk             安装 atbrains-client Python SDK 到虚拟环境
+#   ./install.sh hermes          安装 Hermes 薄适配器到 ~/.hermes/plugins/atbrains-memory
+#   ./install.sh check           检查 Hermes 安装副本与仓库差异
+#   ./install.sh all             同时安装 SDK 与 Hermes 适配器
 set -euo pipefail
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,22 +17,20 @@ MODE=install
 TARGET="${1:-all}"
 case "$TARGET" in
   check|--check) MODE=check; TARGET=hermes ;;
-  server)        TARGET=server ;;
+  sdk)           TARGET=sdk ;;
   hermes|memory) TARGET=hermes ;;
   all)           TARGET=all ;;
-  *) echo "用法: $0 [all|server|hermes|check]"; exit 2 ;;
+  *) echo "用法: $0 [all|sdk|hermes|check]"; exit 2 ;;
 esac
 
-install_server() {
+install_sdk() {
   local py="${ATBRAINS_PYTHON:-$(command -v python3)}"
   local venv="${ATBRAINS_VENV:-$REPO_DIR/.venv}"
   if [ ! -x "$venv/bin/pip" ]; then
     "$py" -m venv "$venv"
   fi
-  "$venv/bin/pip" install -q -e "$REPO_DIR/sdk/python" -e "$REPO_DIR/server"
-  echo "✅ 已安装 atbrains-server & atbrains-client → $venv"
-  echo "   迁移命令: $venv/bin/atbrains-server migrate"
-  echo "   启动命令: $venv/bin/atbrains-server serve"
+  "$venv/bin/pip" install -q -e "$REPO_DIR/sdk/python"
+  echo "✅ 已安装 atbrains-client SDK → $venv"
 }
 
 install_hermes() {
@@ -43,11 +41,7 @@ install_hermes() {
       echo "  ⚠️ 安装副本不存在"
       return 0
     fi
-    if command -v rsync >/dev/null 2>&1; then
-      rsync -na --itemize-changes -a --delete --exclude='__pycache__/' --exclude='*.pyc' --exclude='tests/' --exclude='_sdk/' "$HERMES_SRC/" "$HERMES_DST/" || true
-    else
-      diff -rq -x '__pycache__' -x '*.pyc' -x 'tests' -x '_sdk' "$HERMES_SRC" "$HERMES_DST" || true
-    fi
+    diff -rq -x '__pycache__' -x '*.pyc' -x 'tests' -x '_sdk' "$HERMES_SRC" "$HERMES_DST" || true
     return 0
   fi
   local py="${ATBRAINS_PYTHON:-$(command -v python3)}"
@@ -66,8 +60,8 @@ PY
   echo "   或手动写: $HERMES_DIR/atbrains.json 与 $HERMES_DIR/.env (ATBRAINS_TOKEN)"
 }
 
-if [ "$TARGET" = all ] || [ "$TARGET" = server ]; then
-  install_server
+if [ "$TARGET" = all ] || [ "$TARGET" = sdk ]; then
+  install_sdk
 fi
 if [ "$TARGET" = all ] || [ "$TARGET" = hermes ]; then
   install_hermes

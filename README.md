@@ -1,53 +1,33 @@
 # atbrains
 
-多 Agent 共享长期记忆服务。服务端统一管理 MariaDB、Redis、Qdrant，提供 Web 控制台、HTTP `/v1` 与 `/mcp` 入口；各客户端纯 HTTP 接入，不持有数据库驱动与密码。
+多 Agent 共享长期记忆系统。仓库内分为两个完全独立的子项目目录，可各自独立部署、测试与分发：
 
-## 1. 快速部署（Docker Compose）
+| 目录 | 说明 | 文档 |
+|---|---|---|
+| **`atbrains-server/`** | 服务端（`/v1` HTTP API + `/mcp` + Web 控制台 + Docker Compose 数据库/应用拆分编排 + 协议契约 + 运维脚本） | [atbrains-server/README.md](atbrains-server/README.md) |
+| **`atbrains-clients/`** | 客户端集合（零依赖 Python SDK + Hermes / AstrBot / DSH 适配器插件 + 打包安装脚本） | [atbrains-clients/README.md](atbrains-clients/README.md) |
+
+## 快速开始
+
+### 1. 部署服务端（`atbrains-server/`）
 
 ```bash
-cd server
+cd atbrains-server
 cp .env.example .env
-# 编辑 .env 设置数据库密码与宿主机数据持久化目录
-
-# 1) 首次创建数据库容器（MariaDB / Redis / Qdrant，仅需执行一次）
+# 首次启动数据库容器（仅需执行一次）
 docker compose -f docker-compose.db.yml up -d
-
-# 2) 构建并启动应用容器（以后重新部署只需执行此命令，不会动数据库容器）
+# 构建并启动应用容器（以后重新部署只需此命令）
 docker compose up -d --build
 ```
 
-启动后服务包含：
-- **Web 控制台 / 统一入口**：`http://<服务器>:8080`（Nginx）
-- **后端 API**：`atbrains-server:8787`（支持 `/v1/*` 与 `/mcp`）
-- **数据容器**：`mariadb`、`redis`、`qdrant`（数据挂载到宿主机目录持久化保存）
+打开 `http://<服务器>:8080`，输入启动日志中的控制台 Token（`atbrains-server/data/server/.token`）即可管理各客户端令牌与属性。
 
-查看管理员初始控制台令牌：
+### 2. 接入客户端（`atbrains-clients/`）
 
 ```bash
-cat server/data/server/.token
+cd atbrains-clients
+./install.sh hermes
+hermes atbrains-memory tokset "<token>" --url "http://<服务器>:8080"
 ```
 
-## 2. 令牌管理
-
-打开 `http://<服务器>:8080`，输入 `.token`（或任意 `role=admin` 令牌）登录后：
-- 按客户端类型（Hermes / AstrBot / DSH / Claude Code / Codex / Cursor / Python SDK / MCP）签发独立 Token；
-- 签发后自动生成对应客户端配置片段；
-- 实时查看各 Agent 在线状态、来源通道（`v1` / `mcp`）、IP、请求数、记忆分布以及数据库健康状态。
-
-## 3. 客户端接入
-
-| 客户端 | 协议 | 安装 / 接入方式 |
-|---|---|---|
-| **Hermes** | `/v1` | `./install.sh hermes`，配置 `~/.hermes/atbrains.json` 与 `~/.hermes/.env`（`ATBRAINS_TOKEN`） |
-| **AstrBot** | `/v1` | `python3 tools/package-astrbot-client.py` 解压至插件目录，配置 `ATBRAINS_URL` 与 `ATBRAINS_TOKEN` |
-| **DSH** | `/v1` | 复制 `clients/dsh-atbrains` 至插件目录，设置 `ATBRAINS_MCP_TOKEN` 与 `cordis.patch.yml` |
-| **Claude Code / Codex / Cursor / omp** | `/mcp` | 在 MCP 配置中填入 `http://<服务器>:8080/mcp` 与 `Authorization: Bearer <token>` |
-| **Python SDK** | `/v1` | `pip install ./sdk/python`，使用 `AtbrainsClient(base_url=..., token=...)` |
-
-## 4. 文档
-
-- 架构、目录结构、环境变量与测试：[docs/development.md](docs/development.md)
-- HTTP `/v1` 协议说明：[docs/protocol-v1.md](docs/protocol-v1.md) / [contracts/openapi.yaml](contracts/openapi.yaml)
-- MCP 接入说明：[docs/mcp.md](docs/mcp.md)
-- 数据库表结构：[docs/database-schema.md](docs/database-schema.md)
-- 多 Agent 与兼容策略：[docs/multi-agent.md](docs/multi-agent.md) / [docs/compat.md](docs/compat.md)
+AstrBot、DSH、MCP 与 Python SDK 的接入方式见 [atbrains-clients/README.md](atbrains-clients/README.md)。
